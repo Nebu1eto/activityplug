@@ -1,0 +1,62 @@
+import { type StoredAuthSession } from "@activityplug/core";
+
+export interface AuthSessionStore {
+  readonly create: (session: StoredAuthSession) => Promise<void>;
+  readonly get: (sessionId: string) => Promise<StoredAuthSession | null>;
+  readonly update: (sessionId: string, patch: Partial<StoredAuthSession>) => Promise<void>;
+  readonly delete: (sessionId: string) => Promise<void>;
+  readonly deleteExpired: (now?: Date) => Promise<number>;
+}
+
+export interface InMemoryAuthSessionStoreOptions {
+  readonly now?: () => Date;
+}
+
+export class InMemoryAuthSessionStore implements AuthSessionStore {
+  readonly #sessions = new Map<string, StoredAuthSession>();
+  readonly #now: () => Date;
+
+  public constructor(options: InMemoryAuthSessionStoreOptions = {}) {
+    this.#now = options.now ?? (() => new Date());
+  }
+
+  public async create(session: StoredAuthSession): Promise<void> {
+    this.#sessions.set(session.id, session);
+  }
+
+  public async get(sessionId: string): Promise<StoredAuthSession | null> {
+    const session = this.#sessions.get(sessionId);
+    if (session === undefined) return null;
+    if (isExpired(session, this.#now())) {
+      this.#sessions.delete(sessionId);
+      return null;
+    }
+    return session;
+  }
+
+  public async update(sessionId: string, patch: Partial<StoredAuthSession>): Promise<void> {
+    const session = this.#sessions.get(sessionId);
+    if (session === undefined) return;
+    this.#sessions.set(sessionId, { ...session, ...patch });
+  }
+
+  public async delete(sessionId: string): Promise<void> {
+    this.#sessions.delete(sessionId);
+  }
+
+  public async deleteExpired(now: Date = this.#now()): Promise<number> {
+    let deleted = 0;
+    for (const [sessionId, session] of this.#sessions) {
+      if (isExpired(session, now)) {
+        this.#sessions.delete(sessionId);
+        deleted += 1;
+      }
+    }
+    return deleted;
+  }
+}
+
+export function isExpired(session: StoredAuthSession, now: Date = new Date()): boolean {
+  if (session.expiresAt === undefined) return false;
+  return Date.parse(session.expiresAt) <= now.getTime();
+}
