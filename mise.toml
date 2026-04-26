@@ -1,0 +1,11 @@
+[tools]
+node = "24"
+pnpm = "10"
+
+[tasks."format:md"]
+description = "Format Markdown files with Hongdown"
+run = "pnpm exec hongdown --write"
+
+[tasks."format:md:check"]
+description = "Check Markdown formatting with Hongdown"
+run = "pnpm exec hongdown --check"

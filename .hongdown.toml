@@ -1,0 +1,34 @@
+no_inherit = true
+include = ["*.md", "**/*.md"]
+exclude = [
+  "**/node_modules/**",
+  "**/dist/**",
+  "**/coverage/**",
+  ".git/**",
+  ".claude/**",
+  "CLAUDE.md",
+]
+
+[heading]
+sentence_case = true
+proper_nouns = [
+  "ActivityPlug",
+  "ActivityPub",
+  "Fediverse",
+  "GraphQL",
+  "Hongdown",
+  "HTTP",
+  "JavaScript",
+  "Markdown",
+  "Node.js",
+  "Pothos",
+  "TypeScript",
+  "Vitest",
+  "WebSocket",
+  "hongdown",
+  "mise",
+  "oxfmt",
+  "oxlint",
+  "pnpm",
+  "tsdown",
+]

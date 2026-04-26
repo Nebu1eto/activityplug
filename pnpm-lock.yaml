@@ -1,0 +1,79 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    devDependencies:
+      hongdown:
+        specifier: ^0.3.10
+        version: 0.3.10
+
+packages:
+
+  '@hongdown/darwin-arm64@0.3.10':
+    resolution: {integrity: sha512-EZCGRgafhe+PUQTnd4s6XVgyuiIc6ITMbZ9J65ue9b1bA6tLfI8vNv2i52bt42zUJiVEBYcC8JOxiPkxk1hE7A==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@hongdown/darwin-x64@0.3.10':
+    resolution: {integrity: sha512-L1Kj19iSJj00A1hHwdTJkJKKXfN0zOEIP77rGjgd7rPkU6b7sBwVDlDI0uTb6E23/qYq/VVaMVidDNoI/mY0tg==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@hongdown/linux-arm64@0.3.10':
+    resolution: {integrity: sha512-UkotCUCAF8Kwh1qVq6mQTZUxXag2QNXQHuT+Pg8FUN7FfRKLpbvW6i0vYW6vHdGQaj/tnKa7KwYyiDDr/Kg3Mg==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@hongdown/linux-x64@0.3.10':
+    resolution: {integrity: sha512-zErYRBHsvliwkopOg0qxFVhBTYlXWiPyV15WmOOoM/jWolillxO80OKW3+CIC823u60EKVQoOB3Dy1NVlHyRcw==}
+    cpu: [x64]
+    os: [linux]
+
+  '@hongdown/win32-arm64@0.3.10':
+    resolution: {integrity: sha512-q+33QaqdNJS2b0BMaYkwsPbYvmlFF8ldx+39TPZ5QbJwRwkj3+1rHnkuZKlEcPC5RvkJA5ePKLVdHOvdjBrfYA==}
+    cpu: [arm64]
+    os: [win32]
+
+  '@hongdown/win32-x64@0.3.10':
+    resolution: {integrity: sha512-iOHtAx13KxjMoCb9+HrX0rN2WKF7GSxhuDxl24so2q9YMpU4+ZzcDZqnuvqZ+xKtFwyctNPfpp2/iTIhWm3C/w==}
+    cpu: [x64]
+    os: [win32]
+
+  hongdown@0.3.10:
+    resolution: {integrity: sha512-SZmvntf9NcM4mf0qLWM8mnu703MKBpa/dAwDq5/JRyYre5KMcnSKPcdsSgpxeMpcyt/lenV02EHJLAI9GE2ZRg==}
+    engines: {node: '>=18'}
+    hasBin: true
+
+snapshots:
+
+  '@hongdown/darwin-arm64@0.3.10':
+    optional: true
+
+  '@hongdown/darwin-x64@0.3.10':
+    optional: true
+
+  '@hongdown/linux-arm64@0.3.10':
+    optional: true
+
+  '@hongdown/linux-x64@0.3.10':
+    optional: true
+
+  '@hongdown/win32-arm64@0.3.10':
+    optional: true
+
+  '@hongdown/win32-x64@0.3.10':
+    optional: true
+
+  hongdown@0.3.10:
+    optionalDependencies:
+      '@hongdown/darwin-arm64': 0.3.10
+      '@hongdown/darwin-x64': 0.3.10
+      '@hongdown/linux-arm64': 0.3.10
+      '@hongdown/linux-x64': 0.3.10
+      '@hongdown/win32-arm64': 0.3.10
+      '@hongdown/win32-x64': 0.3.10

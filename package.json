@@ -1,0 +1,20 @@
+{
+  "name": "activityplug",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Unified proxy APIs and TypeScript adapters for ActivityPub software.",
+  "license": "Apache-2.0 OR MIT",
+  "type": "module",
+  "packageManager": "pnpm@10.33.2",
+  "scripts": {
+    "format:md": "hongdown --write",
+    "format:md:check": "hongdown --check"
+  },
+  "devDependencies": {
+    "hongdown": "^0.3.10"
+  },
+  "engines": {
+    "node": ">=24 <25",
+    "pnpm": ">=10 <11"
+  }
+}
