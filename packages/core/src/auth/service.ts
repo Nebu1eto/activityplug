@@ -65,10 +65,18 @@ export interface AuthService {
   readonly revoke: (input: OAuthRevokeInput) => Promise<void>;
 }
 
+export interface AuthSessionStore {
+  readonly create: (session: StoredAuthSession) => Promise<void>;
+  readonly get: (sessionId: string) => Promise<StoredAuthSession | null>;
+  readonly update: (sessionId: string, patch: Partial<StoredAuthSession>) => Promise<void>;
+  readonly delete: (sessionId: string) => Promise<void>;
+}
+
 export interface AuthServiceClientContext {
   readonly adapter: ActivityPlugAdapter;
   readonly origin: string;
   readonly capabilities: import("../capabilities/capability.js").CapabilitySet;
+  readonly sessionStore?: AuthSessionStore;
 }
 
 export function createAuthService(client: AuthServiceClientContext): AuthService {
@@ -77,10 +85,11 @@ export function createAuthService(client: AuthServiceClientContext): AuthService
 
 class DefaultAuthService implements AuthService {
   readonly #client: AuthServiceClientContext;
-  readonly #sessions = new Map<string, StoredAuthSession>();
+  readonly #sessionStore: AuthSessionStore;
 
   public constructor(client: AuthServiceClientContext) {
     this.#client = client;
+    this.#sessionStore = client.sessionStore ?? new InMemoryAuthSessionStore();
   }
 
   public async injectToken(input: InjectTokenInput): Promise<AuthSession> {
@@ -111,7 +120,7 @@ class DefaultAuthService implements AuthService {
       ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
       ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
     };
-    this.#sessions.set(session.id, session);
+    await this.#sessionStore.create(session);
     return toPublicSession(session);
   }
 
@@ -120,7 +129,7 @@ class DefaultAuthService implements AuthService {
     if (auth.verifyCredentials === undefined) {
       throw unsupportedOperation("auth.verifyCredentials", this.#context());
     }
-    const storedSession = this.#requireStoredSession(session);
+    const storedSession = await this.#requireStoredSession(session);
     if (isExpired(storedSession)) {
       throw new ActivityPlugError("AUTH_EXPIRED", "Auth session has expired.", {
         ...this.#context(),
@@ -132,7 +141,10 @@ class DefaultAuthService implements AuthService {
       this.#adapterContext(),
     );
     const updatedSession = { ...storedSession, account: account.ref };
-    this.#sessions.set(updatedSession.id, updatedSession);
+    await this.#sessionStore.update(updatedSession.id, {
+      account: updatedSession.account,
+      updatedAt: new Date().toISOString(),
+    });
     return { account, session: toPublicSession(updatedSession) };
   }
 
@@ -166,7 +178,7 @@ class DefaultAuthService implements AuthService {
     }
     const tokenSet = await auth.exchangeAuthorizationCode(input, this.#adapterContext());
     const session = this.#sessionFromTokenSet(tokenSet);
-    this.#sessions.set(session.id, session);
+    await this.#sessionStore.create(session);
     return toPublicSession(session);
   }
 
@@ -176,7 +188,7 @@ class DefaultAuthService implements AuthService {
     if (auth.refreshToken === undefined) {
       throw unsupportedOperation("auth.oauth.refresh", this.#context());
     }
-    const storedSession = this.#requireStoredSession(input.session);
+    const storedSession = await this.#requireStoredSession(input.session);
     const tokenSet = mergeRefreshTokenSet(
       storedSession.tokenSet,
       await auth.refreshToken({ session: storedSession }, this.#adapterContext()),
@@ -184,11 +196,19 @@ class DefaultAuthService implements AuthService {
     const { expiresAt: _oldExpiresAt, ...sessionWithoutExpiresAt } = storedSession;
     const updatedSession = {
       ...sessionWithoutExpiresAt,
+      scopes: tokenSet.scopes ?? storedSession.scopes,
       tokenSet,
       updatedAt: new Date().toISOString(),
       ...(tokenSet.expiresAt === undefined ? {} : { expiresAt: tokenSet.expiresAt }),
     };
-    this.#sessions.set(updatedSession.id, updatedSession);
+    await this.#sessionStore.update(updatedSession.id, {
+      scopes: updatedSession.scopes,
+      tokenSet: updatedSession.tokenSet,
+      updatedAt: updatedSession.updatedAt,
+      ...(updatedSession.expiresAt === undefined
+        ? { expiresAt: undefined }
+        : { expiresAt: updatedSession.expiresAt }),
+    });
     return toPublicSession(updatedSession);
   }
 
@@ -197,9 +217,9 @@ class DefaultAuthService implements AuthService {
     if (auth.revokeToken === undefined) {
       throw unsupportedOperation("auth.oauth.revoke", this.#context());
     }
-    const storedSession = this.#requireStoredSession(input.session);
+    const storedSession = await this.#requireStoredSession(input.session);
     await auth.revokeToken({ ...input, session: storedSession }, this.#adapterContext());
-    this.#sessions.delete(storedSession.id);
+    await this.#sessionStore.delete(storedSession.id);
   }
 
   #sessionFromTokenSet(tokenSet: TokenSet): StoredAuthSession {
@@ -232,14 +252,30 @@ class DefaultAuthService implements AuthService {
     return auth;
   }
 
-  #requireStoredSession(session: AuthSession): StoredAuthSession {
-    if (hasTokenSet(session)) return session;
-    const storedSession = this.#sessions.get(session.id);
-    if (storedSession === undefined) {
+  async #requireStoredSession(session: AuthSession): Promise<StoredAuthSession> {
+    const storedSession = hasTokenSet(session) ? session : await this.#sessionStore.get(session.id);
+    if (storedSession === null) {
       throw new ActivityPlugError("AUTH_REQUIRED", "Auth session is not available.", {
         ...this.#context(),
         operation: "auth.session.resolve",
       });
+    }
+    if (
+      storedSession.adapter !== this.#client.adapter.metadata.id ||
+      storedSession.origin !== this.#client.origin
+    ) {
+      throw new ActivityPlugError(
+        "AUTH_REQUIRED",
+        "Auth session does not belong to this adapter and origin.",
+        {
+          ...this.#context(),
+          operation: "auth.session.resolve",
+          raw: {
+            sessionAdapter: storedSession.adapter,
+            sessionOrigin: storedSession.origin,
+          },
+        },
+      );
     }
     return storedSession;
   }
@@ -273,6 +309,28 @@ function toPublicSession(session: StoredAuthSession): AuthSession {
 
 function hasTokenSet(session: AuthSession): session is StoredAuthSession {
   return "tokenSet" in session;
+}
+
+class InMemoryAuthSessionStore implements AuthSessionStore {
+  readonly #sessions = new Map<string, StoredAuthSession>();
+
+  public async create(session: StoredAuthSession): Promise<void> {
+    this.#sessions.set(session.id, session);
+  }
+
+  public async get(sessionId: string): Promise<StoredAuthSession | null> {
+    return this.#sessions.get(sessionId) ?? null;
+  }
+
+  public async update(sessionId: string, patch: Partial<StoredAuthSession>): Promise<void> {
+    const session = this.#sessions.get(sessionId);
+    if (session === undefined) return;
+    this.#sessions.set(sessionId, { ...session, ...patch });
+  }
+
+  public async delete(sessionId: string): Promise<void> {
+    this.#sessions.delete(sessionId);
+  }
 }
 
 function mergeRefreshTokenSet(previous: TokenSet, next: TokenSet): TokenSet {

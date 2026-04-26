@@ -56,6 +56,24 @@ export const authSessionStoreContractCases: readonly AuthSessionStoreContractCas
     },
   },
   {
+    name: "does not update expired auth sessions",
+    run: async (options) => {
+      const store = options.createStore();
+
+      await store.create(
+        createContractSession("session-1", {
+          expiresAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+      await store.update("session-1", {
+        expiresAt: "2026-05-01T00:00:00.000Z",
+        updatedAt: "2026-04-26T00:01:00.000Z",
+      });
+
+      assertEqual(await store.get("session-1"), null);
+    },
+  },
+  {
     name: "deletes expired auth sessions and returns the deleted count",
     run: async (options) => {
       const store = options.createStore();

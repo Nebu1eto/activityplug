@@ -1,10 +1,9 @@
-import { type StoredAuthSession } from "@activityplug/core";
+import {
+  type AuthSessionStore as CoreAuthSessionStore,
+  type StoredAuthSession,
+} from "@activityplug/core";
 
-export interface AuthSessionStore {
-  readonly create: (session: StoredAuthSession) => Promise<void>;
-  readonly get: (sessionId: string) => Promise<StoredAuthSession | null>;
-  readonly update: (sessionId: string, patch: Partial<StoredAuthSession>) => Promise<void>;
-  readonly delete: (sessionId: string) => Promise<void>;
+export interface AuthSessionStore extends CoreAuthSessionStore {
   readonly deleteExpired: (now?: Date) => Promise<number>;
 }
 
@@ -35,8 +34,8 @@ export class InMemoryAuthSessionStore implements AuthSessionStore {
   }
 
   public async update(sessionId: string, patch: Partial<StoredAuthSession>): Promise<void> {
-    const session = this.#sessions.get(sessionId);
-    if (session === undefined) return;
+    const session = await this.get(sessionId);
+    if (session === null) return;
     this.#sessions.set(sessionId, { ...session, ...patch });
   }
 

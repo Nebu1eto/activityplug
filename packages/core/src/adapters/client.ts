@@ -1,4 +1,9 @@
-import { createAuthService, type AuthAdapter, type AuthService } from "../auth/service.js";
+import {
+  createAuthService,
+  type AuthAdapter,
+  type AuthService,
+  type AuthSessionStore,
+} from "../auth/service.js";
 import { mergeCapabilityLayers, type CapabilitySet } from "../capabilities/capability.js";
 import { type AdapterMetadata } from "./metadata.js";
 
@@ -11,6 +16,7 @@ export interface ActivityPlugClientOptions {
   readonly adapter: ActivityPlugAdapter;
   readonly origin: string;
   readonly capabilities?: CapabilitySet;
+  readonly sessionStore?: AuthSessionStore;
 }
 
 export interface ActivityPlugClient {
@@ -32,6 +38,7 @@ export function createActivityPlugClient(options: ActivityPlugClientOptions): Ac
           capabilities: options.adapter.metadata.staticCapabilities,
         },
       ]),
+    ...(options.sessionStore === undefined ? {} : { sessionStore: options.sessionStore }),
   };
   return {
     ...client,

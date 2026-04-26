@@ -67,10 +67,12 @@ export function parseOAuthCallback(callbackUrl: OAuthCallbackInput): OAuthCallba
 function callbackParams(callbackUrl: OAuthCallbackInput): URLSearchParams {
   if (callbackUrl instanceof URLSearchParams) return callbackUrl;
   if (callbackUrl instanceof URL) return callbackUrl.searchParams;
-  if (typeof callbackUrl === "string") return new URL(callbackUrl).searchParams;
+  if (typeof callbackUrl === "string") return parseCallbackUrl(callbackUrl).searchParams;
   if (isCallbackRequestBody(callbackUrl)) {
     const params =
-      callbackUrl.url === undefined ? new URLSearchParams() : new URL(callbackUrl.url).searchParams;
+      callbackUrl.url === undefined
+        ? new URLSearchParams()
+        : parseCallbackUrl(callbackUrl.url).searchParams;
     if (callbackUrl.params !== undefined) {
       for (const [key, value] of Object.entries(callbackUrl.params)) {
         if (value !== undefined) {
@@ -87,6 +89,22 @@ function callbackParams(callbackUrl: OAuthCallbackInput): URLSearchParams {
     }
   }
   return params;
+}
+
+function parseCallbackUrl(callbackUrl: string): URL {
+  try {
+    return new URL(callbackUrl);
+  } catch (cause) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "OAuth callback URL is malformed.",
+      {
+        operation: "auth.oauth.callback",
+        raw: callbackUrl,
+      },
+      { cause },
+    );
+  }
 }
 
 function isCallbackRequestBody(value: object): value is OAuthCallbackRequestBody {

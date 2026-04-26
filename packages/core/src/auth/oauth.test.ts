@@ -76,6 +76,21 @@ describe("OAuth callback primitives", () => {
     });
   });
 
+  it("reports malformed callback URLs as typed validation errors", () => {
+    expect(() => parseOAuthCallback("not a url")).toThrowError(
+      expect.objectContaining({
+        code: "VALIDATION_FAILED",
+        context: expect.objectContaining({ operation: "auth.oauth.callback" }),
+      }),
+    );
+    expect(() => parseOAuthCallback({ url: "not a url" })).toThrowError(
+      expect.objectContaining({
+        code: "VALIDATION_FAILED",
+        context: expect.objectContaining({ operation: "auth.oauth.callback" }),
+      }),
+    );
+  });
+
   it("validates callback state", () => {
     const callback = parseOAuthCallback("https://client.example/callback?code=abc&state=actual");
 

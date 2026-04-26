@@ -4,6 +4,8 @@ import { createActivityPlugClient, type ActivityPlugAdapter } from "../adapters/
 import { capability, createCapabilitySet } from "../capabilities/capability.js";
 import { createEntityRef } from "../ids/opaque-id.js";
 import { type Account } from "../types/entities.js";
+import { type AuthSessionStore } from "./service.js";
+import { type StoredAuthSession, type TokenSet } from "./types.js";
 
 describe("auth service", () => {
   it("creates a library-mode bot session from an injected token and verifies credentials", async () => {
@@ -123,7 +125,138 @@ describe("auth service", () => {
     });
     expect("tokenSet" in session).toBe(false);
   });
+
+  it("persists OAuth exchange results through an injected session store", async () => {
+    const sessionStore = new MemoryAuthSessionStore();
+    const client = createActivityPlugClient({
+      adapter: fakeOAuthAdapter(),
+      origin: "https://social.example",
+      sessionStore,
+    });
+
+    const session = await client.auth.exchangeAuthorizationCode({
+      client: {
+        clientId: "client-1",
+        redirectUris: ["https://client.example/callback"],
+      },
+      code: "code-1",
+      redirectUri: "https://client.example/callback",
+    });
+
+    const storedSession = await sessionStore.get(session.id);
+    expect(storedSession).toMatchObject({
+      id: session.id,
+      adapter: "oauth-fake",
+      origin: "https://social.example",
+      tokenSet: {
+        accessToken: "oauth-token",
+      },
+    });
+  });
+
+  it("persists OAuth refresh results through an injected session store", async () => {
+    const sessionStore = new MemoryAuthSessionStore();
+    const client = createActivityPlugClient({
+      adapter: fakeRefreshAdapter({
+        accessToken: "new-token",
+        tokenType: "Bearer",
+        scopes: ["read:accounts"],
+        expiresAt: "2026-05-01T00:00:00.000Z",
+      }),
+      origin: "https://social.example",
+      sessionStore,
+    });
+    const session = await client.auth.injectToken({
+      accessToken: "old-token",
+      refreshToken: "refresh-token",
+      scopes: ["read"],
+    });
+
+    const refreshed = await client.auth.refresh({ session });
+
+    const storedSession = await sessionStore.get(session.id);
+    expect(refreshed).toMatchObject({
+      id: session.id,
+      scopes: ["read:accounts"],
+      expiresAt: "2026-05-01T00:00:00.000Z",
+    });
+    expect(storedSession).toMatchObject({
+      id: session.id,
+      scopes: ["read:accounts"],
+      tokenSet: {
+        accessToken: "new-token",
+        refreshToken: "refresh-token",
+        scopes: ["read:accounts"],
+        expiresAt: "2026-05-01T00:00:00.000Z",
+      },
+      expiresAt: "2026-05-01T00:00:00.000Z",
+    });
+  });
+
+  it("rejects stored sessions from another adapter or origin before using tokens", async () => {
+    const client = createActivityPlugClient({
+      adapter: {
+        metadata: {
+          id: "fake",
+          displayName: "Fake",
+          kind: "unknown",
+          supportedSoftware: ["fake"],
+          staticCapabilities: createCapabilitySet({
+            "auth.tokenInjection": capability("supported"),
+          }),
+        },
+        auth: {
+          verifyCredentials: async () => {
+            throw new Error("adapter must not receive a foreign token");
+          },
+        },
+      },
+      origin: "https://social.example",
+    });
+
+    const foreignSession: StoredAuthSession = {
+      id: "foreign-session",
+      adapter: "misskey",
+      origin: "https://other.example",
+      scopes: [],
+      capabilities: {},
+      tokenSet: {
+        accessToken: "foreign-token",
+      },
+      createdAt: "2026-04-26T00:00:00.000Z",
+      updatedAt: "2026-04-26T00:00:00.000Z",
+    };
+
+    await expect(client.auth.verifyCredentials(foreignSession)).rejects.toThrowError(
+      expect.objectContaining({
+        code: "AUTH_REQUIRED",
+        context: expect.objectContaining({ operation: "auth.session.resolve" }),
+      }),
+    );
+  });
 });
+
+class MemoryAuthSessionStore implements AuthSessionStore {
+  readonly #sessions = new Map<string, StoredAuthSession>();
+
+  public async create(session: StoredAuthSession): Promise<void> {
+    this.#sessions.set(session.id, session);
+  }
+
+  public async get(sessionId: string): Promise<StoredAuthSession | null> {
+    return this.#sessions.get(sessionId) ?? null;
+  }
+
+  public async update(sessionId: string, patch: Partial<StoredAuthSession>): Promise<void> {
+    const session = this.#sessions.get(sessionId);
+    if (session === undefined) return;
+    this.#sessions.set(sessionId, { ...session, ...patch });
+  }
+
+  public async delete(sessionId: string): Promise<void> {
+    this.#sessions.delete(sessionId);
+  }
+}
 
 function fakeAuthAdapter(account: Account): ActivityPlugAdapter {
   return {
@@ -192,7 +325,12 @@ function fakeOAuthAdapter(): ActivityPlugAdapter {
   };
 }
 
-function fakeRefreshAdapter(): ActivityPlugAdapter {
+function fakeRefreshAdapter(
+  refreshResult: TokenSet = {
+    accessToken: "new-token",
+    tokenType: "Bearer",
+  },
+): ActivityPlugAdapter {
   return {
     metadata: {
       id: "refresh-fake",
@@ -207,10 +345,7 @@ function fakeRefreshAdapter(): ActivityPlugAdapter {
     auth: {
       refreshToken: async (input) => {
         expect(input.session.tokenSet.refreshToken).toBe("refresh-token");
-        return {
-          accessToken: "new-token",
-          tokenType: "Bearer",
-        };
+        return refreshResult;
       },
     },
   };
