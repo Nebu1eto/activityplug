@@ -14,7 +14,8 @@
     "hooks:install": "lefthook install",
     "lint": "oxlint --type-aware",
     "test": "vitest run --passWithNoTests",
-    "typecheck": "tsc -b"
+    "test:integration": "ACTIVITYPLUG_INTEGRATION=1 vitest run --passWithNoTests",
+    "typecheck": "pnpm -r --sort build && tsc -b"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
