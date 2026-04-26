@@ -28,6 +28,7 @@ export interface StoredAuthSession extends AuthSession {
   readonly tokenSet: TokenSet;
   readonly createdAt: ISODateTimeString;
   readonly updatedAt: ISODateTimeString;
+  readonly storageExpiresAt?: ISODateTimeString;
   readonly metadata?: Readonly<Record<string, unknown>>;
 }
 

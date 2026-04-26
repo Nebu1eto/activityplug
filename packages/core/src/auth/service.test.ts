@@ -193,6 +193,30 @@ describe("auth service", () => {
     });
   });
 
+  it("refreshes sessions after the access token expires", async () => {
+    const sessionStore = new StorageExpiryAuthSessionStore(new Date("2026-04-26T00:00:00.000Z"));
+    const client = createActivityPlugClient({
+      adapter: fakeRefreshAdapter({
+        accessToken: "new-token",
+        tokenType: "Bearer",
+      }),
+      origin: "https://social.example",
+      sessionStore,
+    });
+    const session = await client.auth.injectToken({
+      accessToken: "old-token",
+      refreshToken: "refresh-token",
+      expiresAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    const refreshed = await client.auth.refresh({ session });
+
+    expect(refreshed).toMatchObject({
+      id: session.id,
+    });
+    expect(refreshed.expiresAt).toBeUndefined();
+  });
+
   it("rejects stored sessions from another adapter or origin before using tokens", async () => {
     const client = createActivityPlugClient({
       adapter: {
@@ -250,6 +274,42 @@ class MemoryAuthSessionStore implements AuthSessionStore {
   public async update(sessionId: string, patch: Partial<StoredAuthSession>): Promise<void> {
     const session = this.#sessions.get(sessionId);
     if (session === undefined) return;
+    this.#sessions.set(sessionId, { ...session, ...patch });
+  }
+
+  public async delete(sessionId: string): Promise<void> {
+    this.#sessions.delete(sessionId);
+  }
+}
+
+class StorageExpiryAuthSessionStore implements AuthSessionStore {
+  readonly #sessions = new Map<string, StoredAuthSession>();
+  readonly #now: Date;
+
+  public constructor(now: Date) {
+    this.#now = now;
+  }
+
+  public async create(session: StoredAuthSession): Promise<void> {
+    this.#sessions.set(session.id, session);
+  }
+
+  public async get(sessionId: string): Promise<StoredAuthSession | null> {
+    const session = this.#sessions.get(sessionId);
+    if (session === undefined) return null;
+    if (
+      session.storageExpiresAt !== undefined &&
+      Date.parse(session.storageExpiresAt) <= this.#now.getTime()
+    ) {
+      this.#sessions.delete(sessionId);
+      return null;
+    }
+    return session;
+  }
+
+  public async update(sessionId: string, patch: Partial<StoredAuthSession>): Promise<void> {
+    const session = await this.get(sessionId);
+    if (session === null) return;
     this.#sessions.set(sessionId, { ...session, ...patch });
   }
 

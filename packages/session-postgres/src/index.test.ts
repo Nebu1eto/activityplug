@@ -29,6 +29,42 @@ describe("PostgresAuthSessionStore", () => {
         }),
     ).toThrowError("safe identifier");
   });
+
+  it("does not delete legacy rows that only have access token expiration", async () => {
+    const client = new MemoryPostgresClient();
+    const store = new PostgresAuthSessionStore({
+      client,
+      now: () => new Date("2026-04-26T00:00:00.000Z"),
+    });
+    await client.createLegacyAccessExpiryRow({
+      id: "session-1",
+      data: {
+        id: "session-1",
+        adapter: "fake",
+        origin: "https://social.example",
+        scopes: [],
+        capabilities: {},
+        expiresAt: "2026-01-01T00:00:00.000Z",
+        tokenSet: {
+          accessToken: "expired-access-token",
+          tokenType: "Bearer",
+          refreshToken: "refresh-token",
+          expiresAt: "2026-01-01T00:00:00.000Z",
+        },
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+      expiresAt: "2026-01-01T00:00:00.000Z",
+    });
+
+    expect(await store.deleteExpired(new Date("2026-04-26T00:00:00.000Z"))).toBe(0);
+    expect(await store.get("session-1")).toMatchObject({
+      id: "session-1",
+      tokenSet: {
+        refreshToken: "refresh-token",
+      },
+    });
+  });
 });
 
 interface StoredRow {
@@ -39,6 +75,10 @@ interface StoredRow {
 
 class MemoryPostgresClient implements PostgresAuthSessionStoreClient {
   readonly #rows = new Map<string, StoredRow>();
+
+  public async createLegacyAccessExpiryRow(row: StoredRow): Promise<void> {
+    this.#rows.set(row.id, row);
+  }
 
   public async query<Row>(
     sql: string,
@@ -56,11 +96,13 @@ class MemoryPostgresClient implements PostgresAuthSessionStoreClient {
       });
       return { rows: [] };
     }
-    if (sql.includes("expires_at is not null")) {
+    if (sql.includes("storageExpiresAt")) {
       const now = Date.parse(values[0] as string);
       const deletedRows = [];
       for (const [id, row] of this.#rows) {
-        if (row.expiresAt !== null && Date.parse(row.expiresAt) <= now) {
+        const storageExpiresAt = (row.data as { readonly storageExpiresAt?: string })
+          .storageExpiresAt;
+        if (storageExpiresAt !== undefined && Date.parse(storageExpiresAt) <= now) {
           this.#rows.delete(id);
           deletedRows.push({ id });
         }

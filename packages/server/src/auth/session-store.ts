@@ -56,6 +56,6 @@ export class InMemoryAuthSessionStore implements AuthSessionStore {
 }
 
 export function isExpired(session: StoredAuthSession, now: Date = new Date()): boolean {
-  if (session.expiresAt === undefined) return false;
-  return Date.parse(session.expiresAt) <= now.getTime();
+  if (session.storageExpiresAt === undefined) return false;
+  return Date.parse(session.storageExpiresAt) <= now.getTime();
 }

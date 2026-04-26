@@ -1,5 +1,5 @@
-import { authSessionStoreContractCases } from "@activityplug/server";
-import { describe, it } from "vitest";
+import { authSessionStoreContractCases, createContractSession } from "@activityplug/server";
+import { describe, expect, it } from "vitest";
 
 import { RedisAuthSessionStore, type RedisAuthSessionStoreClient } from "./index.js";
 
@@ -15,16 +15,56 @@ describe("RedisAuthSessionStore", () => {
       });
     });
   }
+
+  it("does not derive Redis TTL from access token expiration", async () => {
+    const client = new MemoryRedisClient();
+    const store = new RedisAuthSessionStore({
+      client,
+      now: () => new Date("2026-04-26T00:00:00.000Z"),
+    });
+
+    await store.create(
+      createContractSession("session-1", {
+        expiresAt: "2026-01-01T00:00:00.000Z",
+        tokenSet: {
+          accessToken: "expired-access-token",
+          tokenType: "Bearer",
+          refreshToken: "refresh-token",
+          expiresAt: "2026-01-01T00:00:00.000Z",
+        },
+      }),
+    );
+
+    expect(client.lastTtlMs).toBeUndefined();
+  });
+
+  it("derives Redis TTL from storage expiration", async () => {
+    const client = new MemoryRedisClient();
+    const store = new RedisAuthSessionStore({
+      client,
+      now: () => new Date("2026-04-26T00:00:00.000Z"),
+    });
+
+    await store.create(
+      createContractSession("session-1", {
+        storageExpiresAt: "2026-04-26T00:01:00.000Z",
+      }),
+    );
+
+    expect(client.lastTtlMs).toBe(60_000);
+  });
 });
 
 class MemoryRedisClient implements RedisAuthSessionStoreClient {
   readonly #values = new Map<string, string>();
+  public lastTtlMs: number | undefined;
 
   public async get(key: string): Promise<string | null> {
     return this.#values.get(key) ?? null;
   }
 
-  public async set(key: string, value: string): Promise<void> {
+  public async set(key: string, value: string, ttlMs?: number): Promise<void> {
+    this.lastTtlMs = ttlMs;
     this.#values.set(key, value);
   }
 

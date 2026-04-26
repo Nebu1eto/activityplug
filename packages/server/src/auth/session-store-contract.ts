@@ -21,6 +21,8 @@ export const authSessionStoreContractCases: readonly AuthSessionStoreContractCas
       await store.create(session);
 
       assertEqual(await store.get("session-1"), session);
+      assertEqual(await store.deleteExpired(new Date("2026-04-26T00:00:00.000Z")), 0);
+      assertEqual(await store.get("session-1"), session);
     },
   },
   {
@@ -62,7 +64,7 @@ export const authSessionStoreContractCases: readonly AuthSessionStoreContractCas
 
       await store.create(
         createContractSession("session-1", {
-          expiresAt: "2026-01-01T00:00:00.000Z",
+          storageExpiresAt: "2026-01-01T00:00:00.000Z",
         }),
       );
       await store.update("session-1", {
@@ -74,13 +76,32 @@ export const authSessionStoreContractCases: readonly AuthSessionStoreContractCas
     },
   },
   {
+    name: "keeps sessions whose access token expired but storage lifetime did not",
+    run: async (options) => {
+      const store = options.createStore();
+      const session = createContractSession("session-1", {
+        expiresAt: "2026-01-01T00:00:00.000Z",
+        tokenSet: {
+          accessToken: "expired-access-token",
+          tokenType: "Bearer",
+          refreshToken: "refresh-token",
+          expiresAt: "2026-01-01T00:00:00.000Z",
+        },
+      });
+
+      await store.create(session);
+
+      assertEqual(await store.get("session-1"), session);
+    },
+  },
+  {
     name: "deletes expired auth sessions and returns the deleted count",
     run: async (options) => {
       const store = options.createStore();
 
       await store.create(
         createContractSession("session-1", {
-          expiresAt: "2026-01-01T00:00:00.000Z",
+          storageExpiresAt: "2026-01-01T00:00:00.000Z",
         }),
       );
 

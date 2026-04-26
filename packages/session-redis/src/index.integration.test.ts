@@ -37,7 +37,7 @@ describe.skipIf(!runIntegration)("RedisAuthSessionStore integration", () => {
       tokenSet: { accessToken: "new-token" },
     });
 
-    await store.create(createSession("expired", { expiresAt: "2026-01-01T00:00:00.000Z" }));
+    await store.create(createSession("expired", { storageExpiresAt: "2026-01-01T00:00:00.000Z" }));
 
     await expect(store.deleteExpired()).resolves.toBe(1);
     await expect(store.get("expired")).resolves.toBeNull();

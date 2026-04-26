@@ -90,7 +90,7 @@ export class RedisAuthSessionStore implements AuthSessionStore {
     await this.#client.set(
       key,
       JSON.stringify(session),
-      ttlMsUntil(session.expiresAt, this.#now()),
+      ttlMsUntil(session.storageExpiresAt, this.#now()),
     );
   }
 
