@@ -1,0 +1,19 @@
+{
+  "name": "@activityplug/core",
+  "version": "0.0.0",
+  "description": "Core contracts, types, IDs, capabilities, and service interfaces for ActivityPlug.",
+  "license": "Apache-2.0 OR MIT",
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    }
+  },
+  "scripts": {
+    "build": "tsdown src/index.ts --format esm --dts --clean"
+  }
+}

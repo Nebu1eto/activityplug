@@ -9,3 +9,27 @@ run = "pnpm exec hongdown --write"
 [tasks."format:md:check"]
 description = "Check Markdown formatting with Hongdown"
 run = "pnpm exec hongdown --check"
+
+[tasks.build]
+description = "Build every workspace package"
+run = "pnpm build"
+
+[tasks.typecheck]
+description = "Run TypeScript project reference checks"
+run = "pnpm typecheck"
+
+[tasks.lint]
+description = "Run type-aware linting"
+run = "pnpm lint"
+
+[tasks.test]
+description = "Run unit tests"
+run = "pnpm test"
+
+[tasks.check]
+description = "Run the full local validation suite"
+depends = ["build", "typecheck", "format:check", "lint", "test"]
+
+[tasks."format:check"]
+description = "Check TypeScript, JSON, and Markdown formatting"
+run = "pnpm format:check"

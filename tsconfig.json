@@ -1,0 +1,18 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/core" },
+    { "path": "./packages/server" },
+    { "path": "./packages/session-redis" },
+    { "path": "./packages/session-postgres" },
+    { "path": "./packages/mastodon-base" },
+    { "path": "./packages/mastodon" },
+    { "path": "./packages/misskey" },
+    { "path": "./packages/pleroma" },
+    { "path": "./packages/hollo" },
+    { "path": "./packages/hackerspub" },
+    { "path": "./packages/test-fixtures" },
+    { "path": "./examples/web-client" },
+    { "path": "./examples/bot" }
+  ]
+}

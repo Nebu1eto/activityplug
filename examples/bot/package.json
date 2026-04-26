@@ -1,0 +1,14 @@
+{
+  "name": "@activityplug/example-bot",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Sample bot for ActivityPlug library mode.",
+  "license": "Apache-2.0 OR MIT",
+  "type": "module",
+  "scripts": {
+    "build": "tsdown src/index.ts --format esm --dts --clean"
+  },
+  "dependencies": {
+    "@activityplug/core": "workspace:*"
+  }
+}
