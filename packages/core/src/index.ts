@@ -1,3 +1,6 @@
+export * from "./auth/oauth.js";
+export * from "./auth/service.js";
+export * from "./auth/types.js";
 export * from "./adapters/client.js";
 export * from "./adapters/discovery.js";
 export * from "./adapters/metadata.js";
