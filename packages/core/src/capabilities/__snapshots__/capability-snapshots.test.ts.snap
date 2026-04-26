@@ -1,0 +1,79 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`server capability snapshots > hackerspub > adapter 1`] = `"hackerspub"`;
+
+exports[`server capability snapshots > hackerspub > capabilities 1`] = `
+{
+  "accounts.lookupById": "supported:static",
+  "auth.oauth.authorizationCode": "unsupported:probe:HackersPub does not use OAuth.",
+  "auth.tokenInjection": "supported:static",
+  "posts.create": "supported:static",
+  "posts.quote": "supported:static",
+  "posts.read": "supported:static",
+}
+`;
+
+exports[`server capability snapshots > hollo > adapter 1`] = `"hollo"`;
+
+exports[`server capability snapshots > hollo > capabilities 1`] = `
+{
+  "accounts.lookupById": "supported:static",
+  "auth.oauth.authorizationCode": "supported:oauth",
+  "auth.tokenInjection": "supported:static",
+  "media.upload": "supported:static",
+  "posts.create": "supported:static",
+  "posts.quote": "supported:static",
+  "posts.read": "supported:static",
+  "social.reaction": "supported:static",
+  "streaming.notifications": "unsupported:static",
+  "streaming.timeline": "unsupported:static",
+}
+`;
+
+exports[`server capability snapshots > mastodon > adapter 1`] = `"mastodon"`;
+
+exports[`server capability snapshots > mastodon > capabilities 1`] = `
+{
+  "accounts.lookupById": "supported:static",
+  "auth.oauth.authorizationCode": "supported:oauth",
+  "auth.tokenInjection": "supported:static",
+  "media.upload": "supported:static",
+  "posts.create": "supported:static",
+  "posts.quote": "supported:static",
+  "posts.read": "supported:static",
+  "social.reaction": "unsupported:static",
+  "streaming.timeline": "supported:instance",
+}
+`;
+
+exports[`server capability snapshots > misskey > adapter 1`] = `"misskey"`;
+
+exports[`server capability snapshots > misskey > capabilities 1`] = `
+{
+  "accounts.lookupById": "supported:static",
+  "auth.oauth.authorizationCode": "supported:oauth",
+  "auth.tokenInjection": "supported:static",
+  "media.upload": "supported:static",
+  "posts.create": "supported:static",
+  "posts.quote": "supported:static",
+  "posts.read": "supported:static",
+  "social.reaction": "supported:static",
+  "streaming.timeline": "supported:static",
+}
+`;
+
+exports[`server capability snapshots > pleroma > adapter 1`] = `"pleroma"`;
+
+exports[`server capability snapshots > pleroma > capabilities 1`] = `
+{
+  "accounts.lookupById": "supported:static",
+  "auth.oauth.authorizationCode": "supported:static:Pleroma supports OAuth without metadata discovery.",
+  "auth.oauth.refreshToken": "supported:static:Pleroma supports refresh tokens without metadata discovery.",
+  "auth.tokenInjection": "supported:static",
+  "media.upload": "supported:static",
+  "posts.create": "supported:static",
+  "posts.quote": "supported:probe",
+  "posts.read": "supported:static",
+  "social.reaction": "supported:probe",
+}
+`;

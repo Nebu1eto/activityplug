@@ -48,7 +48,11 @@ importers:
         specifier: workspace:*
         version: link:../../packages/core
 
-  packages/core: {}
+  packages/core:
+    devDependencies:
+      '@activityplug/test-fixtures':
+        specifier: workspace:*
+        version: link:../test-fixtures
 
   packages/hackerspub:
     dependencies:

@@ -15,5 +15,8 @@
   },
   "scripts": {
     "build": "tsdown src/index.ts --format esm --dts --clean"
+  },
+  "devDependencies": {
+    "@activityplug/test-fixtures": "workspace:*"
   }
 }
