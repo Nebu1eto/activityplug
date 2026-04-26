@@ -17,6 +17,8 @@
     "build": "tsdown src/index.ts --format esm --dts --clean"
   },
   "dependencies": {
-    "@activityplug/server": "workspace:*"
+    "@activityplug/core": "workspace:*",
+    "@activityplug/server": "workspace:*",
+    "ioredis": "^5.8.2"
   }
 }
