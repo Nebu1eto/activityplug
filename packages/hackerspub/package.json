@@ -25,5 +25,8 @@
   "dependencies": {
     "@activityplug/core": "workspace:*",
     "ky": "^2.0.2"
+  },
+  "devDependencies": {
+    "@activityplug/test-fixtures": "workspace:*"
   }
 }

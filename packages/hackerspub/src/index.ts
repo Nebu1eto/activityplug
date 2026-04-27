@@ -3,6 +3,8 @@ import {
   capability,
   createCapabilitySet,
   createEntityRef,
+  decodePageCursor,
+  encodePageCursor,
   type Account,
   type ActivityPlugAdapter,
   type ActivityPlugErrorCode,
@@ -414,8 +416,9 @@ async function listActorPosts(
       id: accountId,
       first: page?.before === undefined ? limit : undefined,
       last: page?.before === undefined ? undefined : limit,
-      after: page?.after,
-      before: page?.before,
+      after: page?.after === undefined ? undefined : decodeAccountPostsCursor(page.after, context),
+      before:
+        page?.before === undefined ? undefined : decodeAccountPostsCursor(page.before, context),
     },
     context,
     options,
@@ -456,13 +459,52 @@ async function listActorPosts(
       hasPreviousPage: posts.pageInfo?.hasPreviousPage ?? false,
       ...(posts.pageInfo?.startCursor === null || posts.pageInfo?.startCursor === undefined
         ? {}
-        : { startCursor: posts.pageInfo.startCursor }),
+        : { startCursor: encodeAccountPostsCursor(posts.pageInfo.startCursor, context) }),
       ...(posts.pageInfo?.endCursor === null || posts.pageInfo?.endCursor === undefined
         ? {}
-        : { endCursor: posts.pageInfo.endCursor }),
-      raw: posts.pageInfo ?? {},
+        : { endCursor: encodeAccountPostsCursor(posts.pageInfo.endCursor, context) }),
+      ...(posts.pageInfo?.endCursor === null || posts.pageInfo?.endCursor === undefined
+        ? {}
+        : { rawNext: encodeAccountPostsCursor(posts.pageInfo.endCursor, context) }),
+      ...(posts.pageInfo?.startCursor === null || posts.pageInfo?.startCursor === undefined
+        ? {}
+        : { rawPrevious: encodeAccountPostsCursor(posts.pageInfo.startCursor, context) }),
+      raw: publicRelayPageInfo(posts.pageInfo),
     },
   };
+}
+
+function publicRelayPageInfo(
+  pageInfo:
+    | {
+        readonly hasNextPage?: boolean;
+        readonly hasPreviousPage?: boolean;
+        readonly startCursor?: string | null;
+        readonly endCursor?: string | null;
+      }
+    | undefined,
+): Record<string, unknown> {
+  return {
+    hasNextPage: pageInfo?.hasNextPage ?? false,
+    hasPreviousPage: pageInfo?.hasPreviousPage ?? false,
+  };
+}
+
+function encodeAccountPostsCursor(cursor: string, context: AdapterOperationContext): string {
+  return encodePageCursor({
+    adapter: context.adapterId,
+    origin: context.origin,
+    operation: "account.posts",
+    cursor,
+  });
+}
+
+function decodeAccountPostsCursor(cursor: string, context: AdapterOperationContext): string {
+  return decodePageCursor(cursor, {
+    adapter: context.adapterId,
+    origin: context.origin,
+    operation: "account.posts",
+  });
 }
 
 function actorFromResponse(
