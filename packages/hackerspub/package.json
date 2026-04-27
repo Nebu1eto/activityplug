@@ -7,6 +7,9 @@
     "dist"
   ],
   "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
   "exports": {
     ".": {
       "types": "./dist/index.d.mts",
@@ -14,7 +17,10 @@
     }
   },
   "scripts": {
-    "build": "tsdown src/index.ts --format esm --dts --clean"
+    "build": "tsdown",
+    "pack:dry-run": "pnpm pack --dry-run",
+    "prepack": "pnpm build",
+    "test": "node --experimental-strip-types ../../scripts/run-package-tests.ts"
   },
   "dependencies": {
     "@activityplug/core": "workspace:*"

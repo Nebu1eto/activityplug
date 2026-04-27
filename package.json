@@ -13,7 +13,9 @@
     "format:md:check": "hongdown --check",
     "hooks:install": "lefthook install",
     "lint": "oxlint --type-aware",
+    "pack:dry-run": "pnpm -r --sort --filter './packages/*' --if-present pack:dry-run",
     "test": "vitest run --passWithNoTests",
+    "test:packages": "pnpm -r --sort --if-present test",
     "test:integration": "ACTIVITYPLUG_INTEGRATION=1 vitest run --passWithNoTests",
     "typecheck": "pnpm -r --sort build && tsc -b"
   },
