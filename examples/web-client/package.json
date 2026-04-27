@@ -9,6 +9,8 @@
     "build": "tsdown src/index.ts --format esm --dts --clean"
   },
   "dependencies": {
-    "@activityplug/core": "workspace:*"
+    "@activityplug/core": "workspace:*",
+    "@activityplug/mastodon": "workspace:*",
+    "@activityplug/misskey": "workspace:*"
   }
 }

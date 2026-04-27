@@ -17,6 +17,7 @@
     "build": "tsdown src/index.ts --format esm --dts --clean"
   },
   "dependencies": {
-    "@activityplug/core": "workspace:*"
+    "@activityplug/core": "workspace:*",
+    "ky": "^2.0.2"
   }
 }

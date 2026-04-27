@@ -41,12 +41,24 @@ importers:
       '@activityplug/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@activityplug/mastodon':
+        specifier: workspace:*
+        version: link:../../packages/mastodon
+      '@activityplug/misskey':
+        specifier: workspace:*
+        version: link:../../packages/misskey
 
   examples/web-client:
     dependencies:
       '@activityplug/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@activityplug/mastodon':
+        specifier: workspace:*
+        version: link:../../packages/mastodon
+      '@activityplug/misskey':
+        specifier: workspace:*
+        version: link:../../packages/misskey
 
   packages/core:
     devDependencies:
@@ -83,12 +95,18 @@ importers:
       '@activityplug/core':
         specifier: workspace:*
         version: link:../core
+      ky:
+        specifier: ^2.0.2
+        version: 2.0.2
 
   packages/misskey:
     dependencies:
       '@activityplug/core':
         specifier: workspace:*
         version: link:../core
+      ky:
+        specifier: ^2.0.2
+        version: 2.0.2
 
   packages/pleroma:
     dependencies:
@@ -760,6 +778,10 @@ packages:
     resolution: {integrity: sha512-/sM3dO2FOzXjKQhJuo0Q173wf2KOo8t4I8vHy6lF9poUp7bKT0/NHE8fPX23PwfhnykfqnC2xRxOnVw5XuGIaA==}
     engines: {node: '>=6'}
     hasBin: true
+
+  ky@2.0.2:
+    resolution: {integrity: sha512-/GmXpo9F9W+f8n4Ivr2iH+7h7wL7jLbLKWkMlpflcCRb6kGjBfTlASEXaZ9qUgNTn4VgS0P2pwxxzQ4EM6Ulgg==}
+    engines: {node: '>=22'}
 
   lefthook-darwin-arm64@2.1.6:
     resolution: {integrity: sha512-hyB7eeiX78BS66f70byTJacDLC/xV1vgMv9n+idFUsrM7J3Udd/ag9Ag5NP3t0eN0EqQqAtrNnt35EH01lxnRQ==}
@@ -1643,6 +1665,8 @@ snapshots:
       - supports-color
 
   jsesc@3.1.0: {}
+
+  ky@2.0.2: {}
 
   lefthook-darwin-arm64@2.1.6:
     optional: true

@@ -1,0 +1,163 @@
+import { createActivityPlugClient } from "@activityplug/core";
+import { describe, expect, it } from "vitest";
+
+import { createMisskeyAdapter } from "./index.js";
+
+describe("Misskey auth adapter", () => {
+  it("uses the OAuth authorization-code flow and verifies credentials", async () => {
+    const requests: Request[] = [];
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({
+        fetch: mockFetch(async (request) => {
+          requests.push(request);
+          const url = new URL(request.url);
+          if (request.method === "POST" && url.pathname === "/oauth/token") {
+            expect(await request.text()).toBe(
+              "grant_type=authorization_code&client_id=https%3A%2F%2Fclient.example&code=code-1&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&code_verifier=verifier-1",
+            );
+            return jsonResponse({
+              access_token: "misskey-oauth-token",
+              token_type: "Bearer",
+              scope: "read:account write:notes",
+            });
+          }
+          if (request.method === "POST" && url.pathname === "/api/i") {
+            expect(request.headers.get("Authorization")).toBe("Bearer misskey-oauth-token");
+            expect(await request.json()).toEqual({});
+            return jsonResponse({
+              id: "9s4u",
+              username: "alice",
+              host: null,
+              name: "Alice",
+              url: "https://misskey.example/@alice",
+              avatarUrl: "https://misskey.example/avatar.webp",
+              bannerUrl: "https://misskey.example/banner.webp",
+              isBot: false,
+              isLocked: false,
+              followersCount: 12,
+              followingCount: 7,
+              notesCount: 42,
+            });
+          }
+          return jsonResponse({ error: "unexpected request" }, 404);
+        }),
+      }),
+      origin: "https://misskey.example",
+    });
+
+    const registeredClient = await client.auth.registerOAuthClient({
+      clientName: "ActivityPlug Test",
+      redirectUris: ["https://client.example/callback"],
+      scopes: ["read:account", "write:notes"],
+      website: "https://client.example",
+    });
+    const authorization = await client.auth.createAuthorizationUrl({
+      client: registeredClient,
+      redirectUri: "https://client.example/callback",
+      scopes: ["read:account", "write:notes"],
+      state: "state-1",
+      codeChallenge: "challenge-1",
+      codeChallengeMethod: "S256",
+    });
+    const session = await client.auth.exchangeAuthorizationCode({
+      client: registeredClient,
+      code: "code-1",
+      redirectUri: "https://client.example/callback",
+      codeVerifier: "verifier-1",
+    });
+    const verified = await client.auth.verifyCredentials(session);
+
+    expect(authorization.url.toString()).toBe(
+      "https://misskey.example/oauth/authorize?client_id=https%3A%2F%2Fclient.example&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&response_type=code&state=state-1&code_challenge=challenge-1&code_challenge_method=S256&scope=read%3Aaccount+write%3Anotes",
+    );
+    expect(session).toMatchObject({
+      adapter: "misskey",
+      origin: "https://misskey.example",
+      scopes: ["read:account", "write:notes"],
+    });
+    expect("tokenSet" in session).toBe(false);
+    expect(verified.account).toMatchObject({
+      username: "alice",
+      acct: "alice",
+      displayName: "Alice",
+      counts: {
+        followers: 12,
+        following: 7,
+        posts: 42,
+      },
+    });
+    expect(verified.account.ref).toMatchObject({
+      adapter: "misskey",
+      origin: "https://misskey.example",
+      rawId: "9s4u",
+      rawUrl: "https://misskey.example/@alice",
+    });
+    expect(requests.map((request) => `${request.method} ${new URL(request.url).pathname}`)).toEqual(
+      ["POST /oauth/token", "POST /api/i"],
+    );
+  });
+
+  it("verifies a library-mode bot with an injected token", async () => {
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({
+        fetch: mockFetch(async (request) => {
+          expect(new URL(request.url).pathname).toBe("/api/i");
+          expect(request.headers.get("Authorization")).toBe("Bearer bot-token");
+          return jsonResponse({
+            id: "bot-1",
+            username: "buildbot",
+            host: null,
+            name: "Build Bot",
+            isBot: true,
+            isLocked: false,
+          });
+        }),
+      }),
+      origin: "https://misskey.example",
+    });
+
+    const session = await client.auth.injectToken({
+      accessToken: "bot-token",
+      scopes: ["read:account"],
+    });
+    const verified = await client.auth.verifyCredentials(session);
+
+    expect(verified.account).toMatchObject({
+      username: "buildbot",
+      bot: true,
+    });
+  });
+
+  it("rejects OAuth start without the PKCE material Misskey requires", async () => {
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter(),
+      origin: "https://misskey.example",
+    });
+    const registeredClient = await client.auth.registerOAuthClient({
+      clientName: "ActivityPlug Test",
+      redirectUris: ["https://client.example/callback"],
+      website: "https://client.example",
+    });
+
+    await expect(
+      client.auth.createAuthorizationUrl({
+        client: registeredClient,
+        redirectUri: "https://client.example/callback",
+        state: "state-1",
+      }),
+    ).rejects.toThrowError(
+      expect.objectContaining({
+        code: "VALIDATION_FAILED",
+        context: expect.objectContaining({ operation: "auth.oauth.authorizationUrl" }),
+      }),
+    );
+  });
+});
+
+function mockFetch(handler: (request: Request) => Promise<Response>): typeof fetch {
+  return async (input, init) => handler(new Request(input, init));
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return Response.json(body, { status });
+}
