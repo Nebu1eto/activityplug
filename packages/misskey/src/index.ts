@@ -340,7 +340,7 @@ async function listAccountPosts(
   context: AdapterOperationContext,
   options: MisskeyAdapterOptions,
 ): Promise<Connection<Post>> {
-  const requestedLimit = page?.limit ?? 20;
+  const requestedLimit = Math.min(page?.limit ?? 20, 99);
   const fetchLimit = requestedLimit + 1;
   const response = await requestJson<readonly MisskeyNoteResponse[]>(
     clientFor(context, options)

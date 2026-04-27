@@ -35,6 +35,7 @@ export interface MastodonBaseAdapterOptions {
   readonly fetch?: typeof globalThis.fetch;
   readonly httpClient?: KyInstance;
   readonly supportsRefreshToken?: boolean;
+  readonly instanceEndpointRequired?: boolean;
 }
 
 export interface MastodonApplicationResponse {
@@ -217,7 +218,7 @@ async function getInstanceProfile(
   const client = clientFor(context, options);
   const [nodeInfo, instance] = await Promise.all([
     getNodeInfo(client, context, options),
-    getInstanceDocument(client, context),
+    getInstanceDocument(client, context, options),
   ]);
   const software = optionalObject(
     nodeInfo?.software,
@@ -369,6 +370,7 @@ async function getInstanceProfile(
 async function getInstanceDocument(
   client: KyInstance,
   context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
 ): Promise<MastodonInstanceResponse> {
   try {
     const response = await requestJson<MastodonInstanceResponse>(
@@ -385,18 +387,29 @@ async function getInstanceDocument(
     return response;
   } catch (error) {
     if (error instanceof ActivityPlugError && error.code === "NOT_FOUND") {
-      const response = await requestJson<MastodonInstanceResponse>(
-        client.get("api/v1/instance").json(),
-        "instance.get",
-        context,
-      );
-      assertRecordResponse(
-        response,
-        "Mastodon instance response is missing required fields.",
-        context,
-        "instance.get",
-      );
-      return response;
+      try {
+        const response = await requestJson<MastodonInstanceResponse>(
+          client.get("api/v1/instance").json(),
+          "instance.get",
+          context,
+        );
+        assertRecordResponse(
+          response,
+          "Mastodon instance response is missing required fields.",
+          context,
+          "instance.get",
+        );
+        return response;
+      } catch (fallbackError) {
+        if (
+          options.instanceEndpointRequired === false &&
+          fallbackError instanceof ActivityPlugError &&
+          fallbackError.code === "NOT_FOUND"
+        ) {
+          return {};
+        }
+        throw fallbackError;
+      }
     }
     throw error;
   }

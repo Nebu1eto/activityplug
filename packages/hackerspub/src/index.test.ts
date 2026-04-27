@@ -56,7 +56,7 @@ describe("HackersPub adapter", () => {
             data: {
               node: {
                 posts: {
-                  nodes: [fixture.post],
+                  edges: [{ node: fixture.post }],
                   pageInfo: {
                     hasNextPage: true,
                     hasPreviousPage: false,

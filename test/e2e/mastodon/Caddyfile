@@ -1,0 +1,7 @@
+mastodon.127.0.0.1.nip.io:443 {
+	tls internal
+	reverse_proxy mastodon-web-backend:3000 {
+		header_up Host {http.request.host}
+		header_up X-Forwarded-Proto https
+	}
+}

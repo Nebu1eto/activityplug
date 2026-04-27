@@ -17,6 +17,7 @@ export function createHolloAdapter(options: HolloAdapterOptions = {}): ActivityP
     kind: "mastodon-compatible",
     supportedSoftware: ["hollo"],
     supportsRefreshToken: false,
+    instanceEndpointRequired: false,
   });
 }
 

@@ -24,7 +24,8 @@
   },
   "dependencies": {
     "@activityplug/core": "workspace:*",
-    "@activityplug/mastodon-base": "workspace:*"
+    "@activityplug/mastodon-base": "workspace:*",
+    "ky": "^2.0.2"
   },
   "devDependencies": {
     "@activityplug/e2e-fixtures": "workspace:*",

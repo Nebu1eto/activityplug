@@ -105,6 +105,9 @@ importers:
       '@activityplug/mastodon-base':
         specifier: workspace:*
         version: link:../mastodon-base
+      ky:
+        specifier: ^2.0.2
+        version: 2.0.2
     devDependencies:
       '@activityplug/e2e-fixtures':
         specifier: workspace:*

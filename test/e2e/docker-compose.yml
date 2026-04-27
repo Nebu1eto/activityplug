@@ -53,16 +53,36 @@ services:
   mastodon-web-backend:
     image: ghcr.io/mastodon/mastodon:v4.3.9
     profiles: ["mastodon", "fediverse"]
-    command: ["bash", "-c", "bundle exec rails s -p 3000 -b 0.0.0.0"]
+    command:
+      ["bash", "-c", "bundle exec rails db:prepare && bundle exec rails s -p 3000 -b 0.0.0.0"]
     env_file: mastodon/mastodon.env
     networks: [fediverse]
-    ports:
-      - "127.0.0.1:41080:3000"
     depends_on:
       mastodon-db: { condition: service_healthy }
       mastodon-redis: { condition: service_healthy }
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:3000/health | grep -q OK"]
+      interval: 10s
+      retries: 30
+
+  mastodon-caddy:
+    image: caddy:2-alpine
+    profiles: ["mastodon", "fediverse"]
+    volumes:
+      - ./mastodon/Caddyfile:/etc/caddy/Caddyfile:ro
+    networks:
+      fediverse:
+        aliases: ["mastodon.127.0.0.1.nip.io"]
+    ports:
+      - "127.0.0.1:41080:443"
+    depends_on:
+      mastodon-web-backend: { condition: service_healthy }
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget --no-check-certificate -qO- https://mastodon.127.0.0.1.nip.io/health | grep -q OK",
+        ]
       interval: 10s
       retries: 30
 
@@ -118,7 +138,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "wget -qO- --post-data='{}' --header='Content-Type: application/json' http://127.0.0.1:3000/api/ping || exit 1",
+          "curl -sf -X POST -H 'Content-Type: application/json' --data '{}' http://127.0.0.1:3000/api/ping || exit 1",
         ]
       interval: 10s
       retries: 30
@@ -181,7 +201,7 @@ services:
       test: ["CMD", "pg_isready", "-U", "hollo"]
 
   hollo-web:
-    image: ghcr.io/fedify-dev/hollo:canary
+    image: ghcr.io/fedify-dev/hollo@sha256:93247b88f3b2d7ecac78806d0938772a6b6daea78a34fdf1dbe64d72129faa46
     profiles: ["hollo", "fediverse"]
     environment:
       DATABASE_URL: postgres://hollo:hollo@hollo-db:5432/hollo
@@ -234,7 +254,14 @@ services:
     build:
       context: ${ACTIVITYPLUG_SOFTWARE_ROOT:-../../../activityplug-docs}/hackerspub
       dockerfile: Dockerfile
-    command: ["sh", "-c", "deno task migrate && deno task start"]
+      args:
+        GIT_COMMIT: activityplug-e2e
+    command:
+      [
+        "sh",
+        "-c",
+        'deno task migrate && export INSTANCE_ACTOR_KEY="$(deno run --allow-read --allow-env scripts/keygen.ts)" && deno task start',
+      ]
     profiles: ["hackerspub", "fediverse"]
     env_file: hackerspub/hackerspub.env
     networks:

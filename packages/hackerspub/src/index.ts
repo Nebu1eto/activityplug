@@ -50,11 +50,14 @@ interface HackersPubPost {
   readonly iri?: string;
   readonly url?: string | null;
   readonly actor?: HackersPubActor;
-  readonly html?: string | null;
   readonly content?: string | null;
   readonly summary?: string | null;
   readonly visibility?: string;
-  readonly created?: string;
+  readonly published?: string;
+}
+
+interface HackersPubPostEdge {
+  readonly node?: HackersPubPost | null;
 }
 
 export function createHackersPubAdapter(
@@ -364,7 +367,7 @@ async function listActorPosts(
   const response = await graphql<{
     readonly node?: {
       readonly posts?: {
-        readonly nodes?: readonly HackersPubPost[];
+        readonly edges?: readonly HackersPubPostEdge[];
         readonly pageInfo?: {
           readonly hasNextPage?: boolean;
           readonly hasPreviousPage?: boolean;
@@ -379,26 +382,27 @@ async function listActorPosts(
         node(id: $id) {
           ... on Actor {
             posts(first: $first, last: $last, after: $after, before: $before) {
-              nodes {
-                id
-                uuid
-                iri
-                url
-                html
-                content
-                summary
-                visibility
-                created
-                actor {
+              edges {
+                node {
                   id
                   uuid
                   iri
-                  username
-                  handle
-                  rawName
-                  name
-                  avatarUrl
-                  created
+                  url
+                  content
+                  summary
+                  visibility
+                  published
+                  actor {
+                    id
+                    uuid
+                    iri
+                    username
+                    handle
+                    rawName
+                    name
+                    avatarUrl
+                    created
+                  }
                 }
               }
               pageInfo {
@@ -443,7 +447,7 @@ async function listActorPosts(
     );
   }
   const posts = response.node.posts;
-  if (!Array.isArray(posts.nodes) || !validPageInfo(posts.pageInfo)) {
+  if (!Array.isArray(posts.edges) || !validPageInfo(posts.pageInfo)) {
     throw activityPlugError(
       "REMOTE_ERROR",
       "HackersPub actor posts response is malformed.",
@@ -452,8 +456,9 @@ async function listActorPosts(
       posts,
     );
   }
+  const nodes = posts.edges.map((edge) => postNodeFromEdge(edge, context));
   return {
-    nodes: posts.nodes.map((post) => postFromResponse(post, context)),
+    nodes: nodes.map((post) => postFromResponse(post, context)),
     pageInfo: {
       hasNextPage: posts.pageInfo?.hasNextPage ?? false,
       hasPreviousPage: posts.pageInfo?.hasPreviousPage ?? false,
@@ -466,6 +471,22 @@ async function listActorPosts(
       raw: publicRelayPageInfo(posts.pageInfo),
     },
   };
+}
+
+function postNodeFromEdge(
+  edge: HackersPubPostEdge,
+  context: AdapterOperationContext,
+): HackersPubPost {
+  if (!isRecord(edge) || !isRecord(edge.node)) {
+    throw activityPlugError(
+      "REMOTE_ERROR",
+      "HackersPub actor posts edge response is malformed.",
+      context,
+      "account.posts",
+      edge,
+    );
+  }
+  return edge.node;
 }
 
 function publicRelayPageInfo(
@@ -591,7 +612,7 @@ function postFromResponse(response: HackersPubPost, context: AdapterOperationCon
     validatedRemoteId(response.id, response.uuid, response, context, "posts.read") === undefined ||
     typeof response.actor !== "object" ||
     response.actor === null ||
-    !nonEmptyString(response.created)
+    !nonEmptyString(response.published)
   ) {
     throw activityPlugError(
       "REMOTE_ERROR",
@@ -603,7 +624,7 @@ function postFromResponse(response: HackersPubPost, context: AdapterOperationCon
   }
   const post = response as unknown as HackersPubPost & {
     readonly actor: HackersPubActor;
-    readonly created: string;
+    readonly published: string;
   };
   const rawId = validatedRemoteId(post.id, post.uuid, post, context, "posts.read");
   if (rawId === undefined) {
@@ -615,10 +636,10 @@ function postFromResponse(response: HackersPubPost, context: AdapterOperationCon
       response,
     );
   }
-  if (post.html !== null && post.html !== undefined && typeof post.html !== "string") {
+  if (post.content !== null && post.content !== undefined && typeof post.content !== "string") {
     throw activityPlugError(
       "REMOTE_ERROR",
-      "HackersPub post response includes malformed HTML content.",
+      "HackersPub post response includes malformed content.",
       context,
       "posts.read",
       post,
@@ -636,12 +657,8 @@ function postFromResponse(response: HackersPubPost, context: AdapterOperationCon
     }),
     author: actorFromResponse(post.actor, context, "posts.read"),
     ...(postUrl === undefined ? {} : { url: postUrl }),
-    contentHtml:
-      typeof post.html === "string"
-        ? post.html
-        : escapeHtml(optionalPlainContent(post.content, post, context)),
-    ...renameOptionalStringField(post.content, "contentText", post, context, "posts.read"),
-    createdAt: post.created,
+    contentHtml: optionalHtmlContent(post.content, post, context),
+    createdAt: post.published,
     visibility: hackersPubVisibility(
       optionalString(post.visibility, "visibility", post, context, "posts.read"),
     ),
@@ -767,15 +784,6 @@ async function graphql<T>(
   }
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -884,7 +892,7 @@ function renameOptionalStringField(
   return parsed === undefined ? {} : { [field]: parsed };
 }
 
-function optionalPlainContent(
+function optionalHtmlContent(
   value: unknown,
   raw: unknown,
   context: AdapterOperationContext,

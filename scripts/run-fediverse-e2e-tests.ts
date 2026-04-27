@@ -3,6 +3,9 @@ import { spawn } from "node:child_process";
 const targets = process.env["ACTIVITYPLUG_FEDIVERSE_TARGETS"];
 const knownAdapters = new Set(["mastodon", "misskey", "pleroma", "hollo", "hackerspub"]);
 const strict = process.env["ACTIVITYPLUG_FEDIVERSE_E2E_REQUIRED"] === "1";
+const requiredAdapters = parseRequiredAdapters(
+  process.env["ACTIVITYPLUG_FEDIVERSE_REQUIRED_ADAPTERS"],
+);
 
 if (targets === undefined || targets.trim().length === 0) {
   skipOrFail("ACTIVITYPLUG_FEDIVERSE_TARGETS is not set.", "Skipping Fediverse E2E tests.");
@@ -16,6 +19,19 @@ const invalidTarget = parsedTargets.find((target) => !knownAdapters.has(target.a
 if (invalidTarget !== undefined) {
   console.error(`Unknown Fediverse E2E adapter target: ${invalidTarget.adapter}`);
   process.exit(1);
+}
+if (strict) {
+  const missingAdapters = requiredAdapters.filter(
+    (adapter) => !parsedTargets.some((target) => target.adapter === adapter),
+  );
+  if (missingAdapters.length > 0) {
+    console.error(
+      `ACTIVITYPLUG_FEDIVERSE_TARGETS is missing required strict targets: ${missingAdapters.join(
+        ", ",
+      )}.`,
+    );
+    process.exit(1);
+  }
 }
 
 const child = spawn(
@@ -71,6 +87,22 @@ function parseTargets(value: string): ReadonlyArray<{ readonly adapter: string }
       }`,
     );
   }
+}
+
+function parseRequiredAdapters(value: string | undefined): readonly string[] {
+  if (value === undefined || value.trim().length === 0) return [...knownAdapters];
+  const adapters = value
+    .split(",")
+    .map((adapter) => adapter.trim())
+    .filter((adapter) => adapter.length > 0);
+  if (adapters.length === 0) {
+    fail("ACTIVITYPLUG_FEDIVERSE_REQUIRED_ADAPTERS must include at least one adapter.");
+  }
+  const unknownAdapter = adapters.find((adapter) => !knownAdapters.has(adapter));
+  if (unknownAdapter !== undefined) {
+    fail(`Unknown required Fediverse E2E adapter: ${unknownAdapter}.`);
+  }
+  return adapters;
 }
 
 function fail(message: string): never {
