@@ -57,6 +57,17 @@ export class PostgresAuthSessionStore implements AuthSessionStore {
     await this.write({ ...session, ...patch });
   }
 
+  public async consume(sessionId: string): Promise<StoredAuthSession | null> {
+    const result = await this.#client.query<SessionRow>(
+      `delete from ${this.#tableName} where id = $1 returning data`,
+      [sessionId],
+    );
+    const session = result.rows[0]?.data;
+    if (session === undefined) return null;
+    if (isExpired(session, this.#now())) return null;
+    return session;
+  }
+
   public async delete(sessionId: string): Promise<void> {
     await this.#client.query(`delete from ${this.#tableName} where id = $1`, [sessionId]);
   }

@@ -72,6 +72,12 @@ class MemoryRedisClient implements RedisAuthSessionStoreClient {
     this.#values.delete(key);
   }
 
+  public async getdel(key: string): Promise<string | null> {
+    const value = this.#values.get(key) ?? null;
+    this.#values.delete(key);
+    return value;
+  }
+
   public async scan(
     _cursor: string,
     options: { readonly match: string },

@@ -1,15 +1,17 @@
 import { once } from "node:events";
 
 import {
+  ActivityPlugError,
   capability,
   createCapabilitySet,
   createEntityRef,
   type ActivityPlugAdapter,
   type OAuthCodeExchangeInput,
+  type StoredAuthSession,
 } from "@activityplug/core";
 import { describe, expect, it } from "vitest";
 
-import { InMemoryAuthSessionStore } from "../auth/session-store.js";
+import { InMemoryAuthSessionStore, type AuthSessionStore } from "../auth/session-store.js";
 import { createActivityPlugServer } from "./server.js";
 
 describe("createActivityPlugServer", () => {
@@ -17,6 +19,7 @@ describe("createActivityPlugServer", () => {
     const server = createActivityPlugServer({
       adapters: [testAdapter],
       sessions: new InMemoryAuthSessionStore(),
+      originPolicy: () => undefined,
     });
 
     const imported = await jsonRequest(
@@ -56,6 +59,7 @@ describe("createActivityPlugServer", () => {
       adapters: [testAdapter],
       sessions: new InMemoryAuthSessionStore(),
       cors: { origin: "https://client.example" },
+      originPolicy: () => undefined,
     });
     server.app.get("/constructor-probe", (context) => context.json({ ok: true }));
     const started = server.start({ hostname: "127.0.0.1", port: 0 });
@@ -87,6 +91,7 @@ describe("createActivityPlugServer", () => {
     const server = createActivityPlugServer({
       adapters: [oauthAdapter(exchanges), oauthAdapter([], "misskey")],
       sessions: new InMemoryAuthSessionStore(),
+      originPolicy: () => undefined,
     });
 
     const started = await server.service.auth.start({
@@ -131,12 +136,108 @@ describe("createActivityPlugServer", () => {
 
     expect(exchanges).toEqual([
       {
-        client: started.client,
+        client: {
+          ...started.client,
+          clientSecret: "registered-secret",
+        },
         code: "code-1",
         redirectUri: "https://client.example/callback",
         state: "state-1",
+        codeVerifier: expect.any(String),
       },
     ]);
+  });
+
+  it("consumes OAuth callback state once and keeps client secrets out of session metadata", async () => {
+    const sessions = new InMemoryAuthSessionStore();
+    const exchanges: OAuthCodeExchangeInput[] = [];
+    const server = createActivityPlugServer({
+      adapters: [oauthAdapter(exchanges)],
+      sessions,
+      originPolicy: () => undefined,
+    });
+
+    const started = await server.service.auth.start({
+      adapter: "mastodon",
+      origin: "https://example.test",
+      client: {
+        clientName: "ActivityPlug Test",
+        redirectUris: ["https://client.example/callback"],
+      },
+      redirectUri: "https://client.example/callback",
+      state: "state-secret",
+    });
+
+    const storedState = await sessions.get("oauth-state:state-secret");
+    expect(storedState?.metadata).toMatchObject({
+      activityplugKind: "oauth-callback-state",
+      client: {
+        clientId: "registered-client",
+      },
+    });
+    const storedClient = storedState?.metadata?.client as { readonly clientSecret?: string };
+    expect(storedClient.clientSecret).toBe(undefined);
+
+    await server.service.auth.exchange({
+      adapter: "mastodon",
+      origin: "https://example.test",
+      client: started.client,
+      redirectUri: "https://client.example/callback",
+      code: "code-secret",
+      state: "state-secret",
+    });
+    await expect(
+      server.service.auth.exchange({
+        adapter: "mastodon",
+        origin: "https://example.test",
+        client: started.client,
+        redirectUri: "https://client.example/callback",
+        code: "code-secret",
+        state: "state-secret",
+      }),
+    ).rejects.toThrowError(expect.objectContaining({ code: "VALIDATION_FAILED" }));
+  });
+
+  it("does not consume direct OAuth state when adapter or origin validation fails", async () => {
+    const exchanges: OAuthCodeExchangeInput[] = [];
+    const server = createActivityPlugServer({
+      adapters: [oauthAdapter(exchanges), oauthAdapter([], "misskey")],
+      sessions: new InMemoryAuthSessionStore(),
+      originPolicy: () => undefined,
+    });
+
+    const started = await server.service.auth.start({
+      adapter: "mastodon",
+      origin: "https://example.test",
+      client: {
+        clientName: "ActivityPlug Test",
+        redirectUris: ["https://client.example/callback"],
+      },
+      redirectUri: "https://client.example/callback",
+      state: "state-target",
+    });
+
+    await expect(
+      server.service.auth.exchange({
+        adapter: "misskey",
+        origin: "https://example.test",
+        client: started.client,
+        redirectUri: "https://client.example/callback",
+        code: "code-target",
+        state: "state-target",
+      }),
+    ).rejects.toThrowError(expect.objectContaining({ code: "VALIDATION_FAILED" }));
+
+    await server.service.auth.exchange({
+      adapter: "mastodon",
+      origin: "https://example.test",
+      client: started.client,
+      redirectUri: "https://client.example/callback",
+      code: "code-target",
+      state: "state-target",
+    });
+
+    expect(exchanges).toHaveLength(1);
   });
 
   it("binds OAuth state to the resolved adapter id when adapter input is omitted", async () => {
@@ -144,6 +245,7 @@ describe("createActivityPlugServer", () => {
     const server = createActivityPlugServer({
       adapters: [oauthAdapter(exchanges, "misskey")],
       sessions: new InMemoryAuthSessionStore(),
+      originPolicy: () => undefined,
     });
 
     const started = await server.service.auth.start({
@@ -171,10 +273,14 @@ describe("createActivityPlugServer", () => {
 
     expect(exchanges).toEqual([
       {
-        client: started.client,
+        client: {
+          ...started.client,
+          clientSecret: "registered-secret",
+        },
         code: "code-2",
         redirectUri: "https://client.example/callback",
         state: "state-2",
+        codeVerifier: expect.any(String),
       },
     ]);
   });
@@ -184,6 +290,7 @@ describe("createActivityPlugServer", () => {
     const server = createActivityPlugServer({
       adapters: [oauthAdapter(exchanges)],
       sessions: new InMemoryAuthSessionStore(),
+      originPolicy: () => undefined,
     });
 
     await server.service.auth.start({
@@ -217,6 +324,100 @@ describe("createActivityPlugServer", () => {
     });
 
     expect(exchanges).toHaveLength(1);
+  });
+
+  it("detects an instance without a preselected adapter", async () => {
+    const server = createActivityPlugServer({
+      adapters: [instanceAdapter("mastodon", "misskey"), instanceAdapter("misskey", "misskey")],
+      sessions: new InMemoryAuthSessionStore(),
+      originPolicy: () => undefined,
+    });
+
+    await expect(
+      server.service.instances.detect({ origin: "https://misskey.example" }),
+    ).resolves.toMatchObject({
+      software: { name: "misskey" },
+    });
+  });
+
+  it("requires an explicit server-side origin policy by default", async () => {
+    const server = createActivityPlugServer({
+      adapters: [instanceAdapter("mastodon", "mastodon")],
+      sessions: new InMemoryAuthSessionStore(),
+    });
+
+    await expect(
+      server.service.instances.get({ adapter: "mastodon", origin: "https://example.com" }),
+    ).rejects.toThrowError(expect.objectContaining({ code: "VALIDATION_FAILED" }));
+    await expect(
+      server.service.instances.get({ adapter: "mastodon", origin: "http://127.0.0.1" }),
+    ).rejects.toThrowError(expect.objectContaining({ code: "VALIDATION_FAILED" }));
+    await expect(
+      server.service.instances.get({ adapter: "mastodon", origin: "http://[::ffff:127.0.0.1]" }),
+    ).rejects.toThrowError(expect.objectContaining({ code: "VALIDATION_FAILED" }));
+    for (const origin of [
+      "http://100.64.0.1",
+      "http://198.18.0.1",
+      "http://224.0.0.1",
+      "http://[fe90::1]",
+      "http://[ff02::1]",
+    ]) {
+      await expect(
+        server.service.instances.get({ adapter: "mastodon", origin }),
+      ).rejects.toThrowError(expect.objectContaining({ code: "VALIDATION_FAILED" }));
+    }
+  });
+
+  it("applies origin policy before auth and session-backed remote operations", async () => {
+    const sessionStore = new InMemoryAuthSessionStore();
+    const server = createActivityPlugServer({
+      adapters: [testAdapter],
+      sessions: sessionStore,
+      originPolicy: ({ origin }) => {
+        if (origin === "http://127.0.0.1") {
+          throw new ActivityPlugError("VALIDATION_FAILED", "Blocked origin.");
+        }
+      },
+    });
+
+    await expect(
+      server.service.auth.importToken({
+        adapter: "mastodon",
+        origin: "http://127.0.0.1",
+        accessToken: "token",
+      }),
+    ).rejects.toThrowError(expect.objectContaining({ code: "VALIDATION_FAILED" }));
+
+    await sessionStore.create({
+      id: "session-internal",
+      adapter: "mastodon",
+      origin: "http://127.0.0.1",
+      scopes: [],
+      capabilities: {},
+      tokenSet: { accessToken: "token" },
+      createdAt: "2026-04-27T00:00:00.000Z",
+      updatedAt: "2026-04-27T00:00:00.000Z",
+    });
+
+    await expect(server.service.viewer({ sessionId: "session-internal" })).rejects.toThrowError(
+      expect.objectContaining({ code: "VALIDATION_FAILED" }),
+    );
+  });
+
+  it("requires a durable OAuth client secret store with durable sessions", () => {
+    expect(() =>
+      createActivityPlugServer({
+        adapters: [testAdapter],
+        sessions: durableSessionStore(),
+      }),
+    ).toThrowError(expect.objectContaining({ code: "VALIDATION_FAILED" }));
+    expect(() =>
+      createActivityPlugServer({
+        adapters: [testAdapter],
+        sessions: durableSessionStore(),
+        oauthClientSecrets: durableSecretStore(),
+      }),
+    ).not.toThrow();
   });
 });
 
@@ -278,6 +479,73 @@ function oauthAdapter(
           scopes: ["read"],
         };
       },
+    },
+  };
+}
+
+function instanceAdapter(
+  adapterId: "mastodon" | "misskey",
+  softwareName: string,
+): ActivityPlugAdapter {
+  return {
+    metadata: {
+      ...testAdapter.metadata,
+      id: adapterId,
+      kind: adapterId,
+      supportedSoftware: [adapterId],
+    },
+    instances: {
+      detect: async (_input, context) => ({
+        ref: createEntityRef({
+          adapter: context.adapterId,
+          origin: context.origin,
+          type: "instance",
+          id: context.origin,
+        }),
+        software: { name: softwareName },
+        languages: [],
+        capabilities: createCapabilitySet(),
+        raw: {},
+      }),
+      getProfile: async (_input, context) => ({
+        ref: createEntityRef({
+          adapter: context.adapterId,
+          origin: context.origin,
+          type: "instance",
+          id: context.origin,
+        }),
+        software: { name: softwareName },
+        languages: [],
+        capabilities: createCapabilitySet(),
+        raw: {},
+      }),
+    },
+  };
+}
+
+function durableSessionStore(): AuthSessionStore {
+  const store = new InMemoryAuthSessionStore();
+  return {
+    create: (session: StoredAuthSession) => store.create(session),
+    get: (sessionId: string) => store.get(sessionId),
+    consume: (sessionId: string) => store.consume(sessionId),
+    update: (sessionId: string, patch: Partial<StoredAuthSession>) =>
+      store.update(sessionId, patch),
+    delete: (sessionId: string) => store.delete(sessionId),
+    deleteExpired: (now?: Date) => store.deleteExpired(now),
+  };
+}
+
+function durableSecretStore() {
+  const values = new Map<string, string>();
+  return {
+    put: async (id: string, secret: string) => {
+      values.set(id, secret);
+    },
+    take: async (id: string) => {
+      const value = values.get(id) ?? null;
+      values.delete(id);
+      return value;
     },
   };
 }

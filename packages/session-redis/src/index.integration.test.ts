@@ -57,6 +57,7 @@ function redisClient(redis: Redis): RedisAuthSessionStoreClient {
     del: async (key) => {
       await redis.del(key);
     },
+    getdel: async (key) => redis.getdel(key),
     scan: async (cursor, options) => {
       const [nextCursor, keys] = await redis.scan(
         cursor,

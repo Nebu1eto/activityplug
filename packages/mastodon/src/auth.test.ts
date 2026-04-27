@@ -149,6 +149,10 @@ describe("Mastodon auth adapter", () => {
             return jsonResponse({
               links: [
                 {
+                  rel: "http://nodeinfo.diaspora.software/ns/schema/2.0",
+                  href: "https://mastodon.example/nodeinfo/2.0",
+                },
+                {
                   rel: "http://nodeinfo.diaspora.software/ns/schema/2.1",
                   href: "https://mastodon.example/nodeinfo/2.1",
                 },
@@ -228,6 +232,32 @@ describe("Mastodon auth adapter", () => {
     });
     expect(requests).toContain("GET /.well-known/nodeinfo");
     expect(requests).toContain("GET /api/v1/accounts/109/statuses");
+  });
+
+  it("rejects cross-origin NodeInfo links", async () => {
+    const client = createActivityPlugClient({
+      adapter: createMastodonAdapter({
+        fetch: mockFetch(async (request) => {
+          const url = new URL(request.url);
+          if (url.pathname === "/.well-known/nodeinfo") {
+            return jsonResponse({
+              links: [
+                {
+                  rel: "http://nodeinfo.diaspora.software/ns/schema/2.1",
+                  href: "http://127.0.0.1/nodeinfo/2.1",
+                },
+              ],
+            });
+          }
+          return jsonResponse({ error: "unexpected request" }, 404);
+        }),
+      }),
+      origin: "https://mastodon.example",
+    });
+
+    await expect(client.instances.getProfile()).rejects.toThrowError(
+      expect.objectContaining({ code: "REMOTE_ERROR" }),
+    );
   });
 });
 

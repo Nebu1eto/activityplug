@@ -5,6 +5,7 @@ export interface RedisAuthSessionStoreClient {
   readonly get: (key: string) => Promise<string | null>;
   readonly set: (key: string, value: string, ttlMs?: number) => Promise<void>;
   readonly del: (key: string) => Promise<void>;
+  readonly getdel: (key: string) => Promise<string | null>;
   readonly scan: (
     cursor: string,
     options: RedisAuthSessionStoreScanOptions,
@@ -57,6 +58,15 @@ export class RedisAuthSessionStore implements AuthSessionStore {
     const session = await this.get(sessionId);
     if (session === null) return;
     await this.write({ ...session, ...patch });
+  }
+
+  public async consume(sessionId: string): Promise<StoredAuthSession | null> {
+    const key = this.#key(sessionId);
+    const raw = await this.#client.getdel(key);
+    if (raw === null) return null;
+    const session = JSON.parse(raw) as StoredAuthSession;
+    if (isExpired(session, this.#now())) return null;
+    return session;
   }
 
   public async delete(sessionId: string): Promise<void> {

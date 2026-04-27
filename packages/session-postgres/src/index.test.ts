@@ -109,6 +109,11 @@ class MemoryPostgresClient implements PostgresAuthSessionStoreClient {
       }
       return { rows: deletedRows as Row[] };
     }
+    if (sql.includes("returning data")) {
+      const row = this.#rows.get(values[0] as string);
+      this.#rows.delete(values[0] as string);
+      return { rows: row === undefined ? [] : ([{ data: row.data }] as Row[]) };
+    }
     if (sql.startsWith("delete from")) {
       this.#rows.delete(values[0] as string);
       return { rows: [] };

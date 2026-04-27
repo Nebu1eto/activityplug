@@ -23,6 +23,12 @@ export interface OAuthCallbackRequestBody {
   };
 }
 
+export interface OAuthPkcePair {
+  readonly codeVerifier: string;
+  readonly codeChallenge: string;
+  readonly codeChallengeMethod: "S256";
+}
+
 export type OAuthCallbackInput =
   | string
   | URL
@@ -62,6 +68,28 @@ export function parseOAuthCallback(callbackUrl: OAuthCallbackInput): OAuthCallba
     ...(params.get("iss") === null ? {} : { issuer: params.get("iss") ?? undefined }),
     raw: new URLSearchParams(params),
   };
+}
+
+export async function createOAuthPkcePair(): Promise<OAuthPkcePair> {
+  const verifierBytes = new Uint8Array(32);
+  crypto.getRandomValues(verifierBytes);
+  const codeVerifier = base64Url(verifierBytes);
+  const challengeBytes = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(codeVerifier),
+  );
+  return {
+    codeVerifier,
+    codeChallenge: base64Url(new Uint8Array(challengeBytes)),
+    codeChallengeMethod: "S256",
+  };
+}
+
+function base64Url(bytes: Uint8Array): string {
+  return btoa(String.fromCodePoint(...bytes))
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replaceAll("=", "");
 }
 
 function callbackParams(callbackUrl: OAuthCallbackInput): URLSearchParams {

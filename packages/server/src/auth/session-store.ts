@@ -4,6 +4,7 @@ import {
 } from "@activityplug/core";
 
 export interface AuthSessionStore extends CoreAuthSessionStore {
+  readonly consume: (sessionId: string) => Promise<StoredAuthSession | null>;
   readonly deleteExpired: (now?: Date) => Promise<number>;
 }
 
@@ -30,6 +31,14 @@ export class InMemoryAuthSessionStore implements AuthSessionStore {
       this.#sessions.delete(sessionId);
       return null;
     }
+    return session;
+  }
+
+  public async consume(sessionId: string): Promise<StoredAuthSession | null> {
+    const session = this.#sessions.get(sessionId);
+    if (session === undefined) return null;
+    this.#sessions.delete(sessionId);
+    if (isExpired(session, this.#now())) return null;
     return session;
   }
 

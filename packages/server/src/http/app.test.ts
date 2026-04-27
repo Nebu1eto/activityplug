@@ -396,6 +396,24 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
     });
 
     await expect(
+      jsonRequest(app.request(`/api/v1/accounts/${encodeURIComponent(accountId)}/posts`)),
+    ).resolves.toMatchObject({
+      data: [
+        {
+          ref: { rawId: "post-1" },
+          author: { rawId: "1" },
+          contentHtml: "<p>Hello</p>",
+        },
+      ],
+      pageInfo: {
+        hasNextPage: false,
+        hasPreviousPage: false,
+        rawNext: "next-cursor",
+        rawPrevious: "previous-cursor",
+      },
+    });
+
+    await expect(
       jsonRequest(
         app.request("/graphql", {
           method: "POST",
@@ -446,6 +464,66 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
           },
         },
       },
+    });
+  });
+
+  it("keeps GraphQL handle misses nullable and rejects unsafe page limits", async () => {
+    const app = createActivityPlugApp({
+      service: createTestService({
+        accounts: {
+          get: async () => testViewerAccount,
+          lookup: async () => null,
+          posts: async () => ({
+            nodes: [],
+            pageInfo: { hasNextPage: false, hasPreviousPage: false },
+          }),
+        },
+      }),
+    });
+
+    await expect(
+      jsonRequest(
+        app.request("/graphql", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            query: `query {
+              accountByHandle(origin: "https://example.test", handle: "missing@example.test") {
+                ref { rawId }
+              }
+            }`,
+          }),
+        }),
+      ),
+    ).resolves.toEqual({
+      data: {
+        accountByHandle: null,
+      },
+    });
+
+    const httpResponse = await app.request(
+      `/api/v1/accounts/${testViewerAccount.ref.id}/posts?limit=201`,
+    );
+    expect(httpResponse.status).toBe(400);
+
+    const graphqlResponse = await jsonRequest(
+      app.request("/graphql", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: `query($id: ID!) { accountPosts(id: $id, page: { limit: 201 }) { nodes { contentHtml } } }`,
+          variables: { id: testViewerAccount.ref.id },
+        }),
+      }),
+    );
+    expect(graphqlResponse).toMatchObject({
+      errors: [
+        expect.objectContaining({
+          extensions: expect.objectContaining({
+            activityplug: expect.objectContaining({ code: "VALIDATION_FAILED" }),
+          }),
+        }),
+      ],
     });
   });
 
@@ -854,7 +932,7 @@ const publicOperationMatrix = [
     httpMethod: "get",
     httpPath: "/api/v1/accounts/{id}/posts",
     httpRequestRef: undefined,
-    httpResponseDataRef: "#/components/schemas/PostConnection",
+    httpResponseDataRef: "#/components/schemas/Post",
   },
   {
     graphqlType: "mutation",
@@ -1233,7 +1311,9 @@ function responseDataRef(operation: unknown): string | undefined {
       | { readonly properties?: { readonly data?: unknown } }
       | undefined
   )?.properties?.data;
-  return refName(dataSchema);
+  return (
+    refName(dataSchema) ?? refName((dataSchema as { readonly items?: unknown } | undefined)?.items)
+  );
 }
 
 function jsonSchema(value: unknown): unknown {

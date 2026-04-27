@@ -760,7 +760,10 @@ function clientFor(
   context: AdapterOperationContext,
   options: HackersPubAdapterOptions,
 ): KyInstance {
-  return options.httpClient ?? ky.create({ prefix: context.origin, fetch: options.fetch });
+  return (
+    options.httpClient ??
+    ky.create({ prefix: context.origin, fetch: options.fetch, redirect: "manual" })
+  );
 }
 
 function activityPlugError(

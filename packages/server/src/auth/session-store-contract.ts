@@ -37,6 +37,22 @@ export const authSessionStoreContractCases: readonly AuthSessionStoreContractCas
     },
   },
   {
+    name: "atomically consumes auth sessions",
+    run: async (options) => {
+      const store = options.createStore();
+      const session = createContractSession("session-1");
+
+      await store.create(session);
+
+      const consumed = await Promise.all([store.consume("session-1"), store.consume("session-1")]);
+      assertEqual(
+        consumed.filter((item) => item !== null),
+        [session],
+      );
+      assertEqual(await store.get("session-1"), null);
+    },
+  },
+  {
     name: "updates auth sessions",
     run: async (options) => {
       const store = options.createStore();

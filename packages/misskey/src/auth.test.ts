@@ -162,7 +162,16 @@ describe("Misskey auth adapter", () => {
           requests.push(`${request.method} ${url.pathname}`);
           if (url.pathname === "/.well-known/nodeinfo") {
             return jsonResponse({
-              links: [{ href: "https://misskey.example/nodeinfo/2.1" }],
+              links: [
+                {
+                  rel: "http://nodeinfo.diaspora.software/ns/schema/2.0",
+                  href: "https://misskey.example/nodeinfo/2.0",
+                },
+                {
+                  rel: "http://nodeinfo.diaspora.software/ns/schema/2.1",
+                  href: "https://misskey.example/nodeinfo/2.1",
+                },
+              ],
             });
           }
           if (url.pathname === "/nodeinfo/2.1") {
@@ -234,6 +243,27 @@ describe("Misskey auth adapter", () => {
       visibility: "unlisted",
     });
     expect(requests).toContain("POST /api/users/notes");
+  });
+
+  it("rejects cross-origin NodeInfo links", async () => {
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({
+        fetch: mockFetch(async (request) => {
+          const url = new URL(request.url);
+          if (url.pathname === "/.well-known/nodeinfo") {
+            return jsonResponse({
+              links: [{ href: "http://127.0.0.1/nodeinfo/2.1" }],
+            });
+          }
+          return jsonResponse({ error: "unexpected request" }, 404);
+        }),
+      }),
+      origin: "https://misskey.example",
+    });
+
+    await expect(client.instances.getProfile()).rejects.toThrowError(
+      expect.objectContaining({ code: "REMOTE_ERROR" }),
+    );
   });
 });
 

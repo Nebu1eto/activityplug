@@ -30,7 +30,7 @@ import {
   serializeInstanceProfile,
   serializePostConnection,
 } from "../api/service.js";
-import { type TokenImportOptions } from "../http/app.js";
+import { maxPageLimit, type TokenImportOptions } from "../http/app.js";
 
 export interface GraphQLContext {
   readonly service: ActivityPlugApiService;
@@ -600,6 +600,7 @@ builder.queryType({
     }),
     accountByHandle: unsupportedGraphQLField(t, {
       type: AccountType,
+      nullable: true,
       operation: "account.lookup",
       args: {
         origin: t.arg.string({ required: true }),
@@ -623,16 +624,7 @@ builder.queryType({
               ? {}
               : { adapter: args.adapter }),
           });
-          if (account === null) {
-            throw new ActivityPlugError("NOT_FOUND", "Account was not found.", {
-              ...(args.adapter === null || args.adapter === undefined
-                ? {}
-                : { adapter: args.adapter }),
-              origin: args.origin,
-              operation: "account.lookup",
-            });
-          }
-          return serializeAccount(account);
+          return account === null ? null : serializeAccount(account);
         }),
     }),
     accountPosts: unsupportedGraphQLField(t, {
@@ -1098,10 +1090,14 @@ function normalizePageInput(
     | undefined,
 ): { readonly after?: string; readonly before?: string; readonly limit?: number } | undefined {
   if (input === null || input === undefined) return undefined;
-  if (input.limit !== null && input.limit !== undefined && input.limit < 1) {
+  if (
+    input.limit !== null &&
+    input.limit !== undefined &&
+    (input.limit < 1 || input.limit > maxPageLimit)
+  ) {
     throw new ActivityPlugError(
       "VALIDATION_FAILED",
-      "GraphQL page input field must be a positive integer: limit.",
+      `GraphQL page input field must be an integer between 1 and ${maxPageLimit}: limit.`,
     );
   }
   if (input.after !== null && input.after !== undefined && input.after.length === 0) {

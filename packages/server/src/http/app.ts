@@ -19,7 +19,7 @@ import {
   serializeCapabilitySetPayload,
   serializeInstanceProfile,
   serializeParsedAuthCallback,
-  serializePostConnection,
+  serializePost,
   type ActivityPlugApiService,
   type AuthExchangeRequest,
   type AuthParseCallbackRequest,
@@ -27,6 +27,8 @@ import {
   type ImportTokenRequest,
 } from "../api/service.js";
 import { createGraphQLSchema, type GraphQLContext } from "../graphql/schema.js";
+
+export const maxPageLimit = 200;
 
 export interface CreateActivityPlugAppOptions {
   readonly service: ActivityPlugApiService;
@@ -248,14 +250,16 @@ export function createActivityPlugApp(options: CreateActivityPlugAppOptions): Ho
   );
   app.get("/api/v1/accounts/:id/posts", async (context) => {
     const page = pageQuery(context);
+    const connection = await options.service.accounts.posts({
+      id: context.req.param("id"),
+      ...(page === undefined ? {} : { page }),
+    });
     return context.json(
       data(
-        serializePostConnection(
-          await options.service.accounts.posts({
-            id: context.req.param("id"),
-            ...(page === undefined ? {} : { page }),
-          }),
-        ),
+        connection.nodes.map((post) => serializePost(post)),
+        {
+          pageInfo: connection.pageInfo,
+        },
       ),
     );
   });
@@ -335,8 +339,11 @@ const unsupportedHttpRoutes = [
   { method: "get", path: "/api/v1/streams/notifications", operation: "streaming.notifications" },
 ] as const;
 
-function data<T>(value: T): { readonly data: T } {
-  return { data: value };
+function data<T, Extra extends object = Record<never, never>>(
+  value: T,
+  extra?: Extra,
+): { readonly data: T } & Extra {
+  return { data: value, ...(extra ?? ({} as Extra)) };
 }
 
 function bearerSessionId(authorization: string | undefined): string {
@@ -412,10 +419,10 @@ function optionalPageCursor(
 function optionalLimit(value: string | undefined): { readonly limit?: number } {
   if (value === undefined || value.length === 0) return {};
   const limit = Number(value);
-  if (!Number.isInteger(limit) || limit < 1) {
+  if (!Number.isInteger(limit) || limit < 1 || limit > maxPageLimit) {
     throw new ActivityPlugError(
       "VALIDATION_FAILED",
-      "Request query parameter must be a positive integer: limit.",
+      `Request query parameter must be an integer between 1 and ${maxPageLimit}: limit.`,
     );
   }
   return { limit };

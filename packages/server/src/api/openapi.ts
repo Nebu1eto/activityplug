@@ -149,6 +149,8 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
           },
         ),
         PostConnection: connectionSchema({ $ref: "#/components/schemas/Post" }),
+        Notification: { type: "object", additionalProperties: true },
+        List: { type: "object", additionalProperties: true },
         TimelineConnection: connectionSchema({ type: "object", additionalProperties: true }),
         NotificationConnection: connectionSchema({ type: "object", additionalProperties: true }),
         ListConnection: connectionSchema({ type: "object", additionalProperties: true }),
@@ -538,10 +540,10 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
               name: "limit",
               in: "query",
               required: false,
-              schema: { type: "integer", minimum: 1 },
+              schema: { type: "integer", minimum: 1, maximum: 200 },
             },
           ],
-          dataRef("PostConnection"),
+          listRef("Post"),
         ),
       },
       "/api/v1/accounts/{id}/relationships": {
@@ -582,7 +584,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
           "posts",
           [idPathParameter()],
           false,
-          listRef("PostConnection"),
+          listRef("Post"),
         ),
       },
       "/api/v1/posts/{id}/favourite": {
@@ -618,13 +620,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         ),
       },
       "/api/v1/timelines/home": {
-        get: unsupportedOperation(
-          "getHomeTimeline",
-          "timelines",
-          undefined,
-          true,
-          listRef("TimelineConnection"),
-        ),
+        get: unsupportedOperation("getHomeTimeline", "timelines", undefined, true, listRef("Post")),
       },
       "/api/v1/timelines/public": {
         get: unsupportedOperation(
@@ -632,7 +628,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
           "timelines",
           undefined,
           false,
-          listRef("TimelineConnection"),
+          listRef("Post"),
         ),
       },
       "/api/v1/timelines/local": {
@@ -641,7 +637,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
           "timelines",
           undefined,
           false,
-          listRef("TimelineConnection"),
+          listRef("Post"),
         ),
       },
       "/api/v1/timelines/hashtags/{tag}": {
@@ -650,7 +646,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
           "timelines",
           [{ name: "tag", in: "path", required: true, schema: { type: "string" } }],
           false,
-          listRef("TimelineConnection"),
+          listRef("Post"),
         ),
       },
       "/api/v1/timelines/lists/{id}": {
@@ -659,7 +655,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
           "timelines",
           [idPathParameter()],
           true,
-          listRef("TimelineConnection"),
+          listRef("Post"),
         ),
       },
       "/api/v1/media": {
@@ -688,7 +684,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
           "notifications",
           undefined,
           true,
-          listRef("NotificationConnection"),
+          listRef("Notification"),
         ),
       },
       "/api/v1/notifications/unread-count": {
@@ -706,7 +702,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         post: unsupportedOperation("clearNotifications", "notifications", undefined, true),
       },
       "/api/v1/lists": {
-        get: unsupportedOperation("getLists", "lists", undefined, true, listRef("ListConnection")),
+        get: unsupportedOperation("getLists", "lists", undefined, true, listRef("List")),
         post: unsupportedOperation("createList", "lists", undefined, true),
       },
       "/api/v1/lists/{id}": {
@@ -720,7 +716,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
           "lists",
           [idPathParameter()],
           true,
-          listRef("AccountConnection"),
+          listRef("Account"),
         ),
         post: unsupportedOperation("addListAccount", "lists", [idPathParameter()], true),
         delete: unsupportedOperation("removeListAccount", "lists", [idPathParameter()], true),
@@ -731,7 +727,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
           "follow-requests",
           undefined,
           true,
-          listRef("AccountConnection"),
+          listRef("Account"),
         ),
       },
       "/api/v1/follow-requests/{id}/accept": {
@@ -990,7 +986,10 @@ function dataRef(name: string): unknown {
 }
 
 function listRef(name: string): unknown {
-  return dataRef(name);
+  return objectSchema(["data", "pageInfo"], {
+    data: { type: "array", items: { $ref: `#/components/schemas/${name}` } },
+    pageInfo: { $ref: "#/components/schemas/PageInfo" },
+  });
 }
 
 function dataSchema(schema: unknown): unknown {

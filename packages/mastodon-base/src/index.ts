@@ -427,13 +427,19 @@ async function getNodeInfo(
             raw: link,
           });
         }
-        return optionalString(link.href, "links.href", link, context, "instance.nodeInfo");
+        return {
+          href: optionalString(link.href, "links.href", link, context, "instance.nodeInfo"),
+          rel: optionalString(link.rel, "links.rel", link, context, "instance.nodeInfo"),
+        };
       })
-      .find((value) => value !== undefined);
+      .filter((link) => link.href !== undefined)
+      .toSorted(
+        (left, right) => nodeInfoRelPriority(right.rel) - nodeInfoRelPriority(left.rel),
+      )[0]?.href;
     if (href === undefined) return undefined;
     const nodeInfoUrl = absoluteRemoteUrl(href, context, "instance.nodeInfo");
     const nodeInfo = await requestJson<NodeInfoResponse>(
-      ky.get(nodeInfoUrl, { fetch: options.fetch }).json(),
+      ky.get(nodeInfoUrl, { fetch: options.fetch, redirect: "manual" }).json(),
       "instance.nodeInfo",
       context,
     );
@@ -448,6 +454,13 @@ async function getNodeInfo(
     if (error instanceof ActivityPlugError && error.code === "NOT_FOUND") return undefined;
     throw error;
   }
+}
+
+function nodeInfoRelPriority(rel: string | undefined): number {
+  if (rel === "http://nodeinfo.diaspora.software/ns/schema/2.1") return 3;
+  if (rel === "http://nodeinfo.diaspora.software/ns/schema/2.0") return 2;
+  if (rel === "http://nodeinfo.diaspora.software/ns/schema/1.0") return 1;
+  return 0;
 }
 
 async function getAccountById(
@@ -1160,7 +1173,10 @@ function clientFor(
   context: AuthAdapterContext | AdapterOperationContext,
   options: MastodonBaseAdapterOptions,
 ): KyInstance {
-  return options.httpClient ?? ky.create({ prefix: context.origin, fetch: options.fetch });
+  return (
+    options.httpClient ??
+    ky.create({ prefix: context.origin, fetch: options.fetch, redirect: "manual" })
+  );
 }
 
 function authorizationHeader(tokenSet: TokenSet): Record<string, string> {
@@ -1585,6 +1601,16 @@ function absoluteRemoteUrl(
       throw new ActivityPlugError(
         "REMOTE_ERROR",
         "Remote NodeInfo link href used an unsupported scheme.",
+        {
+          ...errorContext(context, operation),
+          raw: href,
+        },
+      );
+    }
+    if (url.origin !== new URL(context.origin).origin) {
+      throw new ActivityPlugError(
+        "REMOTE_ERROR",
+        "Remote NodeInfo link href must stay on the instance origin.",
         {
           ...errorContext(context, operation),
           raw: href,

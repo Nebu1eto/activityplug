@@ -68,6 +68,7 @@ export interface AuthService {
 export interface AuthSessionStore {
   readonly create: (session: StoredAuthSession) => Promise<void>;
   readonly get: (sessionId: string) => Promise<StoredAuthSession | null>;
+  readonly consume?: (sessionId: string) => Promise<StoredAuthSession | null>;
   readonly update: (sessionId: string, patch: Partial<StoredAuthSession>) => Promise<void>;
   readonly delete: (sessionId: string) => Promise<void>;
 }
@@ -319,12 +320,26 @@ class InMemoryAuthSessionStore implements AuthSessionStore {
   }
 
   public async get(sessionId: string): Promise<StoredAuthSession | null> {
-    return this.#sessions.get(sessionId) ?? null;
+    const session = this.#sessions.get(sessionId);
+    if (session === undefined) return null;
+    if (isStorageExpired(session)) {
+      this.#sessions.delete(sessionId);
+      return null;
+    }
+    return session;
+  }
+
+  public async consume(sessionId: string): Promise<StoredAuthSession | null> {
+    const session = this.#sessions.get(sessionId);
+    if (session === undefined) return null;
+    this.#sessions.delete(sessionId);
+    if (isStorageExpired(session)) return null;
+    return session;
   }
 
   public async update(sessionId: string, patch: Partial<StoredAuthSession>): Promise<void> {
-    const session = this.#sessions.get(sessionId);
-    if (session === undefined) return;
+    const session = await this.get(sessionId);
+    if (session === null) return;
     this.#sessions.set(sessionId, { ...session, ...patch });
   }
 
@@ -346,4 +361,9 @@ function mergeRefreshTokenSet(previous: TokenSet, next: TokenSet): TokenSet {
 function isExpired(session: StoredAuthSession): boolean {
   if (session.expiresAt === undefined) return false;
   return Date.parse(session.expiresAt) <= Date.now();
+}
+
+function isStorageExpired(session: StoredAuthSession): boolean {
+  if (session.storageExpiresAt === undefined) return false;
+  return Date.parse(session.storageExpiresAt) <= Date.now();
 }
