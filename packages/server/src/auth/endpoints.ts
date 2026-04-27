@@ -8,6 +8,7 @@ import {
   type OAuthAuthorizationRequest,
   type OAuthCallbackInput,
   type OAuthCallbackResult,
+  type OAuthCallbackStateBinding,
   type OAuthClientRegistration,
   type OAuthClientRegistrationInput,
   type OAuthCodeExchangeInput,
@@ -38,6 +39,8 @@ export type AuthExchangeInput =
   | (Omit<OAuthCodeExchangeInput, "code" | "state"> & {
       readonly callback: OAuthCallbackInput;
       readonly expectedState: string;
+      readonly expectedBinding?: OAuthCallbackStateBinding;
+      readonly actualBinding?: OAuthCallbackStateBinding;
     })
   | OAuthCodeExchangeInput;
 
@@ -74,7 +77,13 @@ export function createAuthEndpointHandlers(client: AuthEndpointClient): AuthEndp
     exchange: async (input) => {
       if ("callback" in input) {
         const callback = parseOAuthCallback(input.callback);
-        validateOAuthCallbackState(callback, { expectedState: input.expectedState });
+        validateOAuthCallbackState(callback, {
+          expectedState: input.expectedState,
+          ...(input.expectedBinding === undefined
+            ? {}
+            : { expectedBinding: input.expectedBinding }),
+          ...(input.actualBinding === undefined ? {} : { actualBinding: input.actualBinding }),
+        });
         if (!callback.ok) {
           throw new ActivityPlugError(
             "VALIDATION_FAILED",

@@ -94,6 +94,48 @@ describe("server auth endpoint handlers", () => {
       },
     ]);
   });
+
+  it("validates callback state bindings before exchanging an OAuth code", async () => {
+    const handlers = createAuthEndpointHandlers({
+      auth: {
+        ...unsupportedAuthService(),
+        exchangeAuthorizationCode: async () => {
+          throw new Error("exchange must not run for a mismatched callback binding");
+        },
+      },
+    });
+
+    await expect(
+      handlers.exchange({
+        client: {
+          clientId: "client-1",
+          redirectUris: ["https://client.example/callback"],
+        },
+        redirectUri: "https://client.example/callback",
+        callback: "https://client.example/callback?code=code-1&state=state-1",
+        expectedState: "state-1",
+        expectedBinding: {
+          adapter: "mastodon",
+          origin: "https://mastodon.example",
+          clientRequestId: "request-1",
+        },
+        actualBinding: {
+          adapter: "misskey",
+          origin: "https://mastodon.example",
+          clientRequestId: "request-1",
+        },
+      }),
+    ).rejects.toThrowError(
+      expect.objectContaining({
+        code: "VALIDATION_FAILED",
+        context: expect.objectContaining({
+          operation: "auth.oauth.callback",
+          adapter: "misskey",
+          origin: "https://mastodon.example",
+        }),
+      }),
+    );
+  });
 });
 
 function fakeSession(): AuthSession {

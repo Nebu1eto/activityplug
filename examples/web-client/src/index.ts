@@ -3,7 +3,9 @@ import {
   parseOAuthCallback,
   validateOAuthCallbackState,
   createActivityPlugClient,
+  type Account,
   type AuthSession,
+  type ActivityPlugClient,
   type OAuthCallbackInput,
   type OAuthClientRegistration,
 } from "@activityplug/core";
@@ -23,6 +25,7 @@ export interface StartAuthInput {
   readonly codeVerifier?: string;
   readonly codeChallenge?: string;
   readonly codeChallengeMethod?: "S256" | "plain";
+  readonly fetch?: typeof globalThis.fetch;
 }
 
 export interface StartedAuth {
@@ -34,6 +37,7 @@ export interface StartedAuth {
   readonly codeVerifier?: string;
   readonly codeChallenge?: string;
   readonly codeChallengeMethod?: "S256" | "plain";
+  readonly fetch?: typeof globalThis.fetch;
 }
 
 export interface ExchangeAuthInput {
@@ -43,8 +47,13 @@ export interface ExchangeAuthInput {
   readonly codeVerifier?: string;
 }
 
+export interface ExchangedAuth {
+  readonly session: AuthSession;
+  readonly verifyViewer: () => Promise<Account>;
+}
+
 export async function startAuth(input: StartAuthInput): Promise<StartedAuth> {
-  const client = createClient(input.adapter, input.origin);
+  const client = createClient(input.adapter, input.origin, input.fetch);
   const pkce = await resolvePkce(input);
   const registeredClient = await client.auth.registerOAuthClient({
     clientName: input.clientName,
@@ -69,10 +78,11 @@ export async function startAuth(input: StartAuthInput): Promise<StartedAuth> {
     codeVerifier: pkce.codeVerifier,
     codeChallenge: pkce.codeChallenge,
     codeChallengeMethod: pkce.codeChallengeMethod,
+    ...(input.fetch === undefined ? {} : { fetch: input.fetch }),
   };
 }
 
-export async function exchangeAuth(input: ExchangeAuthInput): Promise<AuthSession> {
+export async function exchangeAuth(input: ExchangeAuthInput): Promise<ExchangedAuth> {
   const callback = parseOAuthCallback(input.callback);
   validateOAuthCallbackState(callback, {
     expectedState: input.startedAuth.state,
@@ -84,18 +94,31 @@ export async function exchangeAuth(input: ExchangeAuthInput): Promise<AuthSessio
     });
   }
   const codeVerifier = input.codeVerifier ?? input.startedAuth.codeVerifier;
-  const client = createClient(input.startedAuth.adapter, input.startedAuth.origin);
-  return client.auth.exchangeAuthorizationCode({
+  const client = createClient(
+    input.startedAuth.adapter,
+    input.startedAuth.origin,
+    input.startedAuth.fetch,
+  );
+  const session = await client.auth.exchangeAuthorizationCode({
     client: input.startedAuth.client,
     code: callback.code,
     redirectUri: input.redirectUri,
     ...(codeVerifier === undefined ? {} : { codeVerifier }),
   });
+  return {
+    session,
+    verifyViewer: async () => (await client.auth.verifyCredentials(session)).account,
+  };
 }
 
-function createClient(adapter: WebClientAdapter, origin: string) {
+function createClient(
+  adapter: WebClientAdapter,
+  origin: string,
+  fetch: typeof globalThis.fetch | undefined,
+): ActivityPlugClient {
   return createActivityPlugClient({
-    adapter: adapter === "mastodon" ? createMastodonAdapter() : createMisskeyAdapter(),
+    adapter:
+      adapter === "mastodon" ? createMastodonAdapter({ fetch }) : createMisskeyAdapter({ fetch }),
     origin,
   });
 }
