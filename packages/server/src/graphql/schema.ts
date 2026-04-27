@@ -25,6 +25,9 @@ import {
   type PublicAuthSession,
   type PublicEntityRef,
   type PublicInstanceProfile,
+  type PublicMediaAttachment,
+  type PublicPoll,
+  type PublicPollOption,
   type PublicPost,
   serializeAccount,
   serializeInstanceProfile,
@@ -42,9 +45,6 @@ type AdapterKind = "mastodon" | "misskey" | "pleroma" | "hollo" | "hackerspub";
 
 const builder = new SchemaBuilder<{
   Context: GraphQLContext;
-  Enums: {
-    AdapterKind: AdapterKind;
-  };
   Objects: {
     Account: PublicAccount;
     AccountField: PublicAccountField;
@@ -56,7 +56,10 @@ const builder = new SchemaBuilder<{
     EntityRef: PublicEntityRef;
     Health: HealthStatus;
     Instance: PublicInstanceProfile;
+    MediaAttachment: PublicMediaAttachment;
     ParsedAuthCallback: ParsedAuthCallback;
+    Poll: PublicPoll;
+    PollOption: PublicPollOption;
     Post: PublicPost;
   };
   Scalars: {
@@ -87,6 +90,29 @@ const CodeChallengeMethodEnum = builder.enumType("CodeChallengeMethod", {
   } as const,
 });
 
+const MediaAttachmentKindEnum = builder.enumType("MediaAttachmentKind", {
+  values: {
+    IMAGE: { value: "image" },
+    VIDEO: { value: "video" },
+    AUDIO: { value: "audio" },
+    GIFV: { value: "gifv" },
+    UNKNOWN: { value: "unknown" },
+  } as const,
+});
+
+const PostVisibilityEnum = builder.enumType("PostVisibility", {
+  values: {
+    PUBLIC: { value: "public" },
+    UNLISTED: { value: "unlisted" },
+    FOLLOWERS: { value: "followers" },
+    DIRECT: { value: "direct" },
+    LOCAL: { value: "local" },
+    LIST: { value: "list" },
+    NONE: { value: "none" },
+    UNKNOWN: { value: "unknown" },
+  } as const,
+});
+
 const JsonScalar = builder.scalarType("JSON", {
   serialize: (value) => value,
 });
@@ -102,8 +128,6 @@ interface PageInfoPayload {
   readonly startCursor?: string;
   readonly endCursor?: string;
   readonly raw?: unknown;
-  readonly rawNext?: string;
-  readonly rawPrevious?: string;
 }
 
 interface AccountConnectionPayload {
@@ -410,8 +434,6 @@ const PageInfoType = builder.objectRef<PageInfoPayload>("PageInfo").implement({
       nullable: true,
       resolve: (value) => value.raw,
     }),
-    rawNext: t.exposeString("rawNext", { nullable: true }),
-    rawPrevious: t.exposeString("rawPrevious", { nullable: true }),
   }),
 });
 
@@ -427,29 +449,62 @@ function reservedObjectType(name: string) {
   });
 }
 
+const PostContextType = reservedObjectType("PostContext");
+const MediaAttachmentType = builder.objectRef<PublicMediaAttachment>("MediaAttachment").implement({
+  fields: (t) => ({
+    ref: t.expose("ref", { type: EntityRefType }),
+    type: t.expose("type", { type: MediaAttachmentKindEnum }),
+    url: t.exposeString("url"),
+    previewUrl: t.exposeString("previewUrl", { nullable: true }),
+    description: t.exposeString("description", { nullable: true }),
+    blurhash: t.exposeString("blurhash", { nullable: true }),
+    width: t.exposeInt("width", { nullable: true }),
+    height: t.exposeInt("height", { nullable: true }),
+    raw: t.field({
+      type: JsonScalar,
+      resolve: (value) => value.raw,
+    }),
+  }),
+});
+const PollOptionType = builder.objectRef<PublicPollOption>("PollOption").implement({
+  fields: (t) => ({
+    title: t.exposeString("title"),
+    votesCount: t.exposeInt("votesCount", { nullable: true }),
+  }),
+});
+const PollType = builder.objectRef<PublicPoll>("Poll").implement({
+  fields: (t) => ({
+    ref: t.expose("ref", { type: EntityRefType }),
+    expiresAt: t.exposeString("expiresAt", { nullable: true }),
+    expired: t.exposeBoolean("expired"),
+    multiple: t.exposeBoolean("multiple"),
+    votesCount: t.exposeInt("votesCount", { nullable: true }),
+    votersCount: t.exposeInt("votersCount", { nullable: true }),
+    voted: t.exposeBoolean("voted", { nullable: true }),
+    ownVotes: t.exposeIntList("ownVotes", { nullable: true }),
+    options: t.expose("options", { type: [PollOptionType] }),
+    raw: t.field({
+      type: JsonScalar,
+      resolve: (value) => value.raw,
+    }),
+  }),
+});
 const PostType = builder.objectRef<PublicPost>("Post").implement({
   fields: (t) => ({
     ref: t.expose("ref", { type: EntityRefType }),
-    author: t.expose("author", { type: EntityRefType }),
+    author: t.expose("author", { type: AccountType }),
     url: t.exposeString("url", { nullable: true }),
     contentHtml: t.exposeString("contentHtml"),
     contentText: t.exposeString("contentText", { nullable: true }),
     createdAt: t.exposeString("createdAt"),
-    visibility: t.exposeString("visibility"),
+    visibility: t.expose("visibility", { type: PostVisibilityEnum }),
     sensitive: t.exposeBoolean("sensitive"),
-    spoilerText: t.exposeString("spoilerText", { nullable: true }),
-    attachments: t.field({
-      type: [JsonScalar],
-      resolve: (post) => post.attachments,
-    }),
-    poll: t.field({
-      type: JsonScalar,
-      nullable: true,
-      resolve: (post) => post.poll,
-    }),
+    summary: t.exposeString("summary", { nullable: true }),
+    media: t.expose("media", { type: [MediaAttachmentType] }),
+    poll: t.expose("poll", { type: PollType, nullable: true }),
     replyTo: t.expose("replyTo", { type: EntityRefType, nullable: true }),
     quoteOf: t.expose("quoteOf", { type: EntityRefType, nullable: true }),
-    reblogOf: t.expose("reblogOf", { type: EntityRefType, nullable: true }),
+    boostOf: t.expose("boostOf", { type: EntityRefType, nullable: true }),
     counts: t.field({
       type: JsonScalar,
       nullable: true,
@@ -461,9 +516,6 @@ const PostType = builder.objectRef<PublicPost>("Post").implement({
     }),
   }),
 });
-const PostContextType = reservedObjectType("PostContext");
-const MediaAttachmentType = reservedObjectType("MediaAttachment");
-const PollType = reservedObjectType("Poll");
 const NotificationType = reservedObjectType("Notification");
 const ListType = reservedObjectType("List");
 const RelationshipType = reservedObjectType("Relationship");
@@ -1074,11 +1126,7 @@ function normalizePageInput(
     | undefined,
 ): { readonly after?: string; readonly before?: string; readonly limit?: number } | undefined {
   if (input === null || input === undefined) return undefined;
-  if (
-    input.limit !== null &&
-    input.limit !== undefined &&
-    (input.limit < 1 || input.limit > maxPageLimit)
-  ) {
+  if (input.limit !== null && input.limit !== undefined && input.limit < 1) {
     throw new ActivityPlugError(
       "VALIDATION_FAILED",
       `GraphQL page input field must be an integer between 1 and ${maxPageLimit}: limit.`,
@@ -1099,7 +1147,9 @@ function normalizePageInput(
   return {
     ...(input.after === null || input.after === undefined ? {} : { after: input.after }),
     ...(input.before === null || input.before === undefined ? {} : { before: input.before }),
-    ...(input.limit === null || input.limit === undefined ? {} : { limit: input.limit }),
+    ...(input.limit === null || input.limit === undefined
+      ? {}
+      : { limit: Math.min(input.limit, maxPageLimit) }),
   };
 }
 

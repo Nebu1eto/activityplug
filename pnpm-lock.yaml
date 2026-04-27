@@ -69,11 +69,17 @@ importers:
         specifier: workspace:*
         version: link:../../packages/test-fixtures
 
-  packages/core:
-    devDependencies:
-      '@activityplug/test-fixtures':
+  packages/core: {}
+
+  packages/e2e-fixtures:
+    dependencies:
+      '@activityplug/core':
         specifier: workspace:*
-        version: link:../test-fixtures
+        version: link:../core
+    devDependencies:
+      vitest:
+        specifier: ^4.1.5
+        version: 4.1.5(@types/node@25.6.0)(vite@8.0.10(@types/node@25.6.0))
 
   packages/hackerspub:
     dependencies:
@@ -84,6 +90,9 @@ importers:
         specifier: ^2.0.2
         version: 2.0.2
     devDependencies:
+      '@activityplug/e2e-fixtures':
+        specifier: workspace:*
+        version: link:../e2e-fixtures
       '@activityplug/test-fixtures':
         specifier: workspace:*
         version: link:../test-fixtures
@@ -96,6 +105,13 @@ importers:
       '@activityplug/mastodon-base':
         specifier: workspace:*
         version: link:../mastodon-base
+    devDependencies:
+      '@activityplug/e2e-fixtures':
+        specifier: workspace:*
+        version: link:../e2e-fixtures
+      '@activityplug/test-fixtures':
+        specifier: workspace:*
+        version: link:../test-fixtures
 
   packages/mastodon:
     dependencies:
@@ -105,6 +121,10 @@ importers:
       '@activityplug/mastodon-base':
         specifier: workspace:*
         version: link:../mastodon-base
+    devDependencies:
+      '@activityplug/e2e-fixtures':
+        specifier: workspace:*
+        version: link:../e2e-fixtures
 
   packages/mastodon-base:
     dependencies:
@@ -123,6 +143,10 @@ importers:
       ky:
         specifier: ^2.0.2
         version: 2.0.2
+    devDependencies:
+      '@activityplug/e2e-fixtures':
+        specifier: workspace:*
+        version: link:../e2e-fixtures
 
   packages/pleroma:
     dependencies:
@@ -132,18 +156,34 @@ importers:
       '@activityplug/mastodon-base':
         specifier: workspace:*
         version: link:../mastodon-base
+    devDependencies:
+      '@activityplug/e2e-fixtures':
+        specifier: workspace:*
+        version: link:../e2e-fixtures
+      '@activityplug/test-fixtures':
+        specifier: workspace:*
+        version: link:../test-fixtures
 
   packages/server:
     dependencies:
       '@activityplug/core':
         specifier: workspace:*
         version: link:../core
+      '@activityplug/hackerspub':
+        specifier: workspace:*
+        version: link:../hackerspub
+      '@activityplug/hollo':
+        specifier: workspace:*
+        version: link:../hollo
       '@activityplug/mastodon':
         specifier: workspace:*
         version: link:../mastodon
       '@activityplug/misskey':
         specifier: workspace:*
         version: link:../misskey
+      '@activityplug/pleroma':
+        specifier: workspace:*
+        version: link:../pleroma
       '@hono/node-server':
         specifier: ^2.0.0
         version: 2.0.0(hono@4.12.15)
@@ -168,6 +208,10 @@ importers:
       hono:
         specifier: ^4.12.15
         version: 4.12.15
+    devDependencies:
+      '@activityplug/test-fixtures':
+        specifier: workspace:*
+        version: link:../test-fixtures
 
   packages/session-postgres:
     dependencies:

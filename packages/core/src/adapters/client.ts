@@ -187,23 +187,23 @@ function createAccountService(client: RequiredClientContext): AccountService {
     listPosts: async (input) => {
       const operation = client.adapter.accounts?.listPosts;
       if (operation === undefined) throw unsupportedOperation("account.posts", context(client));
-      validatePageInput(input.page, "account.posts", client);
+      const page = normalizePageInput(input.page, "account.posts", client);
       const raw = decodeOpaqueId(input.accountId);
       assertRawRefTarget(raw, client, "account", "account.posts");
       return operation(
-        { accountId: raw.id, ...(input.page === undefined ? {} : { page: input.page }) },
+        { accountId: raw.id, ...(page === undefined ? {} : { page }) },
         context(client),
       );
     },
   };
 }
 
-function validatePageInput(
+function normalizePageInput(
   page: PageInput | undefined,
   operation: string,
   client: RequiredClientContext,
-): void {
-  if (page === undefined) return;
+): PageInput | undefined {
+  if (page === undefined) return undefined;
   if (typeof page !== "object" || page === null || Array.isArray(page)) {
     throw new ActivityPlugError("VALIDATION_FAILED", "Page input must be an object.", {
       adapter: client.adapter.metadata.id,
@@ -229,10 +229,7 @@ function validatePageInput(
       },
     );
   }
-  if (
-    page.limit !== undefined &&
-    (!Number.isInteger(page.limit) || page.limit < 1 || page.limit > maxPageLimit)
-  ) {
+  if (page.limit !== undefined && (!Number.isInteger(page.limit) || page.limit < 1)) {
     throw new ActivityPlugError(
       "VALIDATION_FAILED",
       `Page input limit must be an integer between 1 and ${maxPageLimit}.`,
@@ -243,6 +240,11 @@ function validatePageInput(
       },
     );
   }
+  return {
+    ...(page.after === undefined ? {} : { after: page.after }),
+    ...(page.before === undefined ? {} : { before: page.before }),
+    ...(page.limit === undefined ? {} : { limit: Math.min(page.limit, maxPageLimit) }),
+  };
 }
 
 function normalizeOrigin(origin: string, operation: string, adapter: string): string {

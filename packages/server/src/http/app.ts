@@ -419,13 +419,13 @@ function optionalPageCursor(
 function optionalLimit(value: string | undefined): { readonly limit?: number } {
   if (value === undefined || value.length === 0) return {};
   const limit = Number(value);
-  if (!Number.isInteger(limit) || limit < 1 || limit > maxPageLimit) {
+  if (!Number.isInteger(limit) || limit < 1) {
     throw new ActivityPlugError(
       "VALIDATION_FAILED",
       `Request query parameter must be an integer between 1 and ${maxPageLimit}: limit.`,
     );
   }
-  return { limit };
+  return { limit: Math.min(limit, maxPageLimit) };
 }
 
 async function parseJsonBody(body: Promise<unknown>): Promise<unknown> {

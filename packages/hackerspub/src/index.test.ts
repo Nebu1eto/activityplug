@@ -82,17 +82,18 @@ describe("HackersPub adapter", () => {
         after: "relay_after",
       }),
     ]);
-    expect(connection.nodes).toEqual([
-      {
+    expect(connection.nodes).toHaveLength(1);
+    expect(connection.nodes[0]).toMatchObject({
+      ref: {
+        id: expect.any(String),
+        type: "post",
+        adapter: "hackerspub",
+        origin: "https://hackerspub.example",
+        rawId: "post-1",
+        rawUrl: "https://hackers.pub/posts/post-1",
+      },
+      author: {
         ref: {
-          id: expect.any(String),
-          type: "post",
-          adapter: "hackerspub",
-          origin: "https://hackerspub.example",
-          rawId: "post-1",
-          rawUrl: "https://hackers.pub/posts/post-1",
-        },
-        author: {
           id: expect.any(String),
           type: "account",
           adapter: "hackerspub",
@@ -100,15 +101,15 @@ describe("HackersPub adapter", () => {
           rawId: "actor-1",
           rawUrl: "https://hackers.pub/@alice",
         },
-        url: "https://hackers.pub/posts/post-1",
-        contentHtml: "<p>Post.</p>",
-        createdAt: "2024-01-02T00:00:00.000Z",
-        visibility: "public",
-        sensitive: false,
-        attachments: [],
-        raw: fixture.post,
       },
-    ]);
+      url: "https://hackers.pub/posts/post-1",
+      contentHtml: "<p>Post.</p>",
+      createdAt: "2024-01-02T00:00:00.000Z",
+      visibility: "public",
+      sensitive: false,
+      media: [],
+      raw: fixture.post,
+    });
     expect(connection.pageInfo.startCursor).not.toBe("relay_start");
     expect(connection.pageInfo.endCursor).not.toBe("relay_end");
     expect(connection.pageInfo.raw).toEqual({

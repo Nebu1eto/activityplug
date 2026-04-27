@@ -6,6 +6,13 @@
     "outDir": "dist",
     "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
   },
-  "references": [{ "path": "../core" }, { "path": "../mastodon" }, { "path": "../misskey" }],
+  "references": [
+    { "path": "../core" },
+    { "path": "../hackerspub" },
+    { "path": "../hollo" },
+    { "path": "../mastodon" },
+    { "path": "../misskey" },
+    { "path": "../pleroma" }
+  ],
   "include": ["src"]
 }

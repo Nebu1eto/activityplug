@@ -1,8 +1,11 @@
 import { isIP } from "node:net";
 
 import { ActivityPlugError } from "@activityplug/core";
+import { createHackersPubAdapter } from "@activityplug/hackerspub";
+import { createHolloAdapter } from "@activityplug/hollo";
 import { createMastodonAdapter } from "@activityplug/mastodon";
 import { createMisskeyAdapter } from "@activityplug/misskey";
+import { createPleromaAdapter } from "@activityplug/pleroma";
 import { object } from "@optique/core/constructs";
 import { multiple, withDefault } from "@optique/core/modifiers";
 import { option } from "@optique/core/primitives";
@@ -89,7 +92,13 @@ function parseServerCliArgsWithOptions(
 
 function toStartOptions(options: ServerCliOptions): StartServerOptions {
   const server = createActivityPlugServer({
-    adapters: [createMastodonAdapter(), createMisskeyAdapter()],
+    adapters: [
+      createMastodonAdapter(),
+      createMisskeyAdapter(),
+      createPleromaAdapter(),
+      createHolloAdapter(),
+      createHackersPubAdapter(),
+    ],
     originPolicy: createCliOriginPolicy(options.allowedOrigins),
     tokenImport: { enabled: false },
   });

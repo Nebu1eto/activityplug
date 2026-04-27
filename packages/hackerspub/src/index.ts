@@ -463,12 +463,6 @@ async function listActorPosts(
       ...(posts.pageInfo?.endCursor === null || posts.pageInfo?.endCursor === undefined
         ? {}
         : { endCursor: encodeAccountPostsCursor(posts.pageInfo.endCursor, context) }),
-      ...(posts.pageInfo?.endCursor === null || posts.pageInfo?.endCursor === undefined
-        ? {}
-        : { rawNext: encodeAccountPostsCursor(posts.pageInfo.endCursor, context) }),
-      ...(posts.pageInfo?.startCursor === null || posts.pageInfo?.startCursor === undefined
-        ? {}
-        : { rawPrevious: encodeAccountPostsCursor(posts.pageInfo.startCursor, context) }),
       raw: publicRelayPageInfo(posts.pageInfo),
     },
   };
@@ -640,7 +634,7 @@ function postFromResponse(response: HackersPubPost, context: AdapterOperationCon
       id: rawId,
       rawUrl: iri ?? postUrl,
     }),
-    author: actorFromResponse(post.actor, context, "posts.read").ref,
+    author: actorFromResponse(post.actor, context, "posts.read"),
     ...(postUrl === undefined ? {} : { url: postUrl }),
     contentHtml:
       typeof post.html === "string"
@@ -652,8 +646,8 @@ function postFromResponse(response: HackersPubPost, context: AdapterOperationCon
       optionalString(post.visibility, "visibility", post, context, "posts.read"),
     ),
     sensitive: false,
-    ...renameOptionalStringField(post.summary, "spoilerText", post, context, "posts.read"),
-    attachments: [],
+    ...renameOptionalStringField(post.summary, "summary", post, context, "posts.read"),
+    media: [],
     raw: post,
   };
 }
@@ -663,6 +657,8 @@ function hackersPubVisibility(value: string | undefined): Post["visibility"] {
   if (value === "UNLISTED") return "unlisted";
   if (value === "FOLLOWERS") return "followers";
   if (value === "DIRECT") return "direct";
+  if (value === "LIST") return "list";
+  if (value === "NONE") return "none";
   return "unknown";
 }
 

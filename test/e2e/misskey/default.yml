@@ -1,0 +1,22 @@
+url: http://misskey.127.0.0.1.nip.io:42080
+port: 3000
+
+db:
+  host: misskey-db
+  port: 5432
+  db: misskey
+  user: misskey
+  pass: misskey
+
+redis:
+  host: misskey-redis
+  port: 6379
+
+id: aidx
+
+allowedPrivateNetworks:
+  - 0.0.0.0/0
+  - ::/0
+
+setupPassword: activityplug-e2e-setup
+clusterLimit: 1

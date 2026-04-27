@@ -6,6 +6,10 @@
     "outDir": "dist",
     "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
   },
-  "references": [{ "path": "../core" }, { "path": "../mastodon-base" }],
+  "references": [
+    { "path": "../core" },
+    { "path": "../e2e-fixtures" },
+    { "path": "../mastodon-base" }
+  ],
   "include": ["src"]
 }

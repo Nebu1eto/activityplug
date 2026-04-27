@@ -794,7 +794,7 @@ export function postFromResponse(
   assertOptionalString(status.in_reply_to_id, "in_reply_to_id", status, context);
   const statusUrl = optionalString(status.url, "url", status, context, "posts.read");
   const statusUri = optionalString(status.uri, "uri", status, context, "posts.read");
-  const spoilerText = optionalString(
+  const summary = optionalString(
     status.spoiler_text,
     "spoiler_text",
     status,
@@ -816,7 +816,7 @@ export function postFromResponse(
       id: status.id,
       rawUrl: statusUrl ?? statusUri,
     }),
-    author: accountFromResponse(status.account, context, "posts.read").ref,
+    author: accountFromResponse(status.account, context, "posts.read"),
     ...(statusUrl === undefined ? {} : { url: statusUrl }),
     contentHtml: optionalString(status.content, "content", status, context, "posts.read") ?? "",
     createdAt: status.created_at,
@@ -825,8 +825,8 @@ export function postFromResponse(
     ),
     sensitive:
       optionalBoolean(status.sensitive, "sensitive", status, context, "posts.read") ?? false,
-    ...(spoilerText === undefined || spoilerText.length === 0 ? {} : { spoilerText }),
-    attachments: mediaAttachmentsFromResponse(status.media_attachments, context),
+    ...(summary === undefined || summary.length === 0 ? {} : { summary }),
+    media: mediaAttachmentsFromResponse(status.media_attachments, context),
     ...pollFromResponse(status.poll, status.id, context),
     ...(status.in_reply_to_id === null || status.in_reply_to_id === undefined
       ? {}
@@ -846,7 +846,7 @@ export function postFromResponse(
         }),
     ...(status.reblog === null || status.reblog === undefined
       ? {}
-      : { reblogOf: postFromResponse(status.reblog, context).ref }),
+      : { boostOf: postFromResponse(status.reblog, context).ref }),
     counts: {
       ...renamedOptionalNumber(
         status.replies_count,
@@ -1118,10 +1118,6 @@ function mastodonPageInfo(
     hasPreviousPage: links.prev !== undefined,
     ...(firstId === undefined ? {} : { startCursor: encodeAccountPostsCursor(firstId, context) }),
     ...(lastId === undefined ? {} : { endCursor: encodeAccountPostsCursor(lastId, context) }),
-    ...(links.next === undefined ? {} : { rawNext: encodeAccountPostsCursor(links.next, context) }),
-    ...(links.prev === undefined
-      ? {}
-      : { rawPrevious: encodeAccountPostsCursor(links.prev, context) }),
     raw: links,
   };
 }
@@ -1186,10 +1182,18 @@ function normalizeHandle(handle: string, context: AdapterOperationContext): stri
 }
 
 function mastodonVisibility(value: string | undefined): Post["visibility"] {
-  if (value === "public" || value === "unlisted" || value === "direct" || value === "local") {
+  if (
+    value === "public" ||
+    value === "unlisted" ||
+    value === "direct" ||
+    value === "local" ||
+    value === "list" ||
+    value === "none"
+  ) {
     return value;
   }
   if (value === "private") return "followers";
+  if (value === "limited") return "list";
   return "unknown";
 }
 

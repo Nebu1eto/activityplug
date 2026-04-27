@@ -639,7 +639,7 @@ export function noteFromResponse(
       id: note.id,
       rawUrl: noteUrl ?? noteUri,
     }),
-    author: accountFromResponse(note.user, context, "posts.read").ref,
+    author: accountFromResponse(note.user, context, "posts.read"),
     ...(noteUrl === undefined ? {} : { url: noteUrl }),
     contentHtml: escapeHtml(text ?? ""),
     ...(text === undefined ? {} : { contentText: text }),
@@ -649,8 +649,8 @@ export function noteFromResponse(
       optionalBoolean(note.localOnly, "localOnly", note, context, "posts.read"),
     ),
     sensitive: false,
-    ...(cw === undefined ? {} : { spoilerText: cw }),
-    attachments: note.files?.flatMap((file) => mediaAttachmentFromResponse(file, context)) ?? [],
+    ...(cw === undefined ? {} : { summary: cw }),
+    media: note.files?.flatMap((file) => mediaAttachmentFromResponse(file, context)) ?? [],
     ...pollFromResponse(note.poll, note.id, context),
     ...(note.replyId === null || note.replyId === undefined
       ? {}
@@ -664,7 +664,7 @@ export function noteFromResponse(
         }),
     ...(note.renote === null || note.renote === undefined
       ? {}
-      : { reblogOf: noteFromResponse(note.renote, context).ref }),
+      : { boostOf: noteFromResponse(note.renote, context).ref }),
     counts: {
       ...renamedOptionalNumber(
         note.repliesCount,
@@ -703,8 +703,6 @@ function misskeyPageInfo(
     hasPreviousPage: page?.before === undefined ? page?.after !== undefined : hasExtraItem,
     ...(firstId === undefined ? {} : { startCursor: encodeAccountPostsCursor(firstId, context) }),
     ...(lastId === undefined ? {} : { endCursor: encodeAccountPostsCursor(lastId, context) }),
-    ...(lastId === undefined ? {} : { rawNext: encodeAccountPostsCursor(lastId, context) }),
-    ...(firstId === undefined ? {} : { rawPrevious: encodeAccountPostsCursor(firstId, context) }),
     raw: {
       ...(firstId === undefined ? {} : { sinceId: firstId }),
       ...(lastId === undefined ? {} : { untilId: lastId }),
@@ -903,6 +901,7 @@ function misskeyVisibility(
   if (value === "home") return "unlisted";
   if (value === "followers") return "followers";
   if (value === "specified") return "direct";
+  if (value === "list" || value === "none") return value;
   return "unknown";
 }
 

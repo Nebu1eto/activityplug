@@ -357,20 +357,18 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
                   type: "post",
                   id: "post-1",
                 }),
-                author: testViewerAccount.ref,
+                author: testViewerAccount,
                 contentHtml: "<p>Hello</p>",
                 createdAt: "2026-04-27T00:00:00.000Z",
                 visibility: "public",
                 sensitive: false,
-                attachments: [],
+                media: [],
                 raw: { id: "post-1" },
               },
             ],
             pageInfo: {
               hasNextPage: false,
               hasPreviousPage: false,
-              rawNext: "next-cursor",
-              rawPrevious: "previous-cursor",
               raw: { cursor: null },
             },
           }),
@@ -403,15 +401,13 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
       data: [
         {
           ref: { rawId: "post-1" },
-          author: { rawId: "1" },
+          author: { ref: { rawId: "1" } },
           contentHtml: "<p>Hello</p>",
         },
       ],
       pageInfo: {
         hasNextPage: false,
         hasPreviousPage: false,
-        rawNext: "next-cursor",
-        rawPrevious: "previous-cursor",
       },
     });
 
@@ -428,8 +424,8 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
                 handle
               }
               accountPosts(id: $id) {
-                nodes { ref { rawId } author { rawId } contentHtml attachments }
-                pageInfo { hasNextPage hasPreviousPage raw rawNext rawPrevious }
+                nodes { ref { rawId } author { ref { rawId } } contentHtml media { ref { rawId } } }
+                pageInfo { hasNextPage hasPreviousPage raw }
               }
             }`,
             variables: { id: accountId },
@@ -452,16 +448,14 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
           nodes: [
             {
               ref: { rawId: "post-1" },
-              author: { rawId: "1" },
+              author: { ref: { rawId: "1" } },
               contentHtml: "<p>Hello</p>",
-              attachments: [],
+              media: [],
             },
           ],
           pageInfo: {
             hasNextPage: false,
             hasPreviousPage: false,
-            rawNext: "next-cursor",
-            rawPrevious: "previous-cursor",
             raw: { cursor: null },
           },
         },
@@ -469,16 +463,20 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
     });
   });
 
-  it("keeps GraphQL handle misses nullable and rejects unsafe page limits", async () => {
+  it("keeps GraphQL handle misses nullable and clamps oversized page limits", async () => {
+    const seenLimits: Array<number | undefined> = [];
     const app = createActivityPlugApp({
       service: createTestService({
         accounts: {
           get: async () => testViewerAccount,
           lookup: async () => null,
-          posts: async () => ({
-            nodes: [],
-            pageInfo: { hasNextPage: false, hasPreviousPage: false },
-          }),
+          posts: async (input) => {
+            seenLimits.push(input.page?.limit);
+            return {
+              nodes: [],
+              pageInfo: { hasNextPage: false, hasPreviousPage: false },
+            };
+          },
         },
       }),
     });
@@ -506,7 +504,7 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
     const httpResponse = await app.request(
       `/api/v1/accounts/${testViewerAccount.ref.id}/posts?limit=201`,
     );
-    expect(httpResponse.status).toBe(400);
+    expect(httpResponse.status).toBe(200);
 
     const graphqlResponse = await jsonRequest(
       app.request("/graphql", {
@@ -518,15 +516,8 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
         }),
       }),
     );
-    expect(graphqlResponse).toMatchObject({
-      errors: [
-        expect.objectContaining({
-          extensions: expect.objectContaining({
-            activityplug: expect.objectContaining({ code: "VALIDATION_FAILED" }),
-          }),
-        }),
-      ],
-    });
+    expect(graphqlResponse).toMatchObject({ data: { accountPosts: { nodes: [] } } });
+    expect(seenLimits).toEqual([200, 200]);
   });
 
   it("rejects malformed auth request bodies with the typed error envelope", async () => {

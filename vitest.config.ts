@@ -4,6 +4,8 @@ export default defineConfig({
   resolve: {
     alias: {
       "@activityplug/core": new URL("./packages/core/src/index.ts", import.meta.url).pathname,
+      "@activityplug/e2e-fixtures": new URL("./packages/e2e-fixtures/src/index.ts", import.meta.url)
+        .pathname,
       "@activityplug/hackerspub": new URL("./packages/hackerspub/src/index.ts", import.meta.url)
         .pathname,
       "@activityplug/hollo": new URL("./packages/hollo/src/index.ts", import.meta.url).pathname,

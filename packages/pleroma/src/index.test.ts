@@ -1,4 +1,5 @@
 import { createActivityPlugClient } from "@activityplug/core";
+import { accountMappingFixtures } from "@activityplug/test-fixtures";
 import { describe, expect, it } from "vitest";
 
 import { createPleromaAdapter } from "./index.js";
@@ -12,17 +13,9 @@ describe("Pleroma adapter", () => {
           const url = new URL(request.url);
           requests.push(`${request.method} ${url.pathname}`);
           if (url.pathname === "/api/v1/accounts/lookup") return pleromaAccount();
-          if (url.pathname === "/api/v1/accounts/109") return pleromaAccount();
-          if (url.pathname === "/api/v1/accounts/109/statuses") {
-            return jsonResponse([
-              {
-                id: "status-1",
-                account: { id: "109", username: "alice", acct: "alice" },
-                content: "<p>Pleroma</p>",
-                created_at: "2026-04-27T00:00:00.000Z",
-                visibility: "public",
-              },
-            ]);
+          if (url.pathname === "/api/v1/accounts/pleroma-109") return pleromaAccount();
+          if (url.pathname === "/api/v1/accounts/pleroma-109/statuses") {
+            return jsonResponse([accountMappingFixtures.pleroma.post]);
           }
           return jsonResponse({ error: "unexpected request" }, 404);
         }),
@@ -40,16 +33,16 @@ describe("Pleroma adapter", () => {
     expect(byId.ref).toMatchObject({
       adapter: "pleroma",
       origin: "https://pleroma.example",
-      rawId: "109",
+      rawId: "pleroma-109",
     });
     expect(posts.nodes[0]).toMatchObject({
-      contentHtml: "<p>Pleroma</p>",
-      author: { rawId: "109" },
+      contentHtml: "<p>Pleroma post.</p>",
+      author: { ref: { rawId: "pleroma-109" } },
     });
     expect(requests).toEqual([
       "GET /api/v1/accounts/lookup",
-      "GET /api/v1/accounts/109",
-      "GET /api/v1/accounts/109/statuses",
+      "GET /api/v1/accounts/pleroma-109",
+      "GET /api/v1/accounts/pleroma-109/statuses",
     ]);
   });
 });
@@ -67,13 +60,5 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 function pleromaAccount(): Response {
-  return jsonResponse({
-    id: "109",
-    username: "alice",
-    acct: "alice",
-    display_name: "Alice",
-    url: "https://pleroma.example/users/alice",
-    bot: false,
-    locked: false,
-  });
+  return jsonResponse(accountMappingFixtures.pleroma.account);
 }

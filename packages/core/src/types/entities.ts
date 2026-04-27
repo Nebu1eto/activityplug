@@ -62,19 +62,19 @@ export interface AccountField {
 
 export interface Post {
   readonly ref: EntityRef<"post">;
-  readonly author: EntityRef<"account">;
+  readonly author: Account;
   readonly url?: URIString;
   readonly contentHtml: string;
   readonly contentText?: string;
   readonly createdAt: ISODateTimeString;
   readonly visibility: PostVisibility;
   readonly sensitive: boolean;
-  readonly spoilerText?: string;
-  readonly attachments: readonly MediaAttachment[];
+  readonly summary?: string;
+  readonly media: readonly MediaAttachment[];
   readonly poll?: Poll;
   readonly replyTo?: EntityRef<"post">;
   readonly quoteOf?: EntityRef<"post">;
-  readonly reblogOf?: EntityRef<"post">;
+  readonly boostOf?: EntityRef<"post">;
   readonly counts?: {
     readonly replies?: number;
     readonly reblogs?: number;
@@ -83,7 +83,15 @@ export interface Post {
   readonly raw: unknown;
 }
 
-export type PostVisibility = "public" | "unlisted" | "followers" | "direct" | "local" | "unknown";
+export type PostVisibility =
+  | "public"
+  | "unlisted"
+  | "followers"
+  | "direct"
+  | "local"
+  | "list"
+  | "none"
+  | "unknown";
 
 export interface MediaAttachment {
   readonly ref: EntityRef<"media">;
@@ -158,8 +166,6 @@ export interface PageInfo {
   readonly startCursor?: string;
   readonly endCursor?: string;
   readonly raw?: unknown;
-  readonly rawNext?: string;
-  readonly rawPrevious?: string;
 }
 
 export interface Connection<Node> {

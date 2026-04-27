@@ -10,6 +10,7 @@ import {
   type EntityRef,
   type InstanceProfile,
   type InjectTokenInput,
+  type MediaAttachment,
   type OAuthCallbackInput,
   type OAuthCallbackResult,
   type OAuthCallbackStateBinding,
@@ -17,6 +18,7 @@ import {
   type OAuthCodeExchangeInput,
   type OAuthRefreshInput,
   type OAuthRevokeInput,
+  type PostVisibility,
   type Post,
   type VerifyCredentialsResult,
 } from "@activityplug/core";
@@ -152,21 +154,51 @@ export interface PublicInstanceProfile {
   readonly raw: unknown;
 }
 
+export interface PublicMediaAttachment {
+  readonly ref: PublicEntityRef;
+  readonly type: MediaAttachment["type"];
+  readonly url: string;
+  readonly previewUrl?: string;
+  readonly description?: string;
+  readonly blurhash?: string;
+  readonly width?: number;
+  readonly height?: number;
+  readonly raw: unknown;
+}
+
+export interface PublicPoll {
+  readonly ref: PublicEntityRef;
+  readonly expiresAt?: string;
+  readonly expired: boolean;
+  readonly multiple: boolean;
+  readonly votesCount?: number;
+  readonly votersCount?: number;
+  readonly voted?: boolean;
+  readonly ownVotes?: readonly number[];
+  readonly options: readonly PublicPollOption[];
+  readonly raw: unknown;
+}
+
+export interface PublicPollOption {
+  readonly title: string;
+  readonly votesCount?: number;
+}
+
 export interface PublicPost {
   readonly ref: PublicEntityRef;
-  readonly author: PublicEntityRef;
+  readonly author: PublicAccount;
   readonly url?: string;
   readonly contentHtml: string;
   readonly contentText?: string;
   readonly createdAt: string;
-  readonly visibility: string;
+  readonly visibility: PostVisibility;
   readonly sensitive: boolean;
-  readonly spoilerText?: string;
-  readonly attachments: readonly unknown[];
-  readonly poll?: unknown;
+  readonly summary?: string;
+  readonly media: readonly PublicMediaAttachment[];
+  readonly poll?: PublicPoll;
   readonly replyTo?: PublicEntityRef;
   readonly quoteOf?: PublicEntityRef;
-  readonly reblogOf?: PublicEntityRef;
+  readonly boostOf?: PublicEntityRef;
   readonly counts?: {
     readonly replies?: number;
     readonly reblogs?: number;
@@ -181,8 +213,6 @@ export interface PublicPageInfo {
   readonly startCursor?: string;
   readonly endCursor?: string;
   readonly raw?: unknown;
-  readonly rawNext?: string;
-  readonly rawPrevious?: string;
 }
 
 export interface PublicConnection<Node> {
@@ -387,19 +417,44 @@ export function serializeInstanceProfile(profile: InstanceProfile): PublicInstan
 export function serializePost(post: Post): PublicPost {
   return {
     ref: serializeEntityRef(post.ref),
-    author: serializeEntityRef(post.author),
+    author: serializeAccount(post.author),
     ...(post.url === undefined ? {} : { url: post.url }),
     contentHtml: post.contentHtml,
     ...(post.contentText === undefined ? {} : { contentText: post.contentText }),
     createdAt: post.createdAt,
     visibility: post.visibility,
     sensitive: post.sensitive,
-    ...(post.spoilerText === undefined ? {} : { spoilerText: post.spoilerText }),
-    attachments: post.attachments,
-    ...(post.poll === undefined ? {} : { poll: post.poll }),
+    ...(post.summary === undefined ? {} : { summary: post.summary }),
+    media: post.media.map((attachment) => ({
+      ref: serializeEntityRef(attachment.ref),
+      type: attachment.type,
+      url: attachment.url,
+      ...(attachment.previewUrl === undefined ? {} : { previewUrl: attachment.previewUrl }),
+      ...(attachment.description === undefined ? {} : { description: attachment.description }),
+      ...(attachment.blurhash === undefined ? {} : { blurhash: attachment.blurhash }),
+      ...(attachment.width === undefined ? {} : { width: attachment.width }),
+      ...(attachment.height === undefined ? {} : { height: attachment.height }),
+      raw: attachment.raw,
+    })),
+    ...(post.poll === undefined
+      ? {}
+      : {
+          poll: {
+            ref: serializeEntityRef(post.poll.ref),
+            ...(post.poll.expiresAt === undefined ? {} : { expiresAt: post.poll.expiresAt }),
+            expired: post.poll.expired,
+            multiple: post.poll.multiple,
+            ...(post.poll.votesCount === undefined ? {} : { votesCount: post.poll.votesCount }),
+            ...(post.poll.votersCount === undefined ? {} : { votersCount: post.poll.votersCount }),
+            ...(post.poll.voted === undefined ? {} : { voted: post.poll.voted }),
+            ...(post.poll.ownVotes === undefined ? {} : { ownVotes: post.poll.ownVotes }),
+            options: post.poll.options,
+            raw: post.poll.raw,
+          },
+        }),
     ...(post.replyTo === undefined ? {} : { replyTo: serializeEntityRef(post.replyTo) }),
     ...(post.quoteOf === undefined ? {} : { quoteOf: serializeEntityRef(post.quoteOf) }),
-    ...(post.reblogOf === undefined ? {} : { reblogOf: serializeEntityRef(post.reblogOf) }),
+    ...(post.boostOf === undefined ? {} : { boostOf: serializeEntityRef(post.boostOf) }),
     ...(post.counts === undefined ? {} : { counts: post.counts }),
     raw: post.raw,
   };

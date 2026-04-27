@@ -138,8 +138,41 @@ describe("library-mode clients", () => {
     await expect(
       client.accounts.listPosts({ accountId, page: { before: "" } }),
     ).rejects.toMatchObject({ code: "VALIDATION_FAILED" });
-    await expect(
-      client.accounts.listPosts({ accountId, page: { limit: 201 } }),
-    ).rejects.toMatchObject({ code: "VALIDATION_FAILED" });
+  });
+
+  it("clamps oversized page limits before adapter calls", async () => {
+    const limits: number[] = [];
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet(),
+      },
+      accounts: {
+        listPosts: async (input) => {
+          if (input.page?.limit !== undefined) limits.push(input.page.limit);
+          return {
+            nodes: [],
+            pageInfo: { hasNextPage: false, hasPreviousPage: false },
+          };
+        },
+      },
+    };
+    const client = createActivityPlugClient({
+      adapter,
+      origin: "https://social.example",
+    });
+    const accountId = createEntityRef({
+      adapter: "fake",
+      origin: "https://social.example",
+      type: "account",
+      id: "alice",
+    }).id;
+
+    await client.accounts.listPosts({ accountId, page: { limit: 201 } });
+
+    expect(limits).toEqual([200]);
   });
 });

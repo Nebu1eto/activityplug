@@ -1,4 +1,5 @@
 import { createActivityPlugClient } from "@activityplug/core";
+import { accountMappingFixtures } from "@activityplug/test-fixtures";
 import { describe, expect, it } from "vitest";
 
 import { createHolloAdapter } from "./index.js";
@@ -10,17 +11,9 @@ describe("Hollo adapter", () => {
         fetch: mockFetch(async (request) => {
           const url = new URL(request.url);
           if (url.pathname === "/api/v1/accounts/lookup") return holloAccount();
-          if (url.pathname === "/api/v1/accounts/109") return holloAccount();
-          if (url.pathname === "/api/v1/accounts/109/statuses") {
-            return jsonResponse([
-              {
-                id: "status-1",
-                account: { id: "109", username: "alice", acct: "alice" },
-                content: "<p>Hollo</p>",
-                created_at: "2026-04-27T00:00:00.000Z",
-                visibility: "public",
-              },
-            ]);
+          if (url.pathname === "/api/v1/accounts/hollo-109") return holloAccount();
+          if (url.pathname === "/api/v1/accounts/hollo-109/statuses") {
+            return jsonResponse([accountMappingFixtures.hollo.post]);
           }
           return jsonResponse({ error: "unexpected request" }, 404);
         }),
@@ -38,11 +31,11 @@ describe("Hollo adapter", () => {
     expect(account.ref).toMatchObject({
       adapter: "hollo",
       origin: "https://hollo.example",
-      rawId: "109",
+      rawId: "hollo-109",
     });
     expect(posts.nodes[0]).toMatchObject({
-      contentHtml: "<p>Hollo</p>",
-      author: { rawId: "109" },
+      contentHtml: "<p>Hollo post.</p>",
+      author: { ref: { rawId: "hollo-109" } },
     });
   });
 });
@@ -60,13 +53,5 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 function holloAccount(): Response {
-  return jsonResponse({
-    id: "109",
-    username: "alice",
-    acct: "alice",
-    display_name: "Alice",
-    url: "https://hollo.example/@alice",
-    bot: false,
-    locked: false,
-  });
+  return jsonResponse(accountMappingFixtures.hollo.account);
 }

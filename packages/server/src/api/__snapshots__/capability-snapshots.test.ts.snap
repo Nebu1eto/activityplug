@@ -4,11 +4,10 @@ exports[`server capability snapshots > hackerspub > adapter 1`] = `"hackerspub"`
 
 exports[`server capability snapshots > hackerspub > capabilities 1`] = `
 {
+  "accounts.lookupByHandle": "supported:static",
   "accounts.lookupById": "supported:static",
   "auth.oauth.authorizationCode": "unsupported:probe:HackersPub does not use OAuth.",
-  "auth.tokenInjection": "supported:static",
-  "posts.create": "supported:static",
-  "posts.quote": "supported:static",
+  "instance.nodeInfo": "supported:static",
   "posts.read": "supported:static",
 }
 `;
@@ -17,16 +16,13 @@ exports[`server capability snapshots > hollo > adapter 1`] = `"hollo"`;
 
 exports[`server capability snapshots > hollo > capabilities 1`] = `
 {
+  "accounts.lookupByHandle": "supported:static",
   "accounts.lookupById": "supported:static",
   "auth.oauth.authorizationCode": "supported:oauth",
+  "auth.oauth.refreshToken": "unsupported:static:This adapter does not assume refresh-token support.",
   "auth.tokenInjection": "supported:static",
-  "media.upload": "supported:static",
-  "posts.create": "supported:static",
-  "posts.quote": "supported:static",
+  "instance.nodeInfo": "supported:static",
   "posts.read": "supported:static",
-  "social.reaction": "supported:static",
-  "streaming.notifications": "unsupported:static",
-  "streaming.timeline": "unsupported:static",
 }
 `;
 
@@ -34,14 +30,13 @@ exports[`server capability snapshots > mastodon > adapter 1`] = `"mastodon"`;
 
 exports[`server capability snapshots > mastodon > capabilities 1`] = `
 {
+  "accounts.lookupByHandle": "supported:static",
   "accounts.lookupById": "supported:static",
   "auth.oauth.authorizationCode": "supported:oauth",
+  "auth.oauth.refreshToken": "unsupported:static:This adapter does not assume refresh-token support.",
   "auth.tokenInjection": "supported:static",
-  "media.upload": "supported:static",
-  "posts.create": "supported:static",
-  "posts.quote": "supported:static",
+  "instance.nodeInfo": "supported:static",
   "posts.read": "supported:static",
-  "social.reaction": "unsupported:static",
   "streaming.timeline": "supported:instance",
 }
 `;
@@ -50,15 +45,14 @@ exports[`server capability snapshots > misskey > adapter 1`] = `"misskey"`;
 
 exports[`server capability snapshots > misskey > capabilities 1`] = `
 {
+  "accounts.lookupByHandle": "supported:static",
   "accounts.lookupById": "supported:static",
   "auth.oauth.authorizationCode": "supported:oauth",
+  "auth.oauth.refreshToken": "unsupported:static:Misskey OAuth access tokens do not use refresh tokens.",
   "auth.tokenInjection": "supported:static",
-  "media.upload": "supported:static",
-  "posts.create": "supported:static",
-  "posts.quote": "supported:static",
+  "instance.nodeInfo": "supported:static",
   "posts.read": "supported:static",
-  "social.reaction": "supported:static",
-  "streaming.timeline": "supported:static",
+  "social.reaction": "supported:probe",
 }
 `;
 
@@ -66,12 +60,12 @@ exports[`server capability snapshots > pleroma > adapter 1`] = `"pleroma"`;
 
 exports[`server capability snapshots > pleroma > capabilities 1`] = `
 {
+  "accounts.lookupByHandle": "supported:static",
   "accounts.lookupById": "supported:static",
-  "auth.oauth.authorizationCode": "supported:static:Pleroma supports OAuth without metadata discovery.",
-  "auth.oauth.refreshToken": "supported:static:Pleroma supports refresh tokens without metadata discovery.",
+  "auth.oauth.authorizationCode": "supported:static",
+  "auth.oauth.refreshToken": "supported:static",
   "auth.tokenInjection": "supported:static",
-  "media.upload": "supported:static",
-  "posts.create": "supported:static",
+  "instance.nodeInfo": "supported:static",
   "posts.quote": "supported:probe",
   "posts.read": "supported:static",
   "social.reaction": "supported:probe",

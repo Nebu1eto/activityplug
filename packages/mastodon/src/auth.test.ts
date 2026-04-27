@@ -227,7 +227,7 @@ describe("Mastodon auth adapter", () => {
       contentHtml: "<p>Hello</p>",
       visibility: "public",
       author: {
-        rawId: "109",
+        ref: { rawId: "109" },
       },
     });
     expect(requests).toContain("GET /.well-known/nodeinfo");

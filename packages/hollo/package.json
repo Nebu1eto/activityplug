@@ -25,5 +25,9 @@
   "dependencies": {
     "@activityplug/core": "workspace:*",
     "@activityplug/mastodon-base": "workspace:*"
+  },
+  "devDependencies": {
+    "@activityplug/e2e-fixtures": "workspace:*",
+    "@activityplug/test-fixtures": "workspace:*"
   }
 }

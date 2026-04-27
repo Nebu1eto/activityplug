@@ -2,6 +2,7 @@
   "files": [],
   "references": [
     { "path": "./packages/core" },
+    { "path": "./packages/e2e-fixtures" },
     { "path": "./packages/server" },
     { "path": "./packages/session-redis" },
     { "path": "./packages/session-postgres" },
