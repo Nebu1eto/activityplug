@@ -68,6 +68,22 @@ describe("auth service", () => {
     );
   });
 
+  it("rejects malformed injected token expiration timestamps", async () => {
+    const client = createActivityPlugClient({
+      adapter: fakeAuthAdapter(fakeAccount()),
+      origin: "https://social.example",
+    });
+
+    await expect(
+      client.auth.injectToken({ accessToken: "token", expiresAt: "not-a-date" }),
+    ).rejects.toThrowError(
+      expect.objectContaining({
+        code: "VALIDATION_FAILED",
+        context: expect.objectContaining({ operation: "auth.tokenInjection" }),
+      }),
+    );
+  });
+
   it("removes stale session expiration when a refresh result has no expiration", async () => {
     const client = createActivityPlugClient({
       adapter: fakeRefreshAdapter(),

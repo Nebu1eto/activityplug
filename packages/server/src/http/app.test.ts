@@ -6,6 +6,9 @@ import {
   type Account,
   type AuthSession,
   type InstanceProfile,
+  type MediaAttachment,
+  type Post,
+  type Relationship,
 } from "@activityplug/core";
 import SwaggerParser from "@apidevtools/swagger-parser";
 import { describe, expect, it } from "vitest";
@@ -36,6 +39,60 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
     await expect(SwaggerParser.validate(openapi)).resolves.toBeDefined();
     expect(openapi.paths).toHaveProperty("/api/v1/instances/{origin}/capabilities");
     expect(openapi.paths).not.toHaveProperty("/api/v1/capabilities");
+    expect(parameterSchema(openapi, "/api/v1/search", "get", "q")).toMatchObject({
+      minLength: 1,
+    });
+    expect(parameterSchema(openapi, "/api/v1/search", "get", "origin")).toMatchObject({
+      minLength: 1,
+    });
+    expect(
+      parameterSchema(openapi, "/api/v1/instances/{origin}/capabilities", "get", "origin"),
+    ).toMatchObject({
+      minLength: 1,
+    });
+    expect(parameterSchema(openapi, "/api/v1/accounts/lookup", "get", "origin")).toMatchObject({
+      minLength: 1,
+    });
+    expect(parameterSchema(openapi, "/api/v1/accounts/lookup", "get", "handle")).toMatchObject({
+      minLength: 1,
+    });
+    expect(
+      parameterSchema(openapi, "/api/v1/accounts/{id}/posts", "get", "sessionId"),
+    ).toMatchObject({
+      minLength: 1,
+    });
+    expect(parameterSchema(openapi, "/api/v1/timelines/public", "get", "sessionId")).toMatchObject({
+      minLength: 1,
+    });
+    expect(parameterSchema(openapi, "/api/v1/timelines/local", "get", "sessionId")).toMatchObject({
+      minLength: 1,
+    });
+    expect(parameterSchema(openapi, "/api/v1/search", "get", "sessionId")).toMatchObject({
+      minLength: 1,
+    });
+    expect(requestSchemaProperty(openapi, "/api/v1/posts", "post", "origin")).toMatchObject({
+      minLength: 1,
+    });
+    expect(componentSchemaProperty(openapi, "AuthImportTokenRequest", "origin")).toMatchObject({
+      minLength: 1,
+    });
+    expect(componentSchemaProperty(openapi, "AuthStartRequest", "origin")).toMatchObject({
+      minLength: 1,
+    });
+    expect(componentSchemaProperty(openapi, "AuthSessionInput", "id")).toMatchObject({
+      minLength: 1,
+    });
+    expect(componentSchemaProperty(openapi, "AuthSessionInput", "origin")).toMatchObject({
+      minLength: 1,
+    });
+    expect(componentSchemaProperty(openapi, "OAuthCallbackStateBinding", "origin")).toMatchObject({
+      minLength: 1,
+    });
+    expect(componentOneOfProperty(openapi, "AuthExchangeRequest", 0, "origin")).toMatchObject({
+      minLength: 1,
+    });
+    expect(operationRequestBody(openapi, "/api/v1/auth/refresh", "post")).toBeUndefined();
+    expect(operationRequestBody(openapi, "/api/v1/auth/revoke", "post")).toBeUndefined();
 
     await expect(jsonRequest(app.request("/api/v1"))).resolves.toEqual({
       data: {
@@ -464,14 +521,14 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
   });
 
   it("keeps GraphQL handle misses nullable and clamps oversized page limits", async () => {
-    const seenLimits: Array<number | undefined> = [];
+    const seenInputs: Array<{ readonly limit?: number; readonly sessionId?: string }> = [];
     const app = createActivityPlugApp({
       service: createTestService({
         accounts: {
           get: async () => testViewerAccount,
           lookup: async () => null,
           posts: async (input) => {
-            seenLimits.push(input.page?.limit);
+            seenInputs.push({ limit: input.page?.limit, sessionId: input.sessionId });
             return {
               nodes: [],
               pageInfo: { hasNextPage: false, hasPreviousPage: false },
@@ -502,7 +559,7 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
     });
 
     const httpResponse = await app.request(
-      `/api/v1/accounts/${testViewerAccount.ref.id}/posts?limit=201`,
+      `/api/v1/accounts/${testViewerAccount.ref.id}/posts?limit=201&sessionId=${testSession.id}`,
     );
     expect(httpResponse.status).toBe(200);
 
@@ -511,13 +568,421 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          query: `query($id: ID!) { accountPosts(id: $id, page: { limit: 201 }) { nodes { contentHtml } } }`,
-          variables: { id: testViewerAccount.ref.id },
+          query: `query($id: ID!, $sessionId: ID!) {
+            accountPosts(id: $id, sessionId: $sessionId, page: { limit: 201 }) {
+              nodes { contentHtml }
+            }
+          }`,
+          variables: { id: testViewerAccount.ref.id, sessionId: testSession.id },
         }),
       }),
     );
     expect(graphqlResponse).toMatchObject({ data: { accountPosts: { nodes: [] } } });
-    expect(seenLimits).toEqual([200, 200]);
+    expect(seenInputs).toEqual([
+      { limit: 200, sessionId: testSession.id },
+      { limit: 200, sessionId: testSession.id },
+    ]);
+  });
+
+  it("keeps operation inputs narrow at the HTTP and GraphQL boundaries", async () => {
+    const seenMuteInputs: unknown[] = [];
+    const seenCreateInputs: unknown[] = [];
+    const seenMediaInputs: unknown[] = [];
+    const app = createActivityPlugApp({
+      service: createTestService({
+        posts: {
+          ...createTestService().posts,
+          create: async (input) => {
+            seenCreateInputs.push(input);
+            return testPost;
+          },
+        },
+        media: {
+          ...createTestService().media,
+          upload: async (input) => {
+            seenMediaInputs.push(input);
+            return testMedia;
+          },
+        },
+        social: {
+          ...createTestService().social,
+          mute: async (input) => {
+            seenMuteInputs.push(input);
+            return testRelationship;
+          },
+        },
+      }),
+    });
+
+    const searchCursorResponse = await app.request(
+      "/api/v1/search?origin=https://example.test&q=alice&after=remote",
+    );
+    expect(searchCursorResponse.status).toBe(400);
+    await expect(searchCursorResponse.json()).resolves.toMatchObject({
+      error: { code: "VALIDATION_FAILED" },
+    });
+
+    const invalidSearchResolveResponse = await app.request(
+      "/api/v1/search?origin=https://example.test&q=alice&resolve=yes",
+    );
+    expect(invalidSearchResolveResponse.status).toBe(400);
+    await expect(invalidSearchResolveResponse.json()).resolves.toMatchObject({
+      error: { code: "VALIDATION_FAILED" },
+    });
+
+    const emptySearchTypeResponse = await app.request(
+      "/api/v1/search?origin=https://example.test&q=alice&type=",
+    );
+    expect(emptySearchTypeResponse.status).toBe(400);
+    await expect(emptySearchTypeResponse.json()).resolves.toMatchObject({
+      error: { code: "VALIDATION_FAILED" },
+    });
+
+    const emptySearchResolveResponse = await app.request(
+      "/api/v1/search?origin=https://example.test&q=alice&resolve=",
+    );
+    expect(emptySearchResolveResponse.status).toBe(400);
+    await expect(emptySearchResolveResponse.json()).resolves.toMatchObject({
+      error: { code: "VALIDATION_FAILED" },
+    });
+
+    const invalidPublicTimelineLocalResponse = await app.request(
+      "/api/v1/timelines/public?origin=https://example.test&local=yes",
+    );
+    expect(invalidPublicTimelineLocalResponse.status).toBe(400);
+    await expect(invalidPublicTimelineLocalResponse.json()).resolves.toMatchObject({
+      error: { code: "VALIDATION_FAILED" },
+    });
+
+    const emptyPublicTimelineLocalResponse = await app.request(
+      "/api/v1/timelines/public?origin=https://example.test&local=",
+    );
+    expect(emptyPublicTimelineLocalResponse.status).toBe(400);
+    await expect(emptyPublicTimelineLocalResponse.json()).resolves.toMatchObject({
+      error: { code: "VALIDATION_FAILED" },
+    });
+
+    for (const path of [
+      "/api/v1/instances/https%3A%2F%2Fexample.test?adapter=",
+      "/api/v1/accounts/lookup?origin=https://example.test&handle=alice@example.test&adapter=",
+      `/api/v1/accounts/${encodeURIComponent(testViewerAccount.ref.id)}/posts?sessionId=`,
+      "/api/v1/timelines/public?origin=https://example.test&sessionId=",
+      "/api/v1/timelines/local?origin=https://example.test&sessionId=",
+      "/api/v1/search?origin=https://example.test&q=alice&sessionId=",
+    ]) {
+      const response = await app.request(path);
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: "VALIDATION_FAILED" },
+      });
+    }
+
+    const invalidMediaForm = new FormData();
+    invalidMediaForm.set("origin", "https://example.test");
+    invalidMediaForm.set("file", new Blob(["x"], { type: "text/plain" }), "x.txt");
+    invalidMediaForm.set("sensitive", "yes");
+    const invalidMediaResponse = await app.request("/api/v1/media", {
+      method: "POST",
+      headers: { authorization: `Bearer ${testSession.id}` },
+      body: invalidMediaForm,
+    });
+    expect(invalidMediaResponse.status).toBe(400);
+    await expect(invalidMediaResponse.json()).resolves.toMatchObject({
+      error: { code: "VALIDATION_FAILED" },
+    });
+
+    const emptyMetadataMediaForm = new FormData();
+    emptyMetadataMediaForm.set("origin", "https://example.test");
+    emptyMetadataMediaForm.set("file", new Blob(["x"], { type: "text/plain" }), "x.txt");
+    emptyMetadataMediaForm.set("filename", "");
+    emptyMetadataMediaForm.set("description", "");
+    const emptyMetadataMediaResponse = await app.request("/api/v1/media", {
+      method: "POST",
+      headers: { authorization: `Bearer ${testSession.id}` },
+      body: emptyMetadataMediaForm,
+    });
+    expect(emptyMetadataMediaResponse.status).toBe(200);
+    expect(seenMediaInputs.at(-1)).toMatchObject({ filename: "", description: "" });
+
+    await expect(
+      jsonRequest(
+        app.request(`/api/v1/accounts/${testViewerAccount.ref.id}/mute`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${testSession.id}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ notifications: false, durationSeconds: 60 }),
+        }),
+      ),
+    ).resolves.toMatchObject({ data: { account: { rawId: "1" } } });
+    expect(seenMuteInputs).toEqual([
+      {
+        accountId: testViewerAccount.ref.id,
+        sessionId: testSession.id,
+        notifications: false,
+        durationSeconds: 60,
+      },
+    ]);
+
+    const nonJsonMuteResponse = await app.request(
+      `/api/v1/accounts/${testViewerAccount.ref.id}/mute`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${testSession.id}`,
+          "content-type": "text/plain",
+        },
+        body: JSON.stringify({ notifications: false }),
+      },
+    );
+    expect(nonJsonMuteResponse.status).toBe(400);
+    await expect(nonJsonMuteResponse.json()).resolves.toMatchObject({
+      error: { code: "VALIDATION_FAILED" },
+    });
+
+    const nonJsonBoostResponse = await app.request(`/api/v1/posts/${testPost.ref.id}/boost`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${testSession.id}`,
+        "content-type": "text/plain",
+      },
+      body: JSON.stringify({ visibility: "public" }),
+    });
+    expect(nonJsonBoostResponse.status).toBe(400);
+    await expect(nonJsonBoostResponse.json()).resolves.toMatchObject({
+      error: { code: "VALIDATION_FAILED" },
+    });
+
+    const invalidBase64 = await app.request("/graphql", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        query: `mutation($input: UploadMediaInput!) { uploadMedia(input: $input) { ref { rawId } } }`,
+        variables: {
+          input: {
+            origin: "https://example.test",
+            sessionId: testSession.id,
+            fileBase64: "not base64!",
+          },
+        },
+      }),
+    });
+    expect(getFirstGraphQLError(await jsonRequest(invalidBase64)).extensions.activityplug).toEqual({
+      code: "VALIDATION_FAILED",
+      message: "GraphQL input field must be valid base64: fileBase64.",
+    });
+
+    const invalidPollResponse = await app.request("/api/v1/posts", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${testSession.id}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        origin: "https://example.test",
+        content: "",
+        poll: { options: ["yes", " "] },
+      }),
+    });
+    expect(invalidPollResponse.status).toBe(400);
+    await expect(invalidPollResponse.json()).resolves.toMatchObject({
+      error: { code: "VALIDATION_FAILED" },
+    });
+
+    const blankContentResponse = await app.request("/api/v1/posts", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${testSession.id}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        origin: "https://example.test",
+        content: "   ",
+      }),
+    });
+    expect(blankContentResponse.status).toBe(400);
+    await expect(blankContentResponse.json()).resolves.toMatchObject({
+      error: { code: "VALIDATION_FAILED" },
+    });
+
+    const invalidReactionResponse = await app.request(
+      `/api/v1/posts/${testPost.ref.id}/reactions`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${testSession.id}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ emoji: " " }),
+      },
+    );
+    expect(invalidReactionResponse.status).toBe(400);
+    await expect(invalidReactionResponse.json()).resolves.toMatchObject({
+      error: { code: "VALIDATION_FAILED" },
+    });
+
+    const invalidGraphQLPoll = await app.request("/graphql", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        query: `mutation($input: CreatePostInput!) { createPost(input: $input) { ref { rawId } } }`,
+        variables: {
+          input: {
+            origin: "https://example.test",
+            sessionId: testSession.id,
+            content: "",
+            poll: { options: [] },
+          },
+        },
+      }),
+    });
+    expect(
+      getFirstGraphQLError(await jsonRequest(invalidGraphQLPoll)).extensions.activityplug,
+    ).toEqual(expect.objectContaining({ code: "VALIDATION_FAILED" }));
+
+    const blankGraphQLContent = await app.request("/graphql", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        query: `mutation($input: CreatePostInput!) { createPost(input: $input) { ref { rawId } } }`,
+        variables: {
+          input: {
+            origin: "https://example.test",
+            sessionId: testSession.id,
+            content: "   ",
+          },
+        },
+      }),
+    });
+    expect(
+      getFirstGraphQLError(await jsonRequest(blankGraphQLContent)).extensions.activityplug,
+    ).toEqual(expect.objectContaining({ code: "VALIDATION_FAILED" }));
+
+    const introspection = getGraphQLIntrospection(
+      await jsonRequest(
+        app.request("/graphql", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            query:
+              '{ __schema { queryType { fields { name args { name type { kind name ofType { kind name ofType { kind name } } } } type { kind name ofType { kind name ofType { kind name } } } } } mutationType { fields { name args { name type { kind name ofType { kind name ofType { kind name } } } } type { kind name ofType { kind name ofType { kind name } } } } } } __type(name: "SearchInput") { name inputFields { name type { kind name ofType { kind name ofType { kind name } } } } } }',
+          }),
+        }),
+      ),
+    );
+    expect(inputTypeName(introspection, "query", "search", "input")).toBe("SearchInput");
+    expect(inputTypeName(introspection, "query", "accountPosts", "sessionId")).toBe("ID");
+    expect(inputFieldTypeName(introspection, "SearchInput", "sessionId")).toBe("ID");
+    expect(inputTypeName(introspection, "mutation", "uploadMedia", "input")).toBe(
+      "UploadMediaInput",
+    );
+    expect(inputTypeName(introspection, "mutation", "createPost", "input")).toBe("CreatePostInput");
+    expect(inputTypeName(introspection, "mutation", "muteAccount", "input")).toBe(
+      "MuteAccountInput",
+    );
+    expect(inputTypeName(introspection, "mutation", "boostPost", "input")).toBe("BoostPostInput");
+    expect(inputTypeName(introspection, "mutation", "reactToPost", "input")).toBe("ReactPostInput");
+    expect(
+      (
+        createOpenApiDocument({ tokenImport: "open" }).paths["/api/v1/timelines/public"].get
+          .parameters as readonly { readonly name?: string }[]
+      ).some((parameter) => parameter.name === "local"),
+    ).toBe(true);
+
+    const searchCursorGraphQL = await jsonRequest(
+      app.request("/graphql", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: `query($input: SearchInput!) { search(input: $input) { accounts { ref { rawId } } } }`,
+          variables: {
+            input: {
+              origin: "https://example.test",
+              query: "alice",
+              page: { after: "remote" },
+            },
+          },
+        }),
+      }),
+    );
+    expect(getFirstGraphQLError(searchCursorGraphQL).message).toContain(
+      'Field "after" is not defined by type "SearchPageInput".',
+    );
+
+    await expect(
+      jsonRequest(
+        app.request("/api/v1/posts", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${testSession.id}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            origin: "https://example.test",
+            content: "",
+            mediaIds: ["media-1"],
+          }),
+        }),
+      ),
+    ).resolves.toMatchObject({ data: { ref: { rawId: "post-1" } } });
+
+    await expect(
+      jsonRequest(
+        app.request("/graphql", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            query: `mutation($input: CreatePostInput!) { createPost(input: $input) { ref { rawId } } }`,
+            variables: {
+              input: {
+                origin: "https://example.test",
+                sessionId: testSession.id,
+                content: "Poll",
+                poll: {
+                  options: ["Yes", "No"],
+                  multiple: false,
+                  expiresInSeconds: 3600,
+                },
+              },
+            },
+          }),
+        }),
+      ),
+    ).resolves.toMatchObject({ data: { createPost: { ref: { rawId: "post-1" } } } });
+    const mediaForm = new FormData();
+    mediaForm.set("origin", "https://example.test");
+    mediaForm.set("file", new Blob(["x"], { type: "image/png" }), "from-part.png");
+    await expect(
+      jsonRequest(
+        app.request("/api/v1/media", {
+          method: "POST",
+          headers: { authorization: `Bearer ${testSession.id}` },
+          body: mediaForm,
+        }),
+      ),
+    ).resolves.toMatchObject({ data: { ref: { rawId: "media-1" } } });
+    expect(seenMediaInputs.at(-1)).toMatchObject({
+      filename: "from-part.png",
+    });
+    expect(seenCreateInputs).toEqual([
+      {
+        origin: "https://example.test",
+        sessionId: testSession.id,
+        content: "",
+        mediaIds: ["media-1"],
+      },
+      {
+        origin: "https://example.test",
+        sessionId: testSession.id,
+        content: "Poll",
+        poll: {
+          options: ["Yes", "No"],
+          multiple: false,
+          expiresInSeconds: 3600,
+        },
+      },
+    ]);
   });
 
   it("rejects malformed auth request bodies with the typed error envelope", async () => {
@@ -801,22 +1266,13 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
     });
   });
 
-  it("keeps reserved HTTP routes typed and correctly ordered", async () => {
+  it("keeps unimplemented reserved HTTP routes typed", async () => {
     const app = createActivityPlugApp({
       service: createTestService(),
     });
 
-    const relationship = await app.request("/api/v1/accounts/ap_1_bad/relationships");
     const notification = await app.request("/api/v1/notifications");
 
-    expect(relationship.status).toBe(400);
-    await expect(relationship.json()).resolves.toEqual({
-      error: {
-        code: "UNSUPPORTED_OPERATION",
-        message: "This API operation is reserved but not implemented yet.",
-        operation: "account.relationships",
-      },
-    });
     expect(notification.status).toBe(400);
     await expect(notification.json()).resolves.toEqual({
       error: {
@@ -875,6 +1331,44 @@ const testInstance: InstanceProfile = {
   raw: {},
 };
 
+const testPost: Post = {
+  ref: createEntityRef({
+    adapter: "mastodon",
+    origin: "https://example.test",
+    type: "post",
+    id: "post-1",
+  }),
+  author: testViewerAccount,
+  contentHtml: "<p>Hello</p>",
+  createdAt: "2026-04-27T00:00:00.000Z",
+  visibility: "public",
+  sensitive: false,
+  media: [],
+  raw: {},
+};
+
+const testMedia: MediaAttachment = {
+  ref: createEntityRef({
+    adapter: "mastodon",
+    origin: "https://example.test",
+    type: "media",
+    id: "media-1",
+  }),
+  type: "image",
+  url: "https://example.test/media.png",
+  raw: {},
+};
+
+const testRelationship: Relationship = {
+  account: testViewerAccount.ref,
+  following: true,
+  followedBy: false,
+  requested: false,
+  blocking: false,
+  muting: false,
+  raw: {},
+};
+
 const publicOperationMatrix = [
   {
     graphqlType: "query",
@@ -929,12 +1423,22 @@ const publicOperationMatrix = [
   {
     graphqlType: "query",
     graphqlField: "accountPosts",
-    graphqlArgs: ["id", "page"],
+    graphqlArgs: ["id", "page", "sessionId"],
     graphqlReturnType: "PostConnection",
     httpMethod: "get",
     httpPath: "/api/v1/accounts/{id}/posts",
     httpRequestRef: undefined,
     httpResponseDataRef: "#/components/schemas/Post",
+  },
+  {
+    graphqlType: "query",
+    graphqlField: "accountRelationship",
+    graphqlArgs: ["id", "sessionId"],
+    graphqlReturnType: "Relationship",
+    httpMethod: "get",
+    httpPath: "/api/v1/accounts/{id}/relationships",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/Relationship",
   },
   {
     graphqlType: "mutation",
@@ -997,6 +1501,16 @@ const publicOperationMatrix = [
     httpResponseDataRef: undefined,
   },
   {
+    graphqlType: "mutation",
+    graphqlField: "uploadMedia",
+    graphqlArgs: ["input"],
+    graphqlReturnType: "MediaAttachment",
+    httpMethod: "post",
+    httpPath: "/api/v1/media",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/MediaAttachment",
+  },
+  {
     graphqlType: "query",
     graphqlField: "viewer",
     graphqlArgs: ["sessionId"],
@@ -1006,29 +1520,221 @@ const publicOperationMatrix = [
     httpRequestRef: undefined,
     httpResponseDataRef: "#/components/schemas/Account",
   },
+  {
+    graphqlType: "query",
+    graphqlField: "post",
+    graphqlArgs: ["id"],
+    graphqlReturnType: "Post",
+    httpMethod: "get",
+    httpPath: "/api/v1/posts/{id}",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/Post",
+  },
+  {
+    graphqlType: "query",
+    graphqlField: "homeTimeline",
+    graphqlArgs: ["origin", "page", "sessionId"],
+    graphqlReturnType: "TimelineConnection",
+    httpMethod: "get",
+    httpPath: "/api/v1/timelines/home",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/Post",
+  },
+  {
+    graphqlType: "query",
+    graphqlField: "publicTimeline",
+    graphqlArgs: ["adapter", "local", "origin", "page", "sessionId"],
+    graphqlReturnType: "TimelineConnection",
+    httpMethod: "get",
+    httpPath: "/api/v1/timelines/public",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/Post",
+  },
+  {
+    graphqlType: "query",
+    graphqlField: "hashtagTimeline",
+    graphqlArgs: ["adapter", "origin", "page", "tag"],
+    graphqlReturnType: "TimelineConnection",
+    httpMethod: "get",
+    httpPath: "/api/v1/timelines/hashtags/{tag}",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/Post",
+  },
+  {
+    graphqlType: "query",
+    graphqlField: "search",
+    graphqlArgs: ["input"],
+    graphqlReturnType: "SearchResult",
+    httpMethod: "get",
+    httpPath: "/api/v1/search",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/SearchResult",
+  },
+  {
+    graphqlType: "mutation",
+    graphqlField: "createPost",
+    graphqlArgs: ["input"],
+    graphqlReturnType: "Post",
+    httpMethod: "post",
+    httpPath: "/api/v1/posts",
+    httpRequestRef: "#/components/schemas/CreatePostRequest",
+    httpResponseDataRef: "#/components/schemas/Post",
+  },
+  {
+    graphqlType: "mutation",
+    graphqlField: "deletePost",
+    graphqlArgs: ["id", "sessionId"],
+    graphqlReturnType: "DeletedEntity",
+    httpMethod: "delete",
+    httpPath: "/api/v1/posts/{id}",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/DeletedEntity",
+  },
+  {
+    graphqlType: "mutation",
+    graphqlField: "followAccount",
+    graphqlArgs: ["id", "sessionId"],
+    graphqlReturnType: "Relationship",
+    httpMethod: "post",
+    httpPath: "/api/v1/accounts/{id}/follow",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/Relationship",
+  },
+  {
+    graphqlType: "mutation",
+    graphqlField: "unfollowAccount",
+    graphqlArgs: ["id", "sessionId"],
+    graphqlReturnType: "Relationship",
+    httpMethod: "post",
+    httpPath: "/api/v1/accounts/{id}/unfollow",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/Relationship",
+  },
+  {
+    graphqlType: "mutation",
+    graphqlField: "blockAccount",
+    graphqlArgs: ["id", "sessionId"],
+    graphqlReturnType: "Relationship",
+    httpMethod: "post",
+    httpPath: "/api/v1/accounts/{id}/block",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/Relationship",
+  },
+  {
+    graphqlType: "mutation",
+    graphqlField: "unblockAccount",
+    graphqlArgs: ["id", "sessionId"],
+    graphqlReturnType: "Relationship",
+    httpMethod: "post",
+    httpPath: "/api/v1/accounts/{id}/unblock",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/Relationship",
+  },
+  {
+    graphqlType: "mutation",
+    graphqlField: "muteAccount",
+    graphqlArgs: ["input"],
+    graphqlReturnType: "Relationship",
+    httpMethod: "post",
+    httpPath: "/api/v1/accounts/{id}/mute",
+    httpRequestRef: "#/components/schemas/MuteAccountRequest",
+    httpResponseDataRef: "#/components/schemas/Relationship",
+  },
+  {
+    graphqlType: "mutation",
+    graphqlField: "unmuteAccount",
+    graphqlArgs: ["id", "sessionId"],
+    graphqlReturnType: "Relationship",
+    httpMethod: "post",
+    httpPath: "/api/v1/accounts/{id}/unmute",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/Relationship",
+  },
+  {
+    graphqlType: "mutation",
+    graphqlField: "favouritePost",
+    graphqlArgs: ["id", "sessionId"],
+    graphqlReturnType: "Post",
+    httpMethod: "post",
+    httpPath: "/api/v1/posts/{id}/favourite",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/Post",
+  },
+  {
+    graphqlType: "mutation",
+    graphqlField: "unfavouritePost",
+    graphqlArgs: ["id", "sessionId"],
+    graphqlReturnType: "Post",
+    httpMethod: "post",
+    httpPath: "/api/v1/posts/{id}/unfavourite",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/Post",
+  },
+  {
+    graphqlType: "mutation",
+    graphqlField: "bookmarkPost",
+    graphqlArgs: ["id", "sessionId"],
+    graphqlReturnType: "Post",
+    httpMethod: "post",
+    httpPath: "/api/v1/posts/{id}/bookmark",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/Post",
+  },
+  {
+    graphqlType: "mutation",
+    graphqlField: "unbookmarkPost",
+    graphqlArgs: ["id", "sessionId"],
+    graphqlReturnType: "Post",
+    httpMethod: "post",
+    httpPath: "/api/v1/posts/{id}/unbookmark",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/Post",
+  },
+  {
+    graphqlType: "mutation",
+    graphqlField: "boostPost",
+    graphqlArgs: ["input"],
+    graphqlReturnType: "Post",
+    httpMethod: "post",
+    httpPath: "/api/v1/posts/{id}/boost",
+    httpRequestRef: "#/components/schemas/BoostPostRequest",
+    httpResponseDataRef: "#/components/schemas/Post",
+  },
+  {
+    graphqlType: "mutation",
+    graphqlField: "unboostPost",
+    graphqlArgs: ["id", "sessionId"],
+    graphqlReturnType: "Post",
+    httpMethod: "post",
+    httpPath: "/api/v1/posts/{id}/unboost",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/Post",
+  },
+  {
+    graphqlType: "mutation",
+    graphqlField: "reactToPost",
+    graphqlArgs: ["input"],
+    graphqlReturnType: "Post",
+    httpMethod: "post",
+    httpPath: "/api/v1/posts/{id}/reactions",
+    httpRequestRef: "#/components/schemas/ReactPostRequest",
+    httpResponseDataRef: "#/components/schemas/Post",
+  },
+  {
+    graphqlType: "mutation",
+    graphqlField: "unreactToPost",
+    graphqlArgs: ["input"],
+    graphqlReturnType: "Post",
+    httpMethod: "delete",
+    httpPath: "/api/v1/posts/{id}/reactions/{emoji}",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/Post",
+  },
 ] as const;
 
 const reservedOperationMatrix = [
-  reserved("query", "post", "Post", "get", "/api/v1/posts/{id}", false),
   reserved("query", "postContext", "PostContext", "get", "/api/v1/posts/{id}/context", false),
   reserved("query", "postQuotes", "PostConnection", "get", "/api/v1/posts/{id}/quotes", false),
-  reserved("query", "homeTimeline", "TimelineConnection", "get", "/api/v1/timelines/home", true),
-  reserved(
-    "query",
-    "publicTimeline",
-    "TimelineConnection",
-    "get",
-    "/api/v1/timelines/public",
-    false,
-  ),
-  reserved(
-    "query",
-    "hashtagTimeline",
-    "TimelineConnection",
-    "get",
-    "/api/v1/timelines/hashtags/{tag}",
-    false,
-  ),
   reserved(
     "query",
     "listTimeline",
@@ -1037,7 +1743,6 @@ const reservedOperationMatrix = [
     "/api/v1/timelines/lists/{id}",
     true,
   ),
-  reserved("query", "search", "SearchResult", "get", "/api/v1/search", false),
   reserved(
     "query",
     "notifications",
@@ -1066,7 +1771,6 @@ const reservedOperationMatrix = [
     "/api/v1/lists/{id}/accounts",
     true,
   ),
-  reserved("mutation", "uploadMedia", "MediaAttachment", "post", "/api/v1/media", true),
   reserved(
     "mutation",
     "ingestMediaFromUrl",
@@ -1075,58 +1779,7 @@ const reservedOperationMatrix = [
     "/api/v1/media/ingest-url",
     true,
   ),
-  reserved("mutation", "createPost", "Post", "post", "/api/v1/posts", true),
   reserved("mutation", "updatePost", "Post", "patch", "/api/v1/posts/{id}", true),
-  reserved("mutation", "deletePost", "DeletedEntity", "delete", "/api/v1/posts/{id}", true),
-  reserved(
-    "mutation",
-    "followAccount",
-    "Relationship",
-    "post",
-    "/api/v1/accounts/{id}/follow",
-    true,
-  ),
-  reserved(
-    "mutation",
-    "unfollowAccount",
-    "Relationship",
-    "post",
-    "/api/v1/accounts/{id}/unfollow",
-    true,
-  ),
-  reserved("mutation", "blockAccount", "Relationship", "post", "/api/v1/accounts/{id}/block", true),
-  reserved(
-    "mutation",
-    "unblockAccount",
-    "Relationship",
-    "post",
-    "/api/v1/accounts/{id}/unblock",
-    true,
-  ),
-  reserved("mutation", "muteAccount", "Relationship", "post", "/api/v1/accounts/{id}/mute", true),
-  reserved(
-    "mutation",
-    "unmuteAccount",
-    "Relationship",
-    "post",
-    "/api/v1/accounts/{id}/unmute",
-    true,
-  ),
-  reserved("mutation", "favouritePost", "Post", "post", "/api/v1/posts/{id}/favourite", true),
-  reserved("mutation", "unfavouritePost", "Post", "post", "/api/v1/posts/{id}/unfavourite", true),
-  reserved("mutation", "bookmarkPost", "Post", "post", "/api/v1/posts/{id}/bookmark", true),
-  reserved("mutation", "unbookmarkPost", "Post", "post", "/api/v1/posts/{id}/unbookmark", true),
-  reserved("mutation", "boostPost", "Post", "post", "/api/v1/posts/{id}/boost", true),
-  reserved("mutation", "unboostPost", "Post", "post", "/api/v1/posts/{id}/unboost", true),
-  reserved("mutation", "reactToPost", "Post", "post", "/api/v1/posts/{id}/reactions", true),
-  reserved(
-    "mutation",
-    "unreactToPost",
-    "Post",
-    "delete",
-    "/api/v1/posts/{id}/reactions/{emoji}",
-    true,
-  ),
   reserved("mutation", "votePoll", "Poll", "post", "/api/v1/polls/{id}/votes", true),
   reserved(
     "mutation",
@@ -1167,9 +1820,12 @@ const reservedOperationMatrix = [
   ),
 ] as const;
 
-const reservedHttpOnlyOperations = new Set([
-  "GET /api/v1/accounts/{id}/relationships",
+const implementedHttpOnlyOperations = new Set([
   "GET /api/v1/timelines/local",
+  "POST /api/v1/media",
+]);
+
+const reservedHttpOnlyOperations = new Set([
   "GET /api/v1/media/{id}",
   "PATCH /api/v1/media/{id}",
   "DELETE /api/v1/media/{id}",
@@ -1179,7 +1835,7 @@ const reservedHttpOnlyOperations = new Set([
 ]);
 
 const authenticatedHttpOnlyOperations = new Set([
-  "GET /api/v1/accounts/{id}/relationships",
+  "POST /api/v1/media",
   "PATCH /api/v1/media/{id}",
   "DELETE /api/v1/media/{id}",
   "GET /api/v1/streams",
@@ -1223,6 +1879,67 @@ function createTestService(
           hasPreviousPage: false,
         },
       }),
+    },
+    posts: {
+      get: async () => testPost,
+      create: async () => testPost,
+      delete: async () => ({ ref: testPost.ref, deleted: true }),
+    },
+    timelines: {
+      home: async () => ({
+        nodes: [testPost],
+        pageInfo: { hasNextPage: false, hasPreviousPage: false },
+      }),
+      public: async () => ({
+        nodes: [testPost],
+        pageInfo: { hasNextPage: false, hasPreviousPage: false },
+      }),
+      local: async () => ({
+        nodes: [testPost],
+        pageInfo: { hasNextPage: false, hasPreviousPage: false },
+      }),
+      hashtag: async () => ({
+        nodes: [testPost],
+        pageInfo: { hasNextPage: false, hasPreviousPage: false },
+      }),
+    },
+    search: {
+      search: async () => ({
+        accounts: [testViewerAccount],
+        posts: [testPost],
+        hashtags: [],
+        raw: {},
+      }),
+    },
+    media: {
+      upload: async () => ({
+        ref: createEntityRef({
+          adapter: "mastodon",
+          origin: "https://example.test",
+          type: "media",
+          id: "media-1",
+        }),
+        type: "image",
+        url: "https://example.test/media.png",
+        raw: {},
+      }),
+    },
+    social: {
+      relationship: async () => testRelationship,
+      follow: async () => testRelationship,
+      unfollow: async () => testRelationship,
+      block: async () => testRelationship,
+      unblock: async () => testRelationship,
+      mute: async () => testRelationship,
+      unmute: async () => testRelationship,
+      favourite: async () => testPost,
+      unfavourite: async () => testPost,
+      bookmark: async () => testPost,
+      unbookmark: async () => testPost,
+      boost: async () => testPost,
+      unboost: async () => testPost,
+      react: async () => testPost,
+      unreact: async () => testPost,
     },
     auth: {
       importToken: async () => testSession,
@@ -1271,6 +1988,7 @@ function getGraphQLIntrospection(body: unknown): {
       readonly queryType: { readonly fields: readonly IntrospectionField[] };
       readonly mutationType: { readonly fields: readonly IntrospectionField[] };
     };
+    readonly __type?: IntrospectionInputType | null;
   };
 } {
   return body as {
@@ -1280,13 +1998,14 @@ function getGraphQLIntrospection(body: unknown): {
         readonly queryType: { readonly fields: readonly IntrospectionField[] };
         readonly mutationType: { readonly fields: readonly IntrospectionField[] };
       };
+      readonly __type?: IntrospectionInputType | null;
     };
   };
 }
 
 interface IntrospectionField {
   readonly name: string;
-  readonly args: readonly { readonly name: string }[];
+  readonly args: readonly { readonly name: string; readonly type: IntrospectionTypeRef }[];
   readonly type: IntrospectionTypeRef;
 }
 
@@ -1296,9 +2015,45 @@ interface IntrospectionTypeRef {
   readonly ofType?: IntrospectionTypeRef | null;
 }
 
+interface IntrospectionInputType {
+  readonly name?: string | null;
+  readonly inputFields?: readonly {
+    readonly name: string;
+    readonly type: IntrospectionTypeRef;
+  }[];
+}
+
 function typeName(type: IntrospectionTypeRef | undefined): string | undefined {
   if (type === undefined) return undefined;
   return type.name ?? typeName(type.ofType ?? undefined);
+}
+
+function inputTypeName(
+  introspection: ReturnType<typeof getGraphQLIntrospection>,
+  operationType: "query" | "mutation",
+  fieldName: string,
+  argumentName: string,
+): string | undefined {
+  const fields =
+    operationType === "query"
+      ? introspection.data.__schema.queryType.fields
+      : introspection.data.__schema.mutationType.fields;
+  const argument = fields
+    .find((field) => field.name === fieldName)
+    ?.args.find((candidate) => candidate.name === argumentName);
+  return typeName(argument?.type);
+}
+
+function inputFieldTypeName(
+  introspection: ReturnType<typeof getGraphQLIntrospection>,
+  inputType: string,
+  fieldName: string,
+): string | undefined {
+  if (introspection.data.__type?.name !== inputType) return undefined;
+  const field = introspection.data.__type.inputFields?.find(
+    (candidate) => candidate.name === fieldName,
+  );
+  return typeName(field?.type);
 }
 
 function requestBodyRef(operation: unknown): string | undefined {
@@ -1336,11 +2091,14 @@ function refName(value: unknown): string | undefined {
 }
 
 function getFirstGraphQLError(body: unknown): {
+  readonly message: string;
   readonly extensions: { readonly activityplug: unknown };
 } {
   return (
     body as {
-      readonly errors: readonly [{ readonly extensions: { readonly activityplug: unknown } }];
+      readonly errors: readonly [
+        { readonly message: string; readonly extensions: { readonly activityplug: unknown } },
+      ];
     }
   ).errors[0];
 }
@@ -1348,6 +2106,7 @@ function getFirstGraphQLError(body: unknown): {
 function untrackedOpenApiOperations(openapi: ReturnType<typeof createOpenApiDocument>): string[] {
   const tracked = new Set([
     ...standaloneHttpOperations,
+    ...implementedHttpOnlyOperations,
     ...reservedHttpOnlyOperations,
     ...publicOperationMatrix.map(
       (operation) => `${operation.httpMethod.toUpperCase()} ${operation.httpPath}`,
@@ -1398,6 +2157,71 @@ function hasBearerSecurity(operation: unknown): boolean {
       return Array.isArray(record.bearerAuth);
     }) === true
   );
+}
+
+function parameterSchema(
+  openapi: ReturnType<typeof createOpenApiDocument>,
+  path: string,
+  method: string,
+  name: string,
+): unknown {
+  const operation = openapi.paths[path]?.[method] as { readonly parameters?: readonly unknown[] };
+  const parameter = operation.parameters?.find(
+    (candidate) => (candidate as { readonly name?: string }).name === name,
+  );
+  return (parameter as { readonly schema?: unknown } | undefined)?.schema;
+}
+
+function requestSchemaProperty(
+  openapi: ReturnType<typeof createOpenApiDocument>,
+  path: string,
+  method: string,
+  name: string,
+): unknown {
+  const operation = openapi.paths[path]?.[method] as {
+    readonly requestBody?: {
+      readonly content?: {
+        readonly "application/json"?: {
+          readonly schema?: { readonly properties?: Record<string, unknown> };
+        };
+      };
+    };
+  };
+  return operation.requestBody?.content?.["application/json"]?.schema?.properties?.[name];
+}
+
+function componentSchemaProperty(
+  openapi: ReturnType<typeof createOpenApiDocument>,
+  name: string,
+  property: string,
+): unknown {
+  const schemas = openapi.components.schemas as Record<string, unknown>;
+  const schema = schemas[name] as {
+    readonly properties?: Record<string, unknown>;
+  };
+  return schema.properties?.[property];
+}
+
+function componentOneOfProperty(
+  openapi: ReturnType<typeof createOpenApiDocument>,
+  name: string,
+  index: number,
+  property: string,
+): unknown {
+  const schemas = openapi.components.schemas as Record<string, unknown>;
+  const schema = schemas[name] as {
+    readonly oneOf?: readonly { readonly properties?: Record<string, unknown> }[];
+  };
+  return schema.oneOf?.[index]?.properties?.[property];
+}
+
+function operationRequestBody(
+  openapi: ReturnType<typeof createOpenApiDocument>,
+  path: string,
+  method: string,
+): unknown {
+  const operation = openapi.paths[path]?.[method] as { readonly requestBody?: unknown };
+  return operation.requestBody;
 }
 
 function reserved(

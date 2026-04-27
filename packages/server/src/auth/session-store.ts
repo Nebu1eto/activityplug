@@ -8,6 +8,8 @@ export interface AuthSessionStore extends CoreAuthSessionStore {
   readonly deleteExpired: (now?: Date) => Promise<number>;
 }
 
+export type ServerAuthSessionStore = AuthSessionStore;
+
 export interface InMemoryAuthSessionStoreOptions {
   readonly now?: () => Date;
 }
@@ -66,5 +68,6 @@ export class InMemoryAuthSessionStore implements AuthSessionStore {
 
 export function isExpired(session: StoredAuthSession, now: Date = new Date()): boolean {
   if (session.storageExpiresAt === undefined) return false;
-  return Date.parse(session.storageExpiresAt) <= now.getTime();
+  const expiresAt = Date.parse(session.storageExpiresAt);
+  return !Number.isFinite(expiresAt) || expiresAt <= now.getTime();
 }

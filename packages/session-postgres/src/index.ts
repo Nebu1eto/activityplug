@@ -74,16 +74,22 @@ export class PostgresAuthSessionStore implements AuthSessionStore {
 
   public async deleteExpired(now: Date = this.#now()): Promise<number> {
     const result = await this.#client.query<{ readonly count: string }>(
-      `delete from ${this.#tableName} where data ? 'storageExpiresAt' and (data->>'storageExpiresAt')::timestamptz <= $1 returning id`,
+      `delete from ${this.#tableName} where data ? 'storageExpiresAt' and expires_at is not null and expires_at <= $1 returning id`,
       [now.toISOString()],
     );
     return result.rows.length;
   }
 
   private async write(session: StoredAuthSession): Promise<void> {
+    const storageExpiresAt =
+      session.storageExpiresAt === undefined
+        ? null
+        : Number.isFinite(Date.parse(session.storageExpiresAt))
+          ? session.storageExpiresAt
+          : new Date(0).toISOString();
     await this.#client.query(
       `insert into ${this.#tableName} (id, data, expires_at) values ($1, $2, $3) on conflict (id) do update set data = excluded.data, expires_at = excluded.expires_at`,
-      [session.id, session, session.storageExpiresAt ?? null],
+      [session.id, session, storageExpiresAt],
     );
   }
 }

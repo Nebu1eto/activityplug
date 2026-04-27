@@ -53,6 +53,22 @@ describe("RedisAuthSessionStore", () => {
 
     expect(client.lastTtlMs).toBe(60_000);
   });
+
+  it("uses a short Redis TTL for malformed or past storage expiration", async () => {
+    const client = new MemoryRedisClient();
+    const store = new RedisAuthSessionStore({
+      client,
+      now: () => new Date("2026-04-26T00:00:00.000Z"),
+    });
+
+    await store.create(
+      createContractSession("past", { storageExpiresAt: "2026-01-01T00:00:00.000Z" }),
+    );
+    expect(client.lastTtlMs).toBe(1);
+
+    await store.create(createContractSession("malformed", { storageExpiresAt: "not-a-date" }));
+    expect(client.lastTtlMs).toBe(1);
+  });
 });
 
 class MemoryRedisClient implements RedisAuthSessionStoreClient {

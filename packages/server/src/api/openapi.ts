@@ -94,7 +94,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
           },
           message: { type: "string" },
           adapter: { type: "string" },
-          origin: { type: "string" },
+          origin: nonEmptyStringSchema(),
           operation: { type: "string" },
           capability: { type: "string" },
           status: { type: "integer" },
@@ -129,7 +129,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         }),
         Poll: objectSchema(["ref", "expired", "multiple", "options", "raw"], {
           ref: { $ref: "#/components/schemas/EntityRef" },
-          expiresAt: { type: "string" },
+          expiresAt: { type: "string", format: "date-time" },
           expired: { type: "boolean" },
           multiple: { type: "boolean" },
           votesCount: { type: "integer" },
@@ -175,28 +175,99 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
           },
         ),
         PostConnection: connectionSchema({ $ref: "#/components/schemas/Post" }),
+        DeletedEntity: objectSchema(["ref", "deleted"], {
+          ref: { $ref: "#/components/schemas/EntityRef" },
+          deleted: { type: "boolean", const: true },
+          raw: { type: "object", additionalProperties: true },
+        }),
+        Relationship: objectSchema(
+          ["account", "following", "followedBy", "requested", "blocking", "muting", "raw"],
+          {
+            account: { $ref: "#/components/schemas/EntityRef" },
+            following: { type: "boolean" },
+            followedBy: { type: "boolean" },
+            requested: { type: "boolean" },
+            blocking: { type: "boolean" },
+            blockedBy: { type: "boolean" },
+            muting: { type: "boolean" },
+            mutingNotifications: { type: "boolean" },
+            domainBlocking: { type: "boolean" },
+            showingReblogs: { type: "boolean" },
+            notifying: { type: "boolean" },
+            raw: { type: "object", additionalProperties: true },
+          },
+        ),
+        Hashtag: objectSchema(["name", "history", "raw"], {
+          name: { type: "string" },
+          url: { type: "string" },
+          history: {
+            type: "array",
+            items: objectSchema(["day", "raw"], {
+              day: { type: "string" },
+              uses: { type: "integer" },
+              accounts: { type: "integer" },
+              raw: { type: "object", additionalProperties: true },
+            }),
+          },
+          raw: { type: "object", additionalProperties: true },
+        }),
+        SearchResult: objectSchema(["accounts", "posts", "hashtags", "raw"], {
+          accounts: { type: "array", items: { $ref: "#/components/schemas/Account" } },
+          posts: { type: "array", items: { $ref: "#/components/schemas/Post" } },
+          hashtags: { type: "array", items: { $ref: "#/components/schemas/Hashtag" } },
+          raw: { type: "object", additionalProperties: true },
+        }),
+        CreatePostRequest: objectSchema(["origin", "content"], {
+          adapter: adapterSchema(),
+          origin: nonEmptyStringSchema(),
+          content: { type: "string" },
+          visibility: { $ref: "#/components/schemas/PostVisibility" },
+          sensitive: { type: "boolean" },
+          summary: { type: "string" },
+          replyToId: { type: "string" },
+          quoteOfId: { type: "string" },
+          mediaIds: { type: "array", items: { type: "string" } },
+          poll: objectSchema(["options"], {
+            options: { type: "array", minItems: 2, items: nonBlankStringSchema() },
+            multiple: { type: "boolean" },
+            expiresInSeconds: { type: "integer", minimum: 1 },
+          }),
+        }),
+        MuteAccountRequest: objectSchema([], {
+          notifications: { type: "boolean" },
+          durationSeconds: { type: "integer", minimum: 1 },
+        }),
+        BoostPostRequest: objectSchema([], {
+          visibility: { $ref: "#/components/schemas/PostVisibility" },
+        }),
+        ReactPostRequest: objectSchema(["emoji"], {
+          emoji: nonBlankStringSchema(),
+        }),
+        SessionRequest: objectSchema(["sessionId"], {
+          sessionId: nonEmptyStringSchema(),
+        }),
         Notification: { type: "object", additionalProperties: true },
         List: { type: "object", additionalProperties: true },
         TimelineConnection: connectionSchema({ type: "object", additionalProperties: true }),
         NotificationConnection: connectionSchema({ type: "object", additionalProperties: true }),
         ListConnection: connectionSchema({ type: "object", additionalProperties: true }),
         AuthSession: objectSchema(["id", "adapter", "origin", "scopes", "capabilities"], {
-          id: { type: "string" },
+          id: nonEmptyStringSchema(),
           adapter: adapterSchema(),
-          origin: { type: "string" },
+          origin: nonEmptyStringSchema(),
           account: { $ref: "#/components/schemas/EntityRef" },
           scopes: { type: "array", items: { type: "string" } },
           capabilities: { type: "object", additionalProperties: true },
-          expiresAt: { type: "string" },
+          expiresAt: { type: "string", format: "date-time" },
         }),
         AuthSessionInput: objectSchema(["id", "adapter", "origin", "scopes"], {
-          id: { type: "string" },
+          id: nonEmptyStringSchema(),
           adapter: adapterSchema(),
-          origin: { type: "string" },
+          origin: nonEmptyStringSchema(),
           account: { $ref: "#/components/schemas/EntityRef" },
           scopes: { type: "array", items: { type: "string" } },
           capabilities: { type: "object", additionalProperties: true },
-          expiresAt: { type: "string" },
+          expiresAt: { type: "string", format: "date-time" },
         }),
         AuthStartPayload: objectSchema(["clientId", "redirectUris", "authorizationUrl", "state"], {
           clientId: { type: "string" },
@@ -247,23 +318,23 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         },
         AuthImportTokenRequest: objectSchema(["adapter", "origin", "token"], {
           adapter: adapterSchema(),
-          origin: { type: "string" },
+          origin: nonEmptyStringSchema(),
           token: { $ref: "#/components/schemas/TokenSetInput" },
         }),
         AuthRefreshRequest: objectSchema(["adapter", "origin", "session"], {
           adapter: adapterSchema(),
-          origin: { type: "string" },
+          origin: nonEmptyStringSchema(),
           session: { $ref: "#/components/schemas/AuthSessionInput" },
         }),
         AuthRevokeRequest: objectSchema(["adapter", "origin", "session"], {
           adapter: adapterSchema(),
-          origin: { type: "string" },
+          origin: nonEmptyStringSchema(),
           session: { $ref: "#/components/schemas/AuthSessionInput" },
           tokenTypeHint: { type: "string", enum: ["access_token", "refresh_token"] },
         }),
         AuthStartRequest: objectSchema(["adapter", "origin", "client"], {
           adapter: adapterSchema(),
-          origin: { type: "string" },
+          origin: nonEmptyStringSchema(),
           client: { $ref: "#/components/schemas/OAuthClientInput" },
           redirectUri: { type: "string" },
           state: { type: "string" },
@@ -342,8 +413,8 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         }),
         OAuthCallbackStateBinding: objectSchema(["adapter", "origin", "clientRequestId"], {
           adapter: adapterSchema(),
-          origin: { type: "string" },
-          clientRequestId: { type: "string" },
+          origin: nonEmptyStringSchema(),
+          clientRequestId: nonEmptyStringSchema(),
         }),
         OAuthClientInput: {
           oneOf: [
@@ -371,7 +442,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
           accessToken: { type: "string" },
           tokenType: { type: "string" },
           refreshToken: { type: "string" },
-          expiresAt: { type: "string" },
+          expiresAt: { type: "string", format: "date-time" },
           scopes: { type: "array", items: { type: "string" } },
         }),
       },
@@ -415,12 +486,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
           "getInstanceCapabilities",
           "instances",
           [
-            {
-              name: "origin",
-              in: "path",
-              required: true,
-              schema: { type: "string" },
-            },
+            originPathParameter(),
             {
               name: "adapter",
               in: "query",
@@ -439,7 +505,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
           dataRef("InstanceProfile"),
           requestBodySchema(
             objectSchema(["origin"], {
-              origin: { type: "string" },
+              origin: nonEmptyStringSchema(),
               adapter: adapterSchema(),
             }),
           ),
@@ -534,7 +600,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
               name: "origin",
               in: "query",
               required: true,
-              schema: { type: "string" },
+              schema: nonEmptyStringSchema(),
             },
             {
               name: "adapter",
@@ -546,7 +612,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
               name: "handle",
               in: "query",
               required: true,
-              schema: { type: "string" },
+              schema: nonEmptyStringSchema(),
             },
           ],
           dataRef("Account"),
@@ -567,38 +633,86 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
               description: `Values above ${maxPageLimit} are clamped to ${maxPageLimit}.`,
               schema: { type: "integer", minimum: 1 },
             },
+            stringQueryParameter("sessionId"),
           ],
           listRef("Post"),
         ),
       },
       "/api/v1/accounts/{id}/relationships": {
-        get: unsupportedOperation("getAccountRelationships", "accounts", [idPathParameter()], true),
+        get: authenticatedOperation(
+          "getAccountRelationships",
+          "accounts",
+          [idPathParameter()],
+          dataRef("Relationship"),
+        ),
       },
       "/api/v1/accounts/{id}/follow": {
-        post: unsupportedOperation("followAccount", "social", [idPathParameter()], true),
+        post: authenticatedOperation(
+          "followAccount",
+          "social",
+          [idPathParameter()],
+          dataRef("Relationship"),
+        ),
       },
       "/api/v1/accounts/{id}/unfollow": {
-        post: unsupportedOperation("unfollowAccount", "social", [idPathParameter()], true),
+        post: authenticatedOperation(
+          "unfollowAccount",
+          "social",
+          [idPathParameter()],
+          dataRef("Relationship"),
+        ),
       },
       "/api/v1/accounts/{id}/block": {
-        post: unsupportedOperation("blockAccount", "social", [idPathParameter()], true),
+        post: authenticatedOperation(
+          "blockAccount",
+          "social",
+          [idPathParameter()],
+          dataRef("Relationship"),
+        ),
       },
       "/api/v1/accounts/{id}/unblock": {
-        post: unsupportedOperation("unblockAccount", "social", [idPathParameter()], true),
+        post: authenticatedOperation(
+          "unblockAccount",
+          "social",
+          [idPathParameter()],
+          dataRef("Relationship"),
+        ),
       },
       "/api/v1/accounts/{id}/mute": {
-        post: unsupportedOperation("muteAccount", "social", [idPathParameter()], true),
+        post: authenticatedOperation(
+          "muteAccount",
+          "social",
+          [idPathParameter()],
+          dataRef("Relationship"),
+          optionalRequestBodyRef("MuteAccountRequest"),
+        ),
       },
       "/api/v1/accounts/{id}/unmute": {
-        post: unsupportedOperation("unmuteAccount", "social", [idPathParameter()], true),
+        post: authenticatedOperation(
+          "unmuteAccount",
+          "social",
+          [idPathParameter()],
+          dataRef("Relationship"),
+        ),
       },
       "/api/v1/posts": {
-        post: unsupportedOperation("createPost", "posts", undefined, true),
+        post: authenticatedOperation(
+          "createPost",
+          "posts",
+          undefined,
+          dataRef("Post"),
+          requestBodyRef("CreatePostRequest"),
+        ),
       },
       "/api/v1/posts/{id}": {
-        get: unsupportedOperation("getPost", "posts", [idPathParameter()]),
+        get: operation("getPost", "posts", [idPathParameter()], dataRef("Post")),
         patch: unsupportedOperation("updatePost", "posts", [idPathParameter()], true),
-        delete: unsupportedOperation("deletePost", "posts", [idPathParameter()], true),
+        delete: authenticatedOperation(
+          "deletePost",
+          "posts",
+          [idPathParameter()],
+          dataRef("DeletedEntity"),
+        ),
       },
       "/api/v1/posts/{id}/context": {
         get: unsupportedOperation("getPostContext", "posts", [idPathParameter()]),
@@ -613,64 +727,105 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         ),
       },
       "/api/v1/posts/{id}/favourite": {
-        post: unsupportedOperation("favouritePost", "social", [idPathParameter()], true),
+        post: authenticatedOperation(
+          "favouritePost",
+          "social",
+          [idPathParameter()],
+          dataRef("Post"),
+        ),
       },
       "/api/v1/posts/{id}/unfavourite": {
-        post: unsupportedOperation("unfavouritePost", "social", [idPathParameter()], true),
+        post: authenticatedOperation(
+          "unfavouritePost",
+          "social",
+          [idPathParameter()],
+          dataRef("Post"),
+        ),
       },
       "/api/v1/posts/{id}/bookmark": {
-        post: unsupportedOperation("bookmarkPost", "social", [idPathParameter()], true),
+        post: authenticatedOperation(
+          "bookmarkPost",
+          "social",
+          [idPathParameter()],
+          dataRef("Post"),
+        ),
       },
       "/api/v1/posts/{id}/unbookmark": {
-        post: unsupportedOperation("unbookmarkPost", "social", [idPathParameter()], true),
+        post: authenticatedOperation(
+          "unbookmarkPost",
+          "social",
+          [idPathParameter()],
+          dataRef("Post"),
+        ),
       },
       "/api/v1/posts/{id}/boost": {
-        post: unsupportedOperation("boostPost", "social", [idPathParameter()], true),
+        post: authenticatedOperation(
+          "boostPost",
+          "social",
+          [idPathParameter()],
+          dataRef("Post"),
+          optionalRequestBodyRef("BoostPostRequest"),
+        ),
       },
       "/api/v1/posts/{id}/unboost": {
-        post: unsupportedOperation("unboostPost", "social", [idPathParameter()], true),
+        post: authenticatedOperation("unboostPost", "social", [idPathParameter()], dataRef("Post")),
       },
       "/api/v1/posts/{id}/reactions": {
-        post: unsupportedOperation("reactToPost", "social", [idPathParameter()], true),
+        post: authenticatedOperation(
+          "reactToPost",
+          "social",
+          [idPathParameter()],
+          dataRef("Post"),
+          requestBodyRef("ReactPostRequest"),
+        ),
       },
       "/api/v1/posts/{id}/reactions/{emoji}": {
-        delete: unsupportedOperation(
+        delete: authenticatedOperation(
           "unreactToPost",
           "social",
           [
             idPathParameter(),
-            { name: "emoji", in: "path", required: true, schema: { type: "string" } },
+            { name: "emoji", in: "path", required: true, schema: nonBlankStringSchema() },
           ],
-          true,
+          dataRef("Post"),
         ),
       },
       "/api/v1/timelines/home": {
-        get: unsupportedOperation("getHomeTimeline", "timelines", undefined, true, listRef("Post")),
+        get: authenticatedOperation(
+          "getHomeTimeline",
+          "timelines",
+          pageQueryParameters(),
+          listRef("Post"),
+        ),
       },
       "/api/v1/timelines/public": {
-        get: unsupportedOperation(
+        get: operation(
           "getPublicTimeline",
           "timelines",
-          undefined,
-          false,
+          [
+            ...instancePageQueryParameters(),
+            stringQueryParameter("sessionId"),
+            booleanQueryParameter("local"),
+          ],
           listRef("Post"),
         ),
       },
       "/api/v1/timelines/local": {
-        get: unsupportedOperation(
+        get: operation(
           "getLocalTimeline",
           "timelines",
-          undefined,
-          false,
+          [...instancePageQueryParameters(), stringQueryParameter("sessionId")],
           listRef("Post"),
         ),
       },
       "/api/v1/timelines/hashtags/{tag}": {
-        get: unsupportedOperation(
+        get: operation(
           "getHashtagTimeline",
           "timelines",
-          [{ name: "tag", in: "path", required: true, schema: { type: "string" } }],
-          false,
+          [
+            { name: "tag", in: "path", required: true, schema: nonBlankStringSchema() },
+            ...instancePageQueryParameters(),
+          ],
           listRef("Post"),
         ),
       },
@@ -684,7 +839,27 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         ),
       },
       "/api/v1/media": {
-        post: unsupportedOperation("uploadMedia", "media", undefined, true),
+        post: authenticatedOperation(
+          "uploadMedia",
+          "media",
+          undefined,
+          dataRef("MediaAttachment"),
+          {
+            required: true,
+            content: {
+              "multipart/form-data": {
+                schema: objectSchema(["file", "origin"], {
+                  file: { type: "string", format: "binary" },
+                  adapter: adapterSchema(),
+                  origin: nonEmptyStringSchema(),
+                  filename: { type: "string" },
+                  description: { type: "string" },
+                  sensitive: { type: "boolean" },
+                }),
+              },
+            },
+          },
+        ),
       },
       "/api/v1/media/ingest-url": {
         post: unsupportedOperation("ingestMediaFromUrl", "media", undefined, true),
@@ -695,7 +870,32 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         delete: unsupportedOperation("deleteMedia", "media", [idPathParameter()], true),
       },
       "/api/v1/search": {
-        get: unsupportedOperation("search", "search"),
+        get: operation(
+          "search",
+          "search",
+          [
+            ...instanceQueryParameters(),
+            { name: "q", in: "query", required: true, schema: nonEmptyStringSchema() },
+            {
+              name: "limit",
+              in: "query",
+              required: false,
+              description: `Values above ${maxPageLimit} are clamped to ${maxPageLimit}.`,
+              schema: { type: "integer", minimum: 1 },
+            },
+            {
+              name: "type",
+              in: "query",
+              required: false,
+              description:
+                "When omitted, all search subtypes must be supported by the selected adapter. Partial adapters should receive an explicit supported type.",
+              schema: { type: "string", enum: ["accounts", "posts", "hashtags"] },
+            },
+            { name: "resolve", in: "query", required: false, schema: { type: "boolean" } },
+            { name: "sessionId", in: "query", required: false, schema: nonEmptyStringSchema() },
+          ],
+          dataRef("SearchResult"),
+        ),
       },
       "/api/v1/polls/{id}": {
         get: unsupportedOperation("getPoll", "polls", [idPathParameter()]),
@@ -845,9 +1045,9 @@ function validateOperation(
     label.startsWith("POST ") &&
     operationDocument["x-activityplug-reserved"] !== true &&
     !bearerOnlyPostOperations.has(label) &&
-    !hasJsonSchema(operationDocument.requestBody)
+    !hasRequestBodySchema(operationDocument.requestBody)
   ) {
-    throw new TypeError(`OpenAPI operation ${label} must include a typed JSON request body.`);
+    throw new TypeError(`OpenAPI operation ${label} must include a typed request body.`);
   }
   for (const status of ["400", "401", "404", "409", "429", "500", "502", "504"]) {
     const response = operationDocument.responses[status];
@@ -858,7 +1058,20 @@ function validateOperation(
   assertRefsResolve(operationDocument, schemas, responses);
 }
 
-const bearerOnlyPostOperations = new Set(["POST /api/v1/auth/refresh", "POST /api/v1/auth/revoke"]);
+const bearerOnlyPostOperations = new Set([
+  "POST /api/v1/auth/refresh",
+  "POST /api/v1/auth/revoke",
+  "POST /api/v1/accounts/{id}/follow",
+  "POST /api/v1/accounts/{id}/unfollow",
+  "POST /api/v1/accounts/{id}/block",
+  "POST /api/v1/accounts/{id}/unblock",
+  "POST /api/v1/accounts/{id}/unmute",
+  "POST /api/v1/posts/{id}/favourite",
+  "POST /api/v1/posts/{id}/unfavourite",
+  "POST /api/v1/posts/{id}/bookmark",
+  "POST /api/v1/posts/{id}/unbookmark",
+  "POST /api/v1/posts/{id}/unboost",
+]);
 
 function assertDataEnvelope(label: string, response: unknown): void {
   const schema = getJsonSchema(response);
@@ -990,6 +1203,13 @@ function requestBodyRef(name: string): unknown {
   };
 }
 
+function optionalRequestBodyRef(name: string): unknown {
+  return {
+    required: false,
+    content: jsonContent({ $ref: `#/components/schemas/${name}` }),
+  };
+}
+
 function requestBodySchema(schema: unknown): unknown {
   return {
     required: true,
@@ -1004,6 +1224,75 @@ function pageParameter(name: "after" | "before"): unknown {
     required: false,
     schema: { type: "string", minLength: 1 },
   };
+}
+
+function nonBlankStringSchema(): unknown {
+  return {
+    type: "string",
+    minLength: 1,
+    pattern: "\\S",
+    description: "Must contain at least one non-whitespace character.",
+  };
+}
+
+function nonEmptyStringSchema(): unknown {
+  return {
+    type: "string",
+    minLength: 1,
+  };
+}
+
+function pageQueryParameters(): readonly unknown[] {
+  return [
+    pageParameter("after"),
+    pageParameter("before"),
+    {
+      name: "limit",
+      in: "query",
+      required: false,
+      description: `Values above ${maxPageLimit} are clamped to ${maxPageLimit}.`,
+      schema: { type: "integer", minimum: 1 },
+    },
+  ];
+}
+
+function instancePageQueryParameters(): readonly unknown[] {
+  return [...instanceQueryParameters(), ...pageQueryParameters()];
+}
+
+function booleanQueryParameter(name: string): unknown {
+  return {
+    name,
+    in: "query",
+    required: false,
+    schema: { type: "boolean" },
+  };
+}
+
+function stringQueryParameter(name: string): unknown {
+  return {
+    name,
+    in: "query",
+    required: false,
+    schema: nonEmptyStringSchema(),
+  };
+}
+
+function instanceQueryParameters(): readonly unknown[] {
+  return [
+    {
+      name: "origin",
+      in: "query",
+      required: true,
+      schema: nonEmptyStringSchema(),
+    },
+    {
+      name: "adapter",
+      in: "query",
+      required: false,
+      schema: adapterSchema(),
+    },
+  ];
 }
 
 function dataRef(name: string): unknown {
@@ -1055,7 +1344,7 @@ function connectionSchema(nodeSchema: unknown): unknown {
 function authExchangeCommonProperties(): Record<string, unknown> {
   return {
     adapter: adapterSchema(),
-    origin: { type: "string" },
+    origin: nonEmptyStringSchema(),
     client: { $ref: "#/components/schemas/OAuthClientRegistration" },
     redirectUri: { type: "string" },
     codeVerifier: { type: "string" },
@@ -1092,6 +1381,14 @@ function standardErrorResponses(): Record<string, unknown> {
 
 function hasJsonSchema(response: unknown): boolean {
   return getJsonSchema(response) !== undefined;
+}
+
+function hasRequestBodySchema(requestBody: unknown): boolean {
+  if (hasJsonSchema(requestBody)) return true;
+  if (!isRecord(requestBody) || !isRecord(requestBody.content)) return false;
+  return Object.values(requestBody.content).some(
+    (entry) => isRecord(entry) && entry.schema !== undefined,
+  );
 }
 
 function getJsonSchema(response: unknown): unknown {

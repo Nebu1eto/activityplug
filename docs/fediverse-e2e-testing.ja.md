@@ -64,21 +64,31 @@ Fediverse E2E suite を skip します。provision 済みの target がない場
 `ACTIVITYPLUG_FEDIVERSE_REQUIRED_ADAPTERS` を設定するため、すべてのサーバーを
 同時に起動しなくても同じ strict check を使えます。
 
-初期 baseline は、インスタンスプロファイルの読み取り、トークンがある場合の
-viewer 検証、アカウント検索、アカウント投稿一覧、ActivityPlug page limit
-clamp を検証します。テストは公開インスタンスへ fallback してはいけません。
+baseline は、インスタンスプロファイルの読み取り、トークンがある場合の viewer
+検証、アカウント検索、アカウント投稿一覧、公開タイムラインの読み取り、マップ
+済みの場合の local タイムラインの読み取り、マップ済みの場合の hashtag
+タイムライン、マップ済みの場合のアカウント検索、マップ済みの場合の hashtag
+検索、マップ済みの場合の認証付き投稿検索、マップ済みの場合のホームタイムライン
+の読み取り、マップ済みの場合のメディアアップロード、マップ済みの場合の投稿の
+作成/削除、テスト所有の投稿に対する capability ベースの投稿 social action
+を検証します。target が `socialActionHandle` を提供する場合は、disposable local
+account に対する follow/unfollow、block/unblock、mute/unmute も検証します。
+テストは公開インスタンスへ fallback してはいけません。
 
 対象ごとの注意点:
 
  -  Mastodon はこの profile で公開 HTTPS origin を要求するため、ローカルの
     Caddy サービスの背後で動かします。
     `https://mastodon.127.0.0.1.nip.io:41080` を使い、このローカルテストで
-    のみ `NODE_TLS_REJECT_UNAUTHORIZED=0` を設定します。
- -  Misskey の provision は、データベースで federation を有効にし、admin
-    session を作成してから seed note と token target を作ります。
+    のみ `NODE_TLS_REJECT_UNAUTHORIZED=0` を設定します。Provision は viewer
+    account と disposable social-action account の両方を作成します。
+ -  Misskey の provision は、データベースで federation を有効にし、既定の
+    `canSearchNotes` policy を有効にし、note search 用の Meilisearch を起動し
+    ます。その後、admin session と disposable social-action account を作成し、
+    seed note が index されるまで待ってから token target を作ります。
  -  Pleroma の provision は、`pleroma_ctl` でローカルユーザーを作成し、
-    Mastodon-compatible OAuth application を登録し、password-grant token と
-    public seed status を作ります。
+    Mastodon-compatible OAuth application を登録し、password-grant token、
+    disposable social-action account、public seed status を作ります。
  -  Hollo の provision は、account、token、public post に必要な PostgreSQL
     row を直接 seed します。固定された Hollo image が、この fixture に必要な
     Mastodon-compatible bootstrap surface をすべて提供していないためです。

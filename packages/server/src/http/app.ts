@@ -19,9 +19,13 @@ import {
   serializeAuthStart,
   serializeAuthSession,
   serializeCapabilitySetPayload,
+  serializeDeletedEntity,
   serializeInstanceProfile,
+  serializeMediaAttachment,
   serializeParsedAuthCallback,
   serializePost,
+  serializeRelationship,
+  serializeSearchResult,
   type ActivityPlugApiService,
   type AuthExchangeRequest,
   type AuthParseCallbackRequest,
@@ -252,6 +256,8 @@ export function createActivityPlugApp(options: CreateActivityPlugAppOptions): Ho
     const page = pageQuery(context);
     const connection = await options.service.accounts.posts({
       id: context.req.param("id"),
+      ...optionalBearerSessionId(context.req.header("authorization")),
+      ...optionalQuery(context.req.query("sessionId"), "sessionId"),
       ...(page === undefined ? {} : { page }),
     });
     return context.json(
@@ -260,6 +266,266 @@ export function createActivityPlugApp(options: CreateActivityPlugAppOptions): Ho
         {
           pageInfo: connection.pageInfo,
         },
+      ),
+    );
+  });
+  app.get("/api/v1/posts/:id", async (context) =>
+    context.json(
+      data(serializePost(await options.service.posts.get({ id: context.req.param("id") }))),
+    ),
+  );
+  app.post("/api/v1/posts", async (context) =>
+    context.json(
+      data(
+        serializePost(
+          await options.service.posts.create({
+            ...createPostRequest(await parseJsonBody(context.req.json())),
+            sessionId: bearerSessionId(context.req.header("authorization")),
+          }),
+        ),
+      ),
+    ),
+  );
+  app.delete("/api/v1/posts/:id", async (context) =>
+    context.json(
+      data(
+        serializeDeletedEntity(
+          await options.service.posts.delete({
+            id: context.req.param("id"),
+            sessionId: bearerSessionId(context.req.header("authorization")),
+          }),
+        ),
+      ),
+    ),
+  );
+  app.get("/api/v1/timelines/home", async (context) => {
+    const page = pageQuery(context);
+    const connection = await options.service.timelines.home({
+      sessionId: bearerSessionId(context.req.header("authorization")),
+      ...(page === undefined ? {} : { page }),
+    });
+    return context.json(
+      data(
+        connection.nodes.map((post) => serializePost(post)),
+        { pageInfo: connection.pageInfo },
+      ),
+    );
+  });
+  app.get("/api/v1/timelines/public", async (context) => {
+    const page = pageQuery(context);
+    const connection = await options.service.timelines.public({
+      ...instanceSelectorQuery(context, "timeline.public"),
+      ...optionalQueryBoolean(context.req.query("local"), "local"),
+      ...optionalQuery(context.req.query("sessionId"), "sessionId"),
+      ...(page === undefined ? {} : { page }),
+    });
+    return context.json(
+      data(
+        connection.nodes.map((post) => serializePost(post)),
+        { pageInfo: connection.pageInfo },
+      ),
+    );
+  });
+  app.get("/api/v1/timelines/local", async (context) => {
+    const page = pageQuery(context);
+    const connection = await options.service.timelines.local({
+      ...instanceSelectorQuery(context, "timeline.local"),
+      ...optionalQuery(context.req.query("sessionId"), "sessionId"),
+      ...(page === undefined ? {} : { page }),
+    });
+    return context.json(
+      data(
+        connection.nodes.map((post) => serializePost(post)),
+        { pageInfo: connection.pageInfo },
+      ),
+    );
+  });
+  app.get("/api/v1/timelines/hashtags/:tag", async (context) => {
+    const page = pageQuery(context);
+    const tag = context.req.param("tag");
+    if (tag.trim().length === 0) {
+      throw new ActivityPlugError("VALIDATION_FAILED", "Hashtag timeline tag must be non-empty.");
+    }
+    const connection = await options.service.timelines.hashtag({
+      ...instanceSelectorQuery(context, "timeline.hashtag"),
+      tag,
+      ...(page === undefined ? {} : { page }),
+    });
+    return context.json(
+      data(
+        connection.nodes.map((post) => serializePost(post)),
+        { pageInfo: connection.pageInfo },
+      ),
+    );
+  });
+  app.get("/api/v1/search", async (context) =>
+    context.json(
+      data(
+        serializeSearchResult(
+          await options.service.search.search({
+            ...instanceSelectorQuery(context, "search"),
+            query: requiredQuery(context, "q"),
+            ...optionalSearchType(context.req.query("type")),
+            ...optionalQueryBoolean(context.req.query("resolve"), "resolve"),
+            ...optionalQuery(context.req.query("sessionId"), "sessionId"),
+            ...(searchPageQuery(context) === undefined ? {} : { page: searchPageQuery(context) }),
+          }),
+        ),
+      ),
+    ),
+  );
+  app.get("/api/v1/accounts/:id/relationships", async (context) =>
+    context.json(
+      data(
+        serializeRelationship(
+          await options.service.social.relationship({
+            accountId: context.req.param("id"),
+            sessionId: bearerSessionId(context.req.header("authorization")),
+          }),
+        ),
+      ),
+    ),
+  );
+  registerRelationshipAction(
+    app,
+    options.service,
+    "post",
+    "/api/v1/accounts/:id/follow",
+    (service, input) => service.social.follow(input),
+  );
+  registerRelationshipAction(
+    app,
+    options.service,
+    "post",
+    "/api/v1/accounts/:id/unfollow",
+    (service, input) => service.social.unfollow(input),
+  );
+  registerRelationshipAction(
+    app,
+    options.service,
+    "post",
+    "/api/v1/accounts/:id/block",
+    (service, input) => service.social.block(input),
+  );
+  registerRelationshipAction(
+    app,
+    options.service,
+    "post",
+    "/api/v1/accounts/:id/unblock",
+    (service, input) => service.social.unblock(input),
+  );
+  app.post("/api/v1/accounts/:id/mute", async (context) => {
+    const body = await optionalJsonObject(context.req.raw);
+    return context.json(
+      data(
+        serializeRelationship(
+          await options.service.social.mute({
+            accountId: context.req.param("id"),
+            sessionId: bearerSessionId(context.req.header("authorization")),
+            ...optionalBooleanBody(body, "notifications"),
+            ...optionalIntegerBody(body, "durationSeconds"),
+          }),
+        ),
+      ),
+    );
+  });
+  registerRelationshipAction(
+    app,
+    options.service,
+    "post",
+    "/api/v1/accounts/:id/unmute",
+    (service, input) => service.social.unmute(input),
+  );
+  registerPostAction(
+    app,
+    options.service,
+    "post",
+    "/api/v1/posts/:id/favourite",
+    (service, input) => service.social.favourite(input),
+  );
+  registerPostAction(
+    app,
+    options.service,
+    "post",
+    "/api/v1/posts/:id/unfavourite",
+    (service, input) => service.social.unfavourite(input),
+  );
+  registerPostAction(app, options.service, "post", "/api/v1/posts/:id/bookmark", (service, input) =>
+    service.social.bookmark(input),
+  );
+  registerPostAction(
+    app,
+    options.service,
+    "post",
+    "/api/v1/posts/:id/unbookmark",
+    (service, input) => service.social.unbookmark(input),
+  );
+  app.post("/api/v1/posts/:id/boost", async (context) => {
+    const body = await optionalJsonObject(context.req.raw);
+    return context.json(
+      data(
+        serializePost(
+          await options.service.social.boost({
+            postId: context.req.param("id"),
+            sessionId: bearerSessionId(context.req.header("authorization")),
+            ...optionalVisibility(body),
+          }),
+        ),
+      ),
+    );
+  });
+  registerPostAction(app, options.service, "post", "/api/v1/posts/:id/unboost", (service, input) =>
+    service.social.unboost(input),
+  );
+  app.post("/api/v1/posts/:id/reactions", async (context) => {
+    const body = requireObjectBody(await parseJsonBody(context.req.json()));
+    return context.json(
+      data(
+        serializePost(
+          await options.service.social.react({
+            postId: context.req.param("id"),
+            sessionId: bearerSessionId(context.req.header("authorization")),
+            emoji: requiredNonBlankString(body, "emoji"),
+          }),
+        ),
+      ),
+    );
+  });
+  app.delete("/api/v1/posts/:id/reactions/:emoji", async (context) =>
+    context.json(
+      data(
+        serializePost(
+          await options.service.social.unreact({
+            postId: context.req.param("id"),
+            sessionId: bearerSessionId(context.req.header("authorization")),
+            emoji: nonBlankValue(context.req.param("emoji"), "emoji"),
+          }),
+        ),
+      ),
+    ),
+  );
+  app.post("/api/v1/media", async (context) => {
+    const body = await parseFormData(context.req.raw);
+    const file = body.get("file");
+    if (!(file instanceof Blob)) {
+      throw new ActivityPlugError("VALIDATION_FAILED", "Multipart media upload requires a file.");
+    }
+    const selector = {
+      ...optionalQuery(formString(body, "adapter"), "adapter"),
+      origin: requiredFormString(body, "origin"),
+    };
+    return context.json(
+      data(
+        serializeMediaAttachment(
+          await options.service.media.upload({
+            ...selector,
+            sessionId: bearerSessionId(context.req.header("authorization")),
+            file,
+            ...mediaUploadFilename(body, file),
+            ...optionalFormString(body, "description"),
+            ...optionalFormBoolean(body, "sensitive"),
+          }),
+        ),
       ),
     );
   });
@@ -346,6 +612,54 @@ function data<T, Extra extends object = Record<never, never>>(
   return { data: value, ...(extra ?? ({} as Extra)) };
 }
 
+function registerRelationshipAction(
+  app: Hono,
+  service: ActivityPlugApiService,
+  method: "post",
+  path: string,
+  action: (
+    service: ActivityPlugApiService,
+    input: { readonly accountId: string; readonly sessionId: string },
+  ) => Promise<import("@activityplug/core").Relationship>,
+): void {
+  app.on(method, path, async (context) =>
+    context.json(
+      data(
+        serializeRelationship(
+          await action(service, {
+            accountId: requiredPathParam(context, "id"),
+            sessionId: bearerSessionId(context.req.header("authorization")),
+          }),
+        ),
+      ),
+    ),
+  );
+}
+
+function registerPostAction(
+  app: Hono,
+  service: ActivityPlugApiService,
+  method: "post",
+  path: string,
+  action: (
+    service: ActivityPlugApiService,
+    input: { readonly postId: string; readonly sessionId: string },
+  ) => Promise<import("@activityplug/core").Post>,
+): void {
+  app.on(method, path, async (context) =>
+    context.json(
+      data(
+        serializePost(
+          await action(service, {
+            postId: requiredPathParam(context, "id"),
+            sessionId: bearerSessionId(context.req.header("authorization")),
+          }),
+        ),
+      ),
+    ),
+  );
+}
+
 function bearerSessionId(authorization: string | undefined): string {
   const [scheme, ...rest] = authorization?.split(/\s+/u) ?? [];
   if (scheme?.toLowerCase() !== "bearer") {
@@ -358,8 +672,29 @@ function bearerSessionId(authorization: string | undefined): string {
   return sessionId;
 }
 
+function optionalBearerSessionId(
+  authorization: string | undefined,
+): Record<"sessionId", string> | Record<string, never> {
+  if (authorization === undefined || authorization.trim().length === 0) return {};
+  return { sessionId: bearerSessionId(authorization) };
+}
+
+function requiredPathParam(context: Context, name: string): string {
+  const value = context.req.param(name);
+  if (value === undefined || value.length === 0) {
+    throw new ActivityPlugError("VALIDATION_FAILED", `Request path parameter is missing: ${name}.`);
+  }
+  return value;
+}
+
 function optionalQuery(value: string | undefined, name: string): Record<string, string> {
-  if (value === undefined || value.length === 0) return {};
+  if (value === undefined) return {};
+  if (value.length === 0) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `Request query parameter must be a non-empty string: ${name}.`,
+    );
+  }
   return { [name]: value };
 }
 
@@ -402,6 +737,18 @@ function pageQuery(context: Context):
   return Object.keys(page).length === 0 ? undefined : page;
 }
 
+function searchPageQuery(context: Context): { readonly limit?: number } | undefined {
+  if (context.req.query("after") !== undefined || context.req.query("before") !== undefined) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "Search pagination only accepts limit because public search cursors are not mapped yet.",
+      { operation: "search" },
+    );
+  }
+  const page = optionalLimit(context.req.query("limit"));
+  return Object.keys(page).length === 0 ? undefined : page;
+}
+
 function optionalPageCursor(
   value: string | undefined,
   name: "after" | "before",
@@ -428,6 +775,191 @@ function optionalLimit(value: string | undefined): { readonly limit?: number } {
   return { limit: Math.min(limit, maxPageLimit) };
 }
 
+function instanceSelectorQuery(
+  context: Context,
+  operation: string,
+): { readonly adapter?: string; readonly origin: string } {
+  return {
+    ...optionalQuery(context.req.query("adapter"), "adapter"),
+    origin: requiredQueryWithOperation(context, "origin", operation),
+  };
+}
+
+function requiredQueryWithOperation(context: Context, name: string, operation: string): string {
+  const value = context.req.query(name);
+  if (value === undefined || value.length === 0) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `Request query parameter must be a non-empty string: ${name}.`,
+      { operation },
+    );
+  }
+  return value;
+}
+
+function optionalSearchType(value: string | undefined): {
+  readonly type?: "accounts" | "posts" | "hashtags";
+} {
+  if (value === undefined) return {};
+  if (value !== "accounts" && value !== "posts" && value !== "hashtags") {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "Search type must be accounts, posts, or hashtags.",
+      { operation: "search" },
+    );
+  }
+  return { type: value };
+}
+
+function optionalQueryBoolean(value: string | undefined, name: string): Record<string, boolean> {
+  if (value === undefined) return {};
+  if (value !== "true" && value !== "false") {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `Request query parameter must be true or false: ${name}.`,
+    );
+  }
+  return { [name]: value === "true" };
+}
+
+function createPostRequest(
+  body: unknown,
+): Omit<Parameters<ActivityPlugApiService["posts"]["create"]>[0], "sessionId"> {
+  const request = requireObjectBody(body);
+  const normalized = {
+    ...instanceSelectorBody(request),
+    content: requiredStringValue(request, "content"),
+    ...optionalVisibility(request),
+    ...optionalBooleanBody(request, "sensitive"),
+    ...optionalString(request, "summary"),
+    ...optionalString(request, "replyToId"),
+    ...optionalString(request, "quoteOfId"),
+    ...optionalStringArray(request, "mediaIds"),
+    ...optionalPoll(request),
+  };
+  assertCreatePostPayload(normalized);
+  return normalized;
+}
+
+function mediaUploadFilename(body: FormData, file: Blob): Record<string, string> {
+  const explicitFilename = optionalFormString(body, "filename");
+  if (explicitFilename.filename !== undefined) return explicitFilename;
+  if (file instanceof File && file.name.length > 0) return { filename: file.name };
+  return {};
+}
+
+function assertCreatePostPayload(request: {
+  readonly content: string;
+  readonly mediaIds?: readonly string[];
+  readonly poll?: unknown;
+  readonly replyToId?: string;
+  readonly quoteOfId?: string;
+}): void {
+  if (
+    request.content.trim().length > 0 ||
+    (request.mediaIds !== undefined && request.mediaIds.length > 0) ||
+    request.poll !== undefined ||
+    request.replyToId !== undefined ||
+    request.quoteOfId !== undefined
+  ) {
+    return;
+  }
+  throw new ActivityPlugError(
+    "VALIDATION_FAILED",
+    "Post creation requires text, media, a poll, or a reply/quote target.",
+  );
+}
+
+function instanceSelectorBody(request: Record<string, unknown>): {
+  readonly adapter?: string;
+  readonly origin: string;
+} {
+  return {
+    ...optionalString(request, "adapter"),
+    origin: requiredString(request, "origin"),
+  };
+}
+
+function optionalVisibility(body: Record<string, unknown>): {
+  readonly visibility?:
+    | "public"
+    | "unlisted"
+    | "followers"
+    | "direct"
+    | "local"
+    | "list"
+    | "none"
+    | "unknown";
+} {
+  const value = body.visibility;
+  if (value === undefined) return {};
+  if (
+    value !== "public" &&
+    value !== "unlisted" &&
+    value !== "followers" &&
+    value !== "direct" &&
+    value !== "local" &&
+    value !== "list" &&
+    value !== "none" &&
+    value !== "unknown"
+  ) {
+    throw new ActivityPlugError("VALIDATION_FAILED", "Request body visibility is invalid.");
+  }
+  return { visibility: value };
+}
+
+function optionalBooleanBody(
+  body: Record<string, unknown>,
+  field: string,
+): Record<string, boolean> {
+  const value = body[field];
+  if (value === undefined) return {};
+  if (typeof value !== "boolean") {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `Request body field must be a boolean: ${field}.`,
+    );
+  }
+  return { [field]: value };
+}
+
+function optionalPoll(body: Record<string, unknown>): {
+  readonly poll?: {
+    readonly options: readonly string[];
+    readonly multiple?: boolean;
+    readonly expiresInSeconds?: number;
+  };
+} {
+  if (body.poll === undefined) return {};
+  const poll = requireObjectBody(body.poll);
+  const options = requiredStringArray(poll, "options");
+  if (options.length < 2 || options.some((option) => option.trim().length === 0)) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "Request body poll options must include at least two non-empty strings.",
+    );
+  }
+  return {
+    poll: {
+      options,
+      ...optionalBooleanBody(poll, "multiple"),
+      ...optionalIntegerBody(poll, "expiresInSeconds"),
+    },
+  };
+}
+
+function optionalIntegerBody(body: Record<string, unknown>, field: string): Record<string, number> {
+  const value = body[field];
+  if (value === undefined) return {};
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `Request body field must be a positive integer: ${field}.`,
+    );
+  }
+  return { [field]: value };
+}
+
 async function parseJsonBody(body: Promise<unknown>): Promise<unknown> {
   try {
     return await body;
@@ -441,16 +973,90 @@ async function parseJsonBody(body: Promise<unknown>): Promise<unknown> {
   }
 }
 
+async function optionalJsonObject(request: Request): Promise<Record<string, unknown>> {
+  const contentType = request.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json"))
+    return requireObjectBody(await parseJsonBody(request.json()));
+  if (request.body === null) return {};
+  const body = await request.text();
+  if (body.length === 0) return {};
+  throw new ActivityPlugError(
+    "VALIDATION_FAILED",
+    "Request body must use application/json when a JSON body is provided.",
+  );
+}
+
+async function parseFormData(request: Request): Promise<FormData> {
+  try {
+    return await request.formData();
+  } catch (cause) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "Request body must be multipart form data.",
+      {},
+      { cause },
+    );
+  }
+}
+
+function formString(form: FormData, field: string): string | undefined {
+  const value = form.get(field);
+  if (value === null) return undefined;
+  if (typeof value !== "string" || value.length === 0) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `Multipart field must be a non-empty string: ${field}.`,
+    );
+  }
+  return value;
+}
+
+function requiredFormString(form: FormData, field: string): string {
+  const value = formString(form, field);
+  if (value === undefined) {
+    throw new ActivityPlugError("VALIDATION_FAILED", `Multipart field is required: ${field}.`);
+  }
+  return value;
+}
+
+function optionalFormString(form: FormData, field: string): Record<string, string> {
+  const value = form.get(field);
+  if (value !== null && typeof value !== "string") {
+    throw new ActivityPlugError("VALIDATION_FAILED", `Multipart field must be a string: ${field}.`);
+  }
+  return value === null ? {} : { [field]: value };
+}
+
+function optionalFormBoolean(form: FormData, field: string): Record<string, boolean> {
+  const value = formString(form, field);
+  if (value === undefined) return {};
+  if (value !== "true" && value !== "false") {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `Multipart field must be true or false: ${field}.`,
+    );
+  }
+  return { [field]: value === "true" };
+}
+
+function assertValidDateTime(value: string, field: string): void {
+  if (!Number.isFinite(Date.parse(value))) {
+    throw new ActivityPlugError("VALIDATION_FAILED", `${field} must be a valid date-time string.`);
+  }
+}
+
 function importTokenRequest(body: unknown): ImportTokenRequest {
   const request = requireObjectBody(body);
   const token = request.token === undefined ? request : requireObjectBody(request.token);
+  const expiresAt = optionalString(token, "expiresAt").expiresAt;
+  if (expiresAt !== undefined) assertValidDateTime(expiresAt, "expiresAt");
   return {
     adapter: requiredString(request, "adapter"),
     origin: requiredString(request, "origin"),
     accessToken: requiredString(token, "accessToken"),
     ...optionalString(token, "tokenType"),
     ...optionalString(token, "refreshToken"),
-    ...optionalString(token, "expiresAt"),
+    ...(expiresAt === undefined ? {} : { expiresAt }),
     ...optionalStringArray(token, "scopes"),
   };
 }
@@ -562,6 +1168,32 @@ function requiredString(body: Record<string, unknown>, field: string): string {
     throw new ActivityPlugError(
       "VALIDATION_FAILED",
       `Request body field must be a non-empty string: ${field}.`,
+    );
+  }
+  return value;
+}
+
+function requiredNonBlankString(body: Record<string, unknown>, field: string): string {
+  const value = requiredString(body, field);
+  return nonBlankValue(value, field);
+}
+
+function nonBlankValue(value: string, field: string): string {
+  if (value.trim().length === 0) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `Request body field must be a non-empty string: ${field}.`,
+    );
+  }
+  return value;
+}
+
+function requiredStringValue(body: Record<string, unknown>, field: string): string {
+  const value = body[field];
+  if (typeof value !== "string") {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `Request body field must be a string: ${field}.`,
     );
   }
   return value;

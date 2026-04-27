@@ -42,6 +42,7 @@
     "hono": "^4.12.15"
   },
   "devDependencies": {
+    "@activityplug/e2e-fixtures": "workspace:*",
     "@activityplug/test-fixtures": "workspace:*"
   }
 }

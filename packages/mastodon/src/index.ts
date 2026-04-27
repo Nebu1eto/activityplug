@@ -6,11 +6,16 @@ import {
 
 export type MastodonAdapterOptions = Omit<
   MastodonBaseAdapterOptions,
-  "id" | "displayName" | "kind" | "supportedSoftware" | "supportsRefreshToken"
+  | "id"
+  | "displayName"
+  | "kind"
+  | "supportedSoftware"
+  | "supportsRefreshToken"
+  | "supportsLocalVisibility"
 >;
 
 export function createMastodonAdapter(options: MastodonAdapterOptions = {}): ActivityPlugAdapter {
-  return createMastodonBaseAdapter({
+  const adapter = createMastodonBaseAdapter({
     ...options,
     id: "mastodon",
     displayName: "Mastodon",
@@ -18,6 +23,22 @@ export function createMastodonAdapter(options: MastodonAdapterOptions = {}): Act
     supportedSoftware: ["mastodon"],
     supportsRefreshToken: false,
   });
+  return {
+    ...adapter,
+    metadata: {
+      ...adapter.metadata,
+      staticCapabilities: {
+        ...adapter.metadata.staticCapabilities,
+        "search.posts": {
+          name: "search.posts",
+          status: "unsupported",
+          source: "static",
+          reason:
+            "Mastodon status search depends on instance search indexing and is not assumed by this adapter.",
+        },
+      },
+    },
+  };
 }
 
 export const mastodonAdapter = createMastodonAdapter();

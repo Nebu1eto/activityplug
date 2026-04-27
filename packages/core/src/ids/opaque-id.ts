@@ -22,7 +22,10 @@ export function encodeOpaqueId(raw: RawEntityId): OpaqueId {
   return `${PREFIX}_${VERSION}_${toBase64Url(payload)}` as OpaqueId;
 }
 
-export function decodeOpaqueId(id: string): RawEntityId {
+export function decodeOpaqueId(id: unknown): RawEntityId {
+  if (typeof id !== "string") {
+    throw invalidOpaqueId("Opaque ID must be a string.");
+  }
   const [prefix, version, payload, ...rest] = id.split("_");
   if (prefix !== PREFIX || version !== VERSION || payload === undefined || rest.length > 0) {
     throw invalidOpaqueId("Opaque ID has an invalid envelope.");

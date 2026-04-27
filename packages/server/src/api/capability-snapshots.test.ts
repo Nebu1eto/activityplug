@@ -1,5 +1,6 @@
 import {
   capability,
+  type CapabilityName,
   resolveAdapterForNodeInfo,
   type ActivityPlugAdapter,
   type ActivityPlugAdapterDefinition,
@@ -40,7 +41,7 @@ function adapterDefinition(adapter: ActivityPlugAdapter): ActivityPlugAdapterDef
     capabilityLayers: (context) => [
       oauthCapabilityLayer(context.oauthMetadata),
       instanceCapabilityLayer(context),
-      probeLayer(context.probes),
+      probeLayer(context),
     ],
   };
 }
@@ -74,10 +75,10 @@ function instanceCapabilityLayer(context: AdapterDiscoveryContext): CapabilityIn
   };
 }
 
-function probeLayer(probes: AdapterDiscoveryContext["probes"]): CapabilityInputLayer {
-  const quoteProbe = probes?.find((probe) => probe.name === "quote-posts");
-  const reactionProbe = probes?.find((probe) => probe.name === "emoji-reactions");
-  const oauthProbe = probes?.find((probe) => probe.name === "oauth");
+function probeLayer(context: AdapterDiscoveryContext): CapabilityInputLayer {
+  const quoteProbe = context.probes?.find((probe) => probe.name === "quote-posts");
+  const reactionProbe = context.probes?.find((probe) => probe.name === "emoji-reactions");
+  const oauthProbe = context.probes?.find((probe) => probe.name === "oauth");
   return {
     source: "probe",
     capabilities: {
@@ -85,17 +86,31 @@ function probeLayer(probes: AdapterDiscoveryContext["probes"]): CapabilityInputL
         oauthProbe === undefined
           ? capability("unknown")
           : capability(oauthProbe.supported ? "supported" : "unsupported", oauthProbe.reason),
-      "posts.quote":
-        quoteProbe === undefined
-          ? capability("unknown")
-          : capability(quoteProbe.supported ? "supported" : "unsupported", quoteProbe.reason),
-      "social.reaction":
-        reactionProbe === undefined
-          ? capability("unknown")
-          : capability(reactionProbe.supported ? "supported" : "unsupported", reactionProbe.reason),
+      "posts.quote": probeCapability(context, "posts.quote", quoteProbe),
+      "social.reaction": probeCapability(context, "social.reaction", reactionProbe),
     },
   };
 }
+
+function probeCapability(
+  context: AdapterDiscoveryContext,
+  name: CapabilityName,
+  probe: AdapterDiscoveryContext["probes"] extends readonly (infer Probe)[] | undefined
+    ? Probe | undefined
+    : never,
+) {
+  if (probe === undefined) return capability("unknown");
+  if (!probe.supported) return capability("unsupported", probe.reason);
+  const implemented = implementedProbeCapabilitiesBySoftware[context.nodeInfo.software.name];
+  if (implemented?.has(name) ?? false) return capability("supported", probe.reason);
+  return capability("unknown", "Probe reported support, but the packaged adapter does not map it.");
+}
+
+const implementedProbeCapabilitiesBySoftware: Readonly<
+  Record<string, ReadonlySet<CapabilityName>>
+> = {
+  misskey: new Set<CapabilityName>(["social.reaction"]),
+};
 
 function summarize(capabilities: CapabilitySet | undefined): Record<string, string> {
   if (capabilities === undefined) return {};

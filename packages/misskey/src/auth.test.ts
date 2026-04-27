@@ -1,5 +1,5 @@
-import { createActivityPlugClient } from "@activityplug/core";
-import { describe, expect, it } from "vitest";
+import { createActivityPlugClient, createEntityRef } from "@activityplug/core";
+import { describe, expect, it, vi } from "vitest";
 
 import { createMisskeyAdapter } from "./index.js";
 
@@ -128,6 +128,26 @@ describe("Misskey auth adapter", () => {
     });
   });
 
+  it("rejects expired injected tokens before viewer verification", async () => {
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({
+        fetch: mockFetch(async () => {
+          throw new Error("expired token must be rejected before a remote request");
+        }),
+      }),
+      origin: "https://misskey.example",
+    });
+    const session = await client.auth.injectToken({
+      accessToken: "expired-token",
+      expiresAt: "2000-01-01T00:00:00.000Z",
+    });
+
+    await expect(client.auth.verifyCredentials(session)).rejects.toMatchObject({
+      code: "AUTH_EXPIRED",
+      context: { operation: "auth.verifyCredentials" },
+    });
+  });
+
   it("rejects OAuth start without the PKCE material Misskey requires", async () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
@@ -242,6 +262,8 @@ describe("Misskey auth adapter", () => {
       contentText: "<b>Hello</b>",
       visibility: "unlisted",
     });
+    expect(posts.pageInfo.startCursor).not.toBe("note-1");
+    expect(JSON.stringify(posts.pageInfo.raw)).not.toContain("note-1");
     expect(requests).toContain("POST /api/users/notes");
   });
 
@@ -265,6 +287,263 @@ describe("Misskey auth adapter", () => {
       expect.objectContaining({ code: "REMOTE_ERROR" }),
     );
   });
+
+  it("translates timelines, search, posting, media, and social actions", async () => {
+    const requests: string[] = [];
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({
+        fetch: mockFetch(async (request) => {
+          const url = new URL(request.url);
+          requests.push(`${request.method} ${url.pathname}`);
+          if (url.pathname === "/api/notes/timeline") {
+            expect(request.headers.get("Authorization")).toBe("Bearer token-1");
+            return jsonResponse([misskeyNote()]);
+          }
+          if (url.pathname === "/api/notes/local-timeline") {
+            return jsonResponse([misskeyNote()]);
+          }
+          if (url.pathname === "/api/notes/search-by-tag") {
+            expect(await request.json()).toMatchObject({ tag: "activitypub" });
+            return jsonResponse([misskeyNote()]);
+          }
+          if (url.pathname === "/api/users/search-by-username-and-host") {
+            expect(await request.clone().json()).toMatchObject({ limit: 100 });
+            return jsonResponse([misskeyAccountBody()]);
+          }
+          if (url.pathname === "/api/notes/search") {
+            expect(await request.json()).toMatchObject({ limit: 100 });
+            return jsonResponse([misskeyNote()]);
+          }
+          if (url.pathname === "/api/notes/create") {
+            expect(request.headers.get("Authorization")).toBe("Bearer token-1");
+            const body = (await request.json()) as Record<string, unknown>;
+            if (body["renoteId"] === "note-1") {
+              expect(body).not.toHaveProperty("text");
+            } else {
+              expect(body).toMatchObject({ text: "Hello" });
+            }
+            return jsonResponse({ createdNote: misskeyNote("created-1") });
+          }
+          if (url.pathname === "/api/notes/favorites/create") {
+            return jsonResponse({});
+          }
+          if (url.pathname === "/api/notes/show") {
+            return jsonResponse(misskeyNote());
+          }
+          if (url.pathname === "/api/following/create") {
+            return jsonResponse({});
+          }
+          if (url.pathname === "/api/users/relation") {
+            return jsonResponse({
+              id: "9s4u",
+              isFollowing: true,
+              isFollowed: false,
+              hasPendingFollowRequestFromYou: false,
+              isBlocking: false,
+              isMuted: false,
+            });
+          }
+          if (url.pathname === "/api/drive/files/create") {
+            return jsonResponse({
+              id: "file-1",
+              type: "image/png",
+              url: "https://misskey.example/file.png",
+            });
+          }
+          return jsonResponse({ error: "unexpected request" }, 404);
+        }),
+      }),
+      origin: "https://misskey.example",
+    });
+    const session = await client.auth.injectToken({ accessToken: "token-1" });
+    const postId = misskeyPostRef("note-1").id;
+    const accountId = misskeyAccountRef("9s4u").id;
+
+    const [
+      home,
+      local,
+      hashtag,
+      accountSearch,
+      postSearch,
+      created,
+      favourite,
+      boost,
+      relationship,
+      media,
+    ] = await Promise.all([
+      client.timelines.home({ session }),
+      client.timelines.local({ page: { limit: 1 } }),
+      client.timelines.hashtag({ tag: "activitypub" }),
+      client.search.search({ query: "alice", type: "accounts", session, page: { limit: 200 } }),
+      client.search.search({ query: "alice", type: "posts", session, page: { limit: 200 } }),
+      client.posts.create({ session, content: "Hello", visibility: "public" }),
+      client.social.favourite({ session, postId }),
+      client.social.boost({ session, postId }),
+      client.social.follow({ session, accountId }),
+      client.media.upload({ session, file: new Blob(["x"]), filename: "x.txt" }),
+    ]);
+
+    expect(home.nodes[0]?.ref.rawId).toBe("note-1");
+    expect(local.nodes[0]?.visibility).toBe("unlisted");
+    expect(hashtag.nodes[0]?.ref.rawId).toBe("note-1");
+    expect(accountSearch.accounts[0]?.ref.rawId).toBe("9s4u");
+    expect(postSearch.posts[0]?.ref.rawId).toBe("note-1");
+    expect(created.ref.rawId).toBe("created-1");
+    expect(favourite.ref.rawId).toBe("note-1");
+    expect(boost.ref.rawId).toBe("created-1");
+    expect(relationship.following).toBe(true);
+    expect(media.ref.rawId).toBe("file-1");
+    expect(requests).toContain("POST /api/notes/timeline");
+  });
+
+  it("rejects unsupported hashtag search explicitly", async () => {
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter(),
+      origin: "https://misskey.example",
+    });
+
+    await expect(
+      client.search.search({ query: "activitypub", type: "hashtags" }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "search.hashtags" },
+    });
+    await expect(
+      client.search.search({ query: "activitypub", type: "accounts", resolve: true }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "search.accounts" },
+    });
+  });
+
+  it("maps media sensitivity to Misskey drive upload", async () => {
+    const fields: Record<string, FormDataEntryValue> = {};
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({
+        fetch: mockFetch(async (request) => {
+          expect(new URL(request.url).pathname).toBe("/api/drive/files/create");
+          const form = await request.formData();
+          for (const [key, value] of form) fields[key] = value;
+          return jsonResponse({
+            id: "file-1",
+            name: "x.txt",
+            type: "text/plain",
+            size: 1,
+            url: "https://misskey.example/files/x.txt",
+            isSensitive: true,
+          });
+        }),
+      }),
+      origin: "https://misskey.example",
+    });
+    const session = await client.auth.injectToken({ accessToken: "token-1" });
+
+    await client.media.upload({
+      session,
+      file: new Blob(["x"], { type: "text/plain" }),
+      filename: "x.txt",
+      sensitive: true,
+    });
+
+    expect(fields["isSensitive"]).toBe("true");
+  });
+
+  it("maps create-note variants without changing request intent", async () => {
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({
+        fetch: mockFetch(async (request) => {
+          expect(new URL(request.url).pathname).toBe("/api/notes/create");
+          expect(await request.json()).toMatchObject({
+            text: "Reply with media",
+            visibility: "public",
+            cw: "Summary",
+            replyId: "reply-1",
+            renoteId: "quote-1",
+            fileIds: ["file-1"],
+            poll: { choices: ["Yes", "No"], multiple: true, expiredAfter: 3_600_000 },
+          });
+          return jsonResponse({ createdNote: misskeyNote("created-1") });
+        }),
+      }),
+      origin: "https://misskey.example",
+    });
+    const session = await client.auth.injectToken({ accessToken: "token-1" });
+
+    const created = await client.posts.create({
+      session,
+      content: "Reply with media",
+      visibility: "public",
+      summary: "Summary",
+      replyToId: misskeyPostRef("reply-1").id,
+      quoteOfId: misskeyPostRef("quote-1").id,
+      mediaIds: [
+        createEntityRef({
+          adapter: "misskey",
+          origin: "https://misskey.example",
+          type: "media",
+          id: "file-1",
+        }).id,
+      ],
+      poll: { options: ["Yes", "No"], multiple: true, expiresInSeconds: 3600 },
+    });
+
+    expect(created.ref.rawId).toBe("created-1");
+  });
+
+  it("rejects unsupported post sensitivity and mute notification options", async () => {
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter(),
+      origin: "https://misskey.example",
+    });
+    const session = await client.auth.injectToken({ accessToken: "token-1" });
+    const accountId = misskeyAccountRef("9s4u").id;
+
+    await expect(
+      client.posts.create({ session, content: "sensitive", sensitive: true }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { operation: "post.create" },
+    });
+    await expect(
+      client.social.mute({ session, accountId, notifications: true }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { operation: "social.mute" },
+    });
+  });
+
+  it("maps mute durations to Misskey epoch milliseconds", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-27T00:00:00.000Z"));
+    try {
+      const client = createActivityPlugClient({
+        adapter: createMisskeyAdapter({
+          fetch: mockFetch(async (request) => {
+            const pathname = new URL(request.url).pathname;
+            if (pathname === "/api/mute/create") {
+              expect(await request.json()).toMatchObject({
+                userId: "9s4u",
+                expiresAt: Date.parse("2026-04-27T01:00:00.000Z"),
+              });
+              return jsonResponse({});
+            }
+            expect(pathname).toBe("/api/users/relation");
+            return jsonResponse({ id: "9s4u", isMuted: true });
+          }),
+        }),
+        origin: "https://misskey.example",
+      });
+      const session = await client.auth.injectToken({ accessToken: "token-1" });
+
+      await client.social.mute({
+        session,
+        accountId: misskeyAccountRef("9s4u").id,
+        durationSeconds: 3600,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 function mockFetch(handler: (request: Request) => Promise<Response>): typeof fetch {
@@ -276,11 +555,43 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 function misskeyAccount(): Response {
-  return jsonResponse({
+  return jsonResponse(misskeyAccountBody());
+}
+
+function misskeyAccountBody() {
+  return {
     id: "9s4u",
     username: "alice",
     host: null,
     name: "Alice",
     url: "https://misskey.example/@alice",
+  };
+}
+
+function misskeyNote(id = "note-1") {
+  return {
+    id,
+    user: misskeyAccountBody(),
+    text: "Hello",
+    createdAt: "2026-04-27T00:00:00.000Z",
+    visibility: "home",
+  };
+}
+
+function misskeyPostRef(id: string) {
+  return createEntityRef({
+    adapter: "misskey",
+    origin: "https://misskey.example",
+    type: "post",
+    id,
+  });
+}
+
+function misskeyAccountRef(id: string) {
+  return createEntityRef({
+    adapter: "misskey",
+    origin: "https://misskey.example",
+    type: "account",
+    id,
   });
 }

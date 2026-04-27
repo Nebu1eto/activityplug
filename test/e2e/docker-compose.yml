@@ -9,6 +9,7 @@ volumes:
   mastodon-redis:
   misskey-postgres:
   misskey-redis:
+  misskey-meilisearch:
   pleroma-postgres:
   hollo-postgres:
   hollo-storage:
@@ -119,6 +120,16 @@ services:
       <<: *redis-healthcheck
       test: ["CMD", "redis-cli", "ping"]
 
+  misskey-meilisearch:
+    image: getmeili/meilisearch:v1.3.4
+    profiles: ["misskey", "fediverse"]
+    environment:
+      MEILI_ENV: development
+      MEILI_NO_ANALYTICS: "true"
+    volumes:
+      - misskey-meilisearch:/meili_data
+    networks: [fediverse]
+
   misskey-web:
     build:
       context: ${ACTIVITYPLUG_SOFTWARE_ROOT:-../../../activityplug-docs}/misskey
@@ -134,6 +145,7 @@ services:
     depends_on:
       misskey-db: { condition: service_healthy }
       misskey-redis: { condition: service_healthy }
+      misskey-meilisearch: { condition: service_started }
     healthcheck:
       test:
         [

@@ -1,4 +1,10 @@
-import { createActivityPlugClient, type Account, type AuthSession } from "@activityplug/core";
+import {
+  createActivityPlugClient,
+  type Account,
+  type AuthSession,
+  type Post,
+  type Relationship,
+} from "@activityplug/core";
 import { createMastodonAdapter } from "@activityplug/mastodon";
 import { createMisskeyAdapter } from "@activityplug/misskey";
 
@@ -15,6 +21,11 @@ export interface CreateBotClientInput {
 export interface BotClient {
   readonly session: AuthSession;
   readonly verifyViewer: () => Promise<Account>;
+  readonly follow: (accountId: string) => Promise<Relationship>;
+  readonly unfollow: (accountId: string) => Promise<Relationship>;
+  readonly block: (accountId: string) => Promise<Relationship>;
+  readonly reactToMention: (postId: string, emoji: string) => Promise<Post>;
+  readonly favouriteMention: (postId: string) => Promise<Post>;
 }
 
 export async function createBotClient(input: CreateBotClientInput): Promise<BotClient> {
@@ -32,5 +43,10 @@ export async function createBotClient(input: CreateBotClientInput): Promise<BotC
   return {
     session,
     verifyViewer: async () => (await client.auth.verifyCredentials(session)).account,
+    follow: (accountId) => client.social.follow({ session, accountId }),
+    unfollow: (accountId) => client.social.unfollow({ session, accountId }),
+    block: (accountId) => client.social.block({ session, accountId }),
+    reactToMention: async (postId, emoji) => client.social.react({ session, postId, emoji }),
+    favouriteMention: (postId) => client.social.favourite({ session, postId }),
   };
 }

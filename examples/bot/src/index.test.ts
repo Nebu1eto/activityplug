@@ -46,6 +46,19 @@ describe("sample bot client", () => {
       });
     },
   );
+
+  it("does not silently turn unsupported reactions into favourites", async () => {
+    const bot = await createBotClient({
+      adapter: "mastodon",
+      origin: "https://mastodon.example",
+      accessToken: "bot-token",
+      fetch: mockFetch(async () => jsonResponse({ error: "unexpected request" }, 404)),
+    });
+
+    await expect(bot.reactToMention("post-id", "\u{1f44d}")).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+    });
+  });
 });
 
 function mockFetch(handler: (request: Request) => Promise<Response>): typeof fetch {

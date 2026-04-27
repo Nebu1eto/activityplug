@@ -27,7 +27,7 @@ check_checkout() {
 }
 
 cleanup() {
-  docker compose -f "$COMPOSE_FILE" --profile fediverse stop >/dev/null
+  docker compose -f "$COMPOSE_FILE" --profile fediverse down --volumes --remove-orphans >/dev/null
 }
 
 trap cleanup EXIT
@@ -37,7 +37,7 @@ check_checkout pleroma 683ab39160a2ff95d151887a89217bd1d4a6dcf5
 check_checkout hackerspub ee596993c26ead89c70f6b8b601a8e8f8d829cb7
 
 for adapter in "${ADAPTERS[@]}"; do
-  docker compose -f "$COMPOSE_FILE" --profile fediverse stop >/dev/null
+  docker compose -f "$COMPOSE_FILE" --profile fediverse down --volumes --remove-orphans >/dev/null
   docker compose -f "$COMPOSE_FILE" --profile "$adapter" up --build -d --wait
   target="$(bash "test/e2e/provision.${adapter}.sh")"
   printf '%s' "$target" | jq -e '.adapter and .origin' >/dev/null

@@ -23,6 +23,8 @@ import {
   createDefaultApiService,
   type ActivityPlugApiService,
   type InstanceSelector,
+  type RelationshipRequest,
+  type PostActionRequest,
 } from "../api/service.js";
 import { createAuthEndpointHandlers } from "../auth/endpoints.js";
 import { InMemoryAuthSessionStore, type AuthSessionStore } from "../auth/session-store.js";
@@ -187,6 +189,10 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
       posts: async (input) => {
         const ref = decodeOpaqueId(input.id);
         await originPolicy({ origin: ref.origin, operation: "account.posts" });
+        const session =
+          input.sessionId === undefined
+            ? undefined
+            : await requireSession(input.sessionId, sessions, "account.posts");
         return resolveClient(
           { adapter: ref.adapter, origin: ref.origin },
           options.adapters,
@@ -194,8 +200,227 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
         ).accounts.listPosts({
           accountId: input.id,
           ...(input.page === undefined ? {} : { page: input.page }),
+          ...(session === undefined ? {} : { session }),
         });
       },
+    },
+    posts: {
+      get: async (input) => {
+        const ref = decodeOpaqueId(input.id);
+        await originPolicy({ origin: ref.origin, operation: "post.get" });
+        return resolveClient(
+          { adapter: ref.adapter, origin: ref.origin },
+          options.adapters,
+          sessions,
+        ).posts.get(input);
+      },
+      create: async (input) => {
+        const { adapter: _adapter, origin: _origin, sessionId, ...create } = input;
+        const selector = normalizeSelector(input, "post.create");
+        const session = await requireSession(sessionId, sessions, "post.create");
+        await originPolicy({ origin: selector.origin, operation: "post.create" });
+        assertSessionTarget(session, selector, "post.create");
+        return resolveClient(selector, options.adapters, sessions).posts.create({
+          ...create,
+          session: toPublicSession(session),
+        });
+      },
+      delete: async (input) => {
+        const session = await requireSession(input.sessionId, sessions, "post.delete");
+        const ref = decodeOpaqueId(input.id);
+        await originPolicy({ origin: ref.origin, operation: "post.delete" });
+        assertSessionTarget(session, { adapter: ref.adapter, origin: ref.origin }, "post.delete");
+        return resolveClient(
+          { adapter: ref.adapter, origin: ref.origin },
+          options.adapters,
+          sessions,
+        ).posts.delete({
+          session: toPublicSession(session),
+          id: input.id,
+        });
+      },
+    },
+    timelines: {
+      home: async (input) => {
+        const session = await requireSession(input.sessionId, sessions, "timeline.home");
+        const selector =
+          input.origin === undefined
+            ? { adapter: session.adapter, origin: session.origin }
+            : normalizeSelector(
+                {
+                  origin: input.origin,
+                  ...(input.adapter === undefined ? {} : { adapter: input.adapter }),
+                },
+                "timeline.home",
+              );
+        assertSessionTarget(session, selector, "timeline.home");
+        await originPolicy({ origin: selector.origin, operation: "timeline.home" });
+        return handlersClientForSession(session, options.adapters, sessions).timelines.home({
+          session: toPublicSession(session),
+          ...(input.page === undefined ? {} : { page: input.page }),
+        });
+      },
+      public: async (input) => {
+        const selector = normalizeSelector(input, "timeline.public");
+        const session =
+          input.sessionId === undefined
+            ? undefined
+            : await requireSession(input.sessionId, sessions, "timeline.public");
+        if (session !== undefined) assertSessionTarget(session, selector, "timeline.public");
+        await originPolicy({ origin: selector.origin, operation: "timeline.public" });
+        return resolveClient(selector, options.adapters, sessions).timelines.public({
+          local: input.local,
+          ...(input.page === undefined ? {} : { page: input.page }),
+          ...(session === undefined ? {} : { session: toPublicSession(session) }),
+        });
+      },
+      local: async (input) => {
+        const selector = normalizeSelector(input, "timeline.local");
+        const session =
+          input.sessionId === undefined
+            ? undefined
+            : await requireSession(input.sessionId, sessions, "timeline.local");
+        if (session !== undefined) assertSessionTarget(session, selector, "timeline.local");
+        await originPolicy({ origin: selector.origin, operation: "timeline.local" });
+        return resolveClient(selector, options.adapters, sessions).timelines.local({
+          ...(input.page === undefined ? {} : { page: input.page }),
+          ...(session === undefined ? {} : { session: toPublicSession(session) }),
+        });
+      },
+      hashtag: async (input) => {
+        const selector = normalizeSelector(input, "timeline.hashtag");
+        await originPolicy({ origin: selector.origin, operation: "timeline.hashtag" });
+        return resolveClient(selector, options.adapters, sessions).timelines.hashtag({
+          tag: input.tag,
+          ...(input.page === undefined ? {} : { page: input.page }),
+        });
+      },
+    },
+    search: {
+      search: async (input) => {
+        const selector = normalizeSelector(input, "search");
+        await originPolicy({ origin: selector.origin, operation: "search" });
+        const session =
+          input.sessionId === undefined
+            ? undefined
+            : await requireSession(input.sessionId, sessions, "search");
+        if (session !== undefined) assertSessionTarget(session, selector, "search");
+        return resolveClient(selector, options.adapters, sessions).search.search({
+          query: input.query,
+          type: input.type,
+          resolve: input.resolve,
+          ...(input.page === undefined ? {} : { page: input.page }),
+          ...(session === undefined ? {} : { session: toPublicSession(session) }),
+        });
+      },
+    },
+    media: {
+      upload: async (input) => {
+        const { adapter: _adapter, origin: _origin, sessionId, ...upload } = input;
+        const selector = normalizeSelector(input, "media.upload");
+        const session = await requireSession(sessionId, sessions, "media.upload");
+        await originPolicy({ origin: selector.origin, operation: "media.upload" });
+        assertSessionTarget(session, selector, "media.upload");
+        return resolveClient(selector, options.adapters, sessions).media.upload({
+          ...upload,
+          session: toPublicSession(session),
+        });
+      },
+    },
+    social: {
+      relationship: (input) =>
+        socialAccountAction(
+          input,
+          "account.relationships",
+          sessions,
+          options,
+          (client, session, accountId) => client.social.relationship({ session, accountId }),
+        ),
+      follow: (input) =>
+        socialAccountAction(
+          input,
+          "social.follow",
+          sessions,
+          options,
+          (client, session, accountId) => client.social.follow({ session, accountId }),
+        ),
+      unfollow: (input) =>
+        socialAccountAction(
+          input,
+          "social.unfollow",
+          sessions,
+          options,
+          (client, session, accountId) => client.social.unfollow({ session, accountId }),
+        ),
+      block: (input) =>
+        socialAccountAction(
+          input,
+          "social.block",
+          sessions,
+          options,
+          (client, session, accountId) => client.social.block({ session, accountId }),
+        ),
+      unblock: (input) =>
+        socialAccountAction(
+          input,
+          "social.unblock",
+          sessions,
+          options,
+          (client, session, accountId) => client.social.unblock({ session, accountId }),
+        ),
+      mute: (input) =>
+        socialAccountAction(input, "social.mute", sessions, options, (client, session, accountId) =>
+          client.social.mute({
+            session,
+            accountId,
+            notifications: input.notifications,
+            durationSeconds: input.durationSeconds,
+          }),
+        ),
+      unmute: (input) =>
+        socialAccountAction(
+          input,
+          "social.unmute",
+          sessions,
+          options,
+          (client, session, accountId) => client.social.unmute({ session, accountId }),
+        ),
+      favourite: (input) =>
+        socialPostAction(input, "social.favourite", sessions, options, (client, session, postId) =>
+          client.social.favourite({ session, postId }),
+        ),
+      unfavourite: (input) =>
+        socialPostAction(
+          input,
+          "social.unfavourite",
+          sessions,
+          options,
+          (client, session, postId) => client.social.unfavourite({ session, postId }),
+        ),
+      bookmark: (input) =>
+        socialPostAction(input, "social.bookmark", sessions, options, (client, session, postId) =>
+          client.social.bookmark({ session, postId }),
+        ),
+      unbookmark: (input) =>
+        socialPostAction(input, "social.unbookmark", sessions, options, (client, session, postId) =>
+          client.social.unbookmark({ session, postId }),
+        ),
+      boost: (input) =>
+        socialPostAction(input, "social.boost", sessions, options, (client, session, postId) =>
+          client.social.boost({ session, postId, visibility: input.visibility }),
+        ),
+      unboost: (input) =>
+        socialPostAction(input, "social.unboost", sessions, options, (client, session, postId) =>
+          client.social.unboost({ session, postId }),
+        ),
+      react: (input) =>
+        socialPostAction(input, "social.reaction", sessions, options, (client, session, postId) =>
+          client.social.react({ session, postId, emoji: input.emoji }),
+        ),
+      unreact: (input) =>
+        socialPostAction(input, "social.unreaction", sessions, options, (client, session, postId) =>
+          client.social.unreact({ session, postId, emoji: input.emoji }),
+        ),
     },
     auth: {
       importToken: async (input) => {
@@ -463,6 +688,79 @@ function resolveClient(
     origin: input.origin,
     sessionStore: sessions,
   });
+}
+
+function handlersClientForSession(
+  session: StoredAuthSession,
+  adapters: readonly ActivityPlugAdapter[],
+  sessions: AuthSessionStore,
+) {
+  return resolveClient({ adapter: session.adapter, origin: session.origin }, adapters, sessions);
+}
+
+async function socialAccountAction<Output>(
+  input: RelationshipRequest,
+  operation: string,
+  sessions: AuthSessionStore,
+  options: ActivityPlugServerOptions,
+  action: (
+    client: ReturnType<typeof resolveClient>,
+    session: AuthSession,
+    accountId: string,
+  ) => Promise<Output>,
+): Promise<Output> {
+  const session = await requireSession(input.sessionId, sessions, operation);
+  const ref = decodeOpaqueId(input.accountId);
+  await (options.originPolicy ?? defaultOriginFetchPolicy)({ origin: ref.origin, operation });
+  assertSessionTarget(session, { adapter: ref.adapter, origin: ref.origin }, operation);
+  return action(
+    resolveClient({ adapter: ref.adapter, origin: ref.origin }, options.adapters, sessions),
+    toPublicSession(session),
+    input.accountId,
+  );
+}
+
+async function socialPostAction<Output>(
+  input: PostActionRequest,
+  operation: string,
+  sessions: AuthSessionStore,
+  options: ActivityPlugServerOptions,
+  action: (
+    client: ReturnType<typeof resolveClient>,
+    session: AuthSession,
+    postId: string,
+  ) => Promise<Output>,
+): Promise<Output> {
+  const session = await requireSession(input.sessionId, sessions, operation);
+  const ref = decodeOpaqueId(input.postId);
+  await (options.originPolicy ?? defaultOriginFetchPolicy)({ origin: ref.origin, operation });
+  assertSessionTarget(session, { adapter: ref.adapter, origin: ref.origin }, operation);
+  return action(
+    resolveClient({ adapter: ref.adapter, origin: ref.origin }, options.adapters, sessions),
+    toPublicSession(session),
+    input.postId,
+  );
+}
+
+function assertSessionTarget(
+  session: StoredAuthSession,
+  selector: InstanceSelector,
+  operation: string,
+): void {
+  if (
+    (selector.adapter !== undefined && session.adapter !== selector.adapter) ||
+    session.origin !== selector.origin
+  ) {
+    throw new ActivityPlugError(
+      "AUTH_REQUIRED",
+      "Auth session does not belong to this operation target.",
+      {
+        adapter: selector.adapter,
+        origin: selector.origin,
+        operation,
+      },
+    );
+  }
 }
 
 function resolveAdapter(

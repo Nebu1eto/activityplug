@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 
 import { type ActivityPlugAdapter } from "../adapters/client.js";
 import { requireCapability } from "../capabilities/capability.js";
-import { ActivityPlugError, unsupportedOperation } from "../errors/error.js";
+import {
+  ActivityPlugError,
+  type ActivityPlugErrorContext,
+  unsupportedOperation,
+} from "../errors/error.js";
 import { type Account } from "../types/entities.js";
 import {
   type AuthSession,
@@ -97,6 +101,12 @@ class DefaultAuthService implements AuthService {
     requireCapability(this.#client.capabilities, "auth.tokenInjection");
     if (input.accessToken.length === 0) {
       throw new ActivityPlugError("VALIDATION_FAILED", "Access token must not be empty.", {
+        ...this.#context(),
+        operation: "auth.tokenInjection",
+      });
+    }
+    if (input.expiresAt !== undefined) {
+      assertValidDateTime(input.expiresAt, {
         ...this.#context(),
         operation: "auth.tokenInjection",
       });
@@ -312,7 +322,7 @@ function hasTokenSet(session: AuthSession): session is StoredAuthSession {
   return "tokenSet" in session;
 }
 
-class InMemoryAuthSessionStore implements AuthSessionStore {
+export class InMemoryAuthSessionStore implements AuthSessionStore {
   readonly #sessions = new Map<string, StoredAuthSession>();
 
   public async create(session: StoredAuthSession): Promise<void> {
@@ -360,10 +370,24 @@ function mergeRefreshTokenSet(previous: TokenSet, next: TokenSet): TokenSet {
 
 function isExpired(session: StoredAuthSession): boolean {
   if (session.expiresAt === undefined) return false;
-  return Date.parse(session.expiresAt) <= Date.now();
+  const expiresAt = Date.parse(session.expiresAt);
+  return !Number.isFinite(expiresAt) || expiresAt <= Date.now();
 }
 
 function isStorageExpired(session: StoredAuthSession): boolean {
   if (session.storageExpiresAt === undefined) return false;
-  return Date.parse(session.storageExpiresAt) <= Date.now();
+  const expiresAt = Date.parse(session.storageExpiresAt);
+  return !Number.isFinite(expiresAt) || expiresAt <= Date.now();
+}
+
+function assertValidDateTime(value: string, context: ActivityPlugErrorContext): void {
+  if (!Number.isFinite(Date.parse(value))) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "expiresAt must be a valid date-time string.",
+      {
+        ...context,
+      },
+    );
+  }
 }

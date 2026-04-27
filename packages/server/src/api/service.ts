@@ -7,10 +7,11 @@ import {
   type CapabilityDecision,
   type CapabilitySet,
   type Connection,
+  type DeletedEntity,
   type EntityRef,
   type InstanceProfile,
-  type InjectTokenInput,
   type MediaAttachment,
+  type InjectTokenInput,
   type OAuthCallbackInput,
   type OAuthCallbackResult,
   type OAuthCallbackStateBinding,
@@ -20,6 +21,8 @@ import {
   type OAuthRevokeInput,
   type PostVisibility,
   type Post,
+  type Relationship,
+  type SearchResult,
   type VerifyCredentialsResult,
 } from "@activityplug/core";
 
@@ -42,6 +45,11 @@ export interface ActivityPlugApiService {
   readonly capabilities: (input: InstanceSelector) => Promise<CapabilitySet> | CapabilitySet;
   readonly instances: ActivityPlugInstanceApiService;
   readonly accounts: ActivityPlugAccountApiService;
+  readonly posts: ActivityPlugPostApiService;
+  readonly timelines: ActivityPlugTimelineApiService;
+  readonly search: ActivityPlugSearchApiService;
+  readonly media: ActivityPlugMediaApiService;
+  readonly social: ActivityPlugSocialApiService;
   readonly auth: ActivityPlugAuthApiService;
   readonly viewer: (input: ViewerInput) => Promise<VerifyCredentialsResult>;
 }
@@ -55,6 +63,45 @@ export interface ActivityPlugAccountApiService {
   readonly get: (input: AccountIdRequest) => Promise<Account>;
   readonly lookup: (input: AccountLookupRequest) => Promise<Account | null>;
   readonly posts: (input: AccountPostsRequest) => Promise<Connection<Post>>;
+}
+
+export interface ActivityPlugPostApiService {
+  readonly get: (input: PostIdRequest) => Promise<Post>;
+  readonly create: (input: CreatePostRequest) => Promise<Post>;
+  readonly delete: (input: DeletePostRequest) => Promise<DeletedEntity>;
+}
+
+export interface ActivityPlugTimelineApiService {
+  readonly home: (input: SessionPageRequest) => Promise<Connection<Post>>;
+  readonly public: (input: PublicTimelineRequest) => Promise<Connection<Post>>;
+  readonly local: (input: PublicTimelineRequest) => Promise<Connection<Post>>;
+  readonly hashtag: (input: HashtagTimelineRequest) => Promise<Connection<Post>>;
+}
+
+export interface ActivityPlugSearchApiService {
+  readonly search: (input: SearchRequest) => Promise<SearchResult>;
+}
+
+export interface ActivityPlugMediaApiService {
+  readonly upload: (input: UploadMediaRequest) => Promise<MediaAttachment>;
+}
+
+export interface ActivityPlugSocialApiService {
+  readonly relationship: (input: RelationshipRequest) => Promise<Relationship>;
+  readonly follow: (input: RelationshipRequest) => Promise<Relationship>;
+  readonly unfollow: (input: RelationshipRequest) => Promise<Relationship>;
+  readonly block: (input: RelationshipRequest) => Promise<Relationship>;
+  readonly unblock: (input: RelationshipRequest) => Promise<Relationship>;
+  readonly mute: (input: MuteAccountRequest) => Promise<Relationship>;
+  readonly unmute: (input: RelationshipRequest) => Promise<Relationship>;
+  readonly favourite: (input: PostActionRequest) => Promise<Post>;
+  readonly unfavourite: (input: PostActionRequest) => Promise<Post>;
+  readonly bookmark: (input: PostActionRequest) => Promise<Post>;
+  readonly unbookmark: (input: PostActionRequest) => Promise<Post>;
+  readonly boost: (input: BoostPostRequest) => Promise<Post>;
+  readonly unboost: (input: PostActionRequest) => Promise<Post>;
+  readonly react: (input: ReactPostRequest) => Promise<Post>;
+  readonly unreact: (input: ReactPostRequest) => Promise<Post>;
 }
 
 export interface ActivityPlugAuthApiService {
@@ -207,6 +254,46 @@ export interface PublicPost {
   readonly raw: unknown;
 }
 
+export interface PublicDeletedEntity {
+  readonly ref: PublicEntityRef;
+  readonly deleted: true;
+  readonly raw?: unknown;
+}
+
+export interface PublicRelationship {
+  readonly account: PublicEntityRef;
+  readonly following: boolean;
+  readonly followedBy: boolean;
+  readonly requested: boolean;
+  readonly blocking: boolean;
+  readonly blockedBy?: boolean;
+  readonly muting: boolean;
+  readonly mutingNotifications?: boolean;
+  readonly domainBlocking?: boolean;
+  readonly showingReblogs?: boolean;
+  readonly notifying?: boolean;
+  readonly raw: unknown;
+}
+
+export interface PublicSearchResult {
+  readonly accounts: readonly PublicAccount[];
+  readonly posts: readonly PublicPost[];
+  readonly hashtags: readonly PublicHashtag[];
+  readonly raw: unknown;
+}
+
+export interface PublicHashtag {
+  readonly name: string;
+  readonly url?: string;
+  readonly history: readonly {
+    readonly day: string;
+    readonly uses?: number;
+    readonly accounts?: number;
+    readonly raw: unknown;
+  }[];
+  readonly raw: unknown;
+}
+
 export interface PublicPageInfo {
   readonly hasNextPage: boolean;
   readonly hasPreviousPage: boolean;
@@ -298,9 +385,95 @@ export interface PageRequest {
   readonly limit?: number;
 }
 
+export interface SearchPageRequest {
+  readonly limit?: number;
+}
+
 export interface AccountPostsRequest {
   readonly id: string;
   readonly page?: PageRequest;
+  readonly sessionId?: string;
+}
+
+export interface SessionPageRequest {
+  readonly sessionId: string;
+  readonly adapter?: string;
+  readonly origin?: string;
+  readonly page?: PageRequest;
+}
+
+export interface PostIdRequest {
+  readonly id: string;
+}
+
+export interface DeletePostRequest extends PostIdRequest {
+  readonly sessionId: string;
+}
+
+export interface CreatePostRequest extends InstanceSelector {
+  readonly sessionId: string;
+  readonly content: string;
+  readonly visibility?: PostVisibility;
+  readonly sensitive?: boolean;
+  readonly summary?: string;
+  readonly replyToId?: string;
+  readonly quoteOfId?: string;
+  readonly mediaIds?: readonly string[];
+  readonly poll?: {
+    readonly options: readonly string[];
+    readonly multiple?: boolean;
+    readonly expiresInSeconds?: number;
+  };
+}
+
+export interface PublicTimelineRequest extends InstanceSelector {
+  readonly local?: boolean;
+  readonly page?: PageRequest;
+  readonly sessionId?: string;
+}
+
+export interface HashtagTimelineRequest extends InstanceSelector {
+  readonly tag: string;
+  readonly page?: PageRequest;
+}
+
+export interface SearchRequest extends InstanceSelector {
+  readonly query: string;
+  readonly type?: "accounts" | "posts" | "hashtags";
+  readonly resolve?: boolean;
+  readonly page?: SearchPageRequest;
+  readonly sessionId?: string;
+}
+
+export interface UploadMediaRequest extends InstanceSelector {
+  readonly sessionId: string;
+  readonly file: Blob;
+  readonly filename?: string;
+  readonly description?: string;
+  readonly sensitive?: boolean;
+}
+
+export interface RelationshipRequest {
+  readonly sessionId: string;
+  readonly accountId: string;
+}
+
+export interface MuteAccountRequest extends RelationshipRequest {
+  readonly notifications?: boolean;
+  readonly durationSeconds?: number;
+}
+
+export interface PostActionRequest {
+  readonly sessionId: string;
+  readonly postId: string;
+}
+
+export interface BoostPostRequest extends PostActionRequest {
+  readonly visibility?: PostVisibility;
+}
+
+export interface ReactPostRequest extends PostActionRequest {
+  readonly emoji: string;
 }
 
 export function createDefaultApiService(capabilities: CapabilitySet): ActivityPlugApiService {
@@ -325,6 +498,40 @@ export function createDefaultApiService(capabilities: CapabilitySet): ActivityPl
       get: unsupportedApiOperation("account.get"),
       lookup: unsupportedApiOperation("account.lookup"),
       posts: unsupportedApiOperation("account.posts"),
+    },
+    posts: {
+      get: unsupportedApiOperation("post.get"),
+      create: unsupportedApiOperation("post.create"),
+      delete: unsupportedApiOperation("post.delete"),
+    },
+    timelines: {
+      home: unsupportedApiOperation("timeline.home"),
+      public: unsupportedApiOperation("timeline.public"),
+      local: unsupportedApiOperation("timeline.local"),
+      hashtag: unsupportedApiOperation("timeline.hashtag"),
+    },
+    search: {
+      search: unsupportedApiOperation("search"),
+    },
+    media: {
+      upload: unsupportedApiOperation("media.upload"),
+    },
+    social: {
+      relationship: unsupportedApiOperation("account.relationships"),
+      follow: unsupportedApiOperation("social.follow"),
+      unfollow: unsupportedApiOperation("social.unfollow"),
+      block: unsupportedApiOperation("social.block"),
+      unblock: unsupportedApiOperation("social.unblock"),
+      mute: unsupportedApiOperation("social.mute"),
+      unmute: unsupportedApiOperation("social.unmute"),
+      favourite: unsupportedApiOperation("social.favourite"),
+      unfavourite: unsupportedApiOperation("social.unfavourite"),
+      bookmark: unsupportedApiOperation("social.bookmark"),
+      unbookmark: unsupportedApiOperation("social.unbookmark"),
+      boost: unsupportedApiOperation("social.boost"),
+      unboost: unsupportedApiOperation("social.unboost"),
+      react: unsupportedApiOperation("social.reaction"),
+      unreact: unsupportedApiOperation("social.unreaction"),
     },
     auth: {
       importToken: unsupportedAuth,
@@ -425,17 +632,7 @@ export function serializePost(post: Post): PublicPost {
     visibility: post.visibility,
     sensitive: post.sensitive,
     ...(post.summary === undefined ? {} : { summary: post.summary }),
-    media: post.media.map((attachment) => ({
-      ref: serializeEntityRef(attachment.ref),
-      type: attachment.type,
-      url: attachment.url,
-      ...(attachment.previewUrl === undefined ? {} : { previewUrl: attachment.previewUrl }),
-      ...(attachment.description === undefined ? {} : { description: attachment.description }),
-      ...(attachment.blurhash === undefined ? {} : { blurhash: attachment.blurhash }),
-      ...(attachment.width === undefined ? {} : { width: attachment.width }),
-      ...(attachment.height === undefined ? {} : { height: attachment.height }),
-      raw: attachment.raw,
-    })),
+    media: post.media.map((attachment) => serializeMediaAttachment(attachment)),
     ...(post.poll === undefined
       ? {}
       : {
@@ -460,12 +657,71 @@ export function serializePost(post: Post): PublicPost {
   };
 }
 
+export function serializeMediaAttachment(attachment: MediaAttachment): PublicMediaAttachment {
+  return {
+    ref: serializeEntityRef(attachment.ref),
+    type: attachment.type,
+    url: attachment.url,
+    ...(attachment.previewUrl === undefined ? {} : { previewUrl: attachment.previewUrl }),
+    ...(attachment.description === undefined ? {} : { description: attachment.description }),
+    ...(attachment.blurhash === undefined ? {} : { blurhash: attachment.blurhash }),
+    ...(attachment.width === undefined ? {} : { width: attachment.width }),
+    ...(attachment.height === undefined ? {} : { height: attachment.height }),
+    raw: attachment.raw,
+  };
+}
+
 export function serializePostConnection(
   connection: Connection<Post>,
 ): PublicConnection<PublicPost> {
   return {
     nodes: connection.nodes.map((post) => serializePost(post)),
     pageInfo: connection.pageInfo,
+  };
+}
+
+export function serializeDeletedEntity(entity: DeletedEntity): PublicDeletedEntity {
+  return {
+    ref: serializeEntityRef(entity.ref),
+    deleted: true,
+    ...(entity.raw === undefined ? {} : { raw: entity.raw }),
+  };
+}
+
+export function serializeRelationship(relationship: Relationship): PublicRelationship {
+  return {
+    account: serializeEntityRef(relationship.account),
+    following: relationship.following,
+    followedBy: relationship.followedBy,
+    requested: relationship.requested,
+    blocking: relationship.blocking,
+    ...(relationship.blockedBy === undefined ? {} : { blockedBy: relationship.blockedBy }),
+    muting: relationship.muting,
+    ...(relationship.mutingNotifications === undefined
+      ? {}
+      : { mutingNotifications: relationship.mutingNotifications }),
+    ...(relationship.domainBlocking === undefined
+      ? {}
+      : { domainBlocking: relationship.domainBlocking }),
+    ...(relationship.showingReblogs === undefined
+      ? {}
+      : { showingReblogs: relationship.showingReblogs }),
+    ...(relationship.notifying === undefined ? {} : { notifying: relationship.notifying }),
+    raw: relationship.raw,
+  };
+}
+
+export function serializeSearchResult(result: SearchResult): PublicSearchResult {
+  return {
+    accounts: result.accounts.map((account) => serializeAccount(account)),
+    posts: result.posts.map((post) => serializePost(post)),
+    hashtags: result.hashtags.map((hashtag) => ({
+      name: hashtag.name,
+      ...(hashtag.url === undefined ? {} : { url: hashtag.url }),
+      history: hashtag.history ?? [],
+      raw: hashtag.raw,
+    })),
+    raw: result.raw,
   };
 }
 

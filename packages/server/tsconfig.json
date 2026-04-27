@@ -12,7 +12,8 @@
     { "path": "../hollo" },
     { "path": "../mastodon" },
     { "path": "../misskey" },
-    { "path": "../pleroma" }
+    { "path": "../pleroma" },
+    { "path": "../e2e-fixtures" }
   ],
   "include": ["src"]
 }

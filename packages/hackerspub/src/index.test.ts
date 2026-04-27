@@ -156,6 +156,141 @@ describe("HackersPub adapter", () => {
     });
   });
 
+  it("keeps account post operation context for malformed nested actors", async () => {
+    const client = createClientWithGraphQLResponse({
+      node: {
+        posts: {
+          edges: [{ node: { ...fixture.post, actor: {} } }],
+          pageInfo: { hasNextPage: false, hasPreviousPage: false },
+        },
+      },
+    });
+
+    await expect(client.accounts.listPosts({ accountId: accountId() })).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { operation: "account.posts" },
+    });
+  });
+
+  it("keeps post lookup operation context for malformed nested actors", async () => {
+    const client = createClientWithGraphQLResponse({
+      node: { ...fixture.post, actor: {} },
+    });
+
+    await expect(client.posts.get({ id: postId() })).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { operation: "post.get" },
+    });
+  });
+
+  it("normalizes public timelines, search, and post lookup", async () => {
+    const seenOperations: string[] = [];
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async (input, init) => {
+          const request = new Request(input, init);
+          const body = (await request.json()) as { readonly query?: string };
+          const query = body.query ?? "";
+          if (query.includes("publicTimeline")) {
+            seenOperations.push("publicTimeline");
+            return Response.json({
+              data: {
+                publicTimeline: {
+                  edges: [{ node: fixture.post }],
+                  pageInfo: { hasNextPage: false, hasPreviousPage: false },
+                },
+              },
+            });
+          }
+          if (query.includes("searchActorsByHandle")) {
+            seenOperations.push("searchActorsByHandle");
+            return Response.json({ data: { searchActorsByHandle: [fixture.account] } });
+          }
+          if (query.includes("searchPost")) {
+            seenOperations.push("searchPost");
+            return Response.json({
+              data: {
+                searchPost: {
+                  edges: [{ node: fixture.post }],
+                  pageInfo: { hasNextPage: false, hasPreviousPage: false },
+                },
+              },
+            });
+          }
+          return Response.json({ data: { node: fixture.post } });
+        },
+      }),
+      origin: "https://hackerspub.example",
+    });
+
+    const [post, timeline, accountSearch, postSearch] = await Promise.all([
+      client.posts.get({ id: postId() }),
+      client.timelines.public({}),
+      client.search.search({ query: "alice", type: "accounts" }),
+      client.search.search({ query: "ActivityPlug", type: "posts" }),
+    ]);
+
+    expect(post.ref.rawId).toBe("post-1");
+    expect(timeline.nodes[0]?.ref.rawId).toBe("post-1");
+    expect(accountSearch.accounts[0]?.ref.rawId).toBe("actor-1");
+    expect(postSearch.posts[0]?.ref.rawId).toBe("post-1");
+    await expect(
+      client.search.search({ query: "activityplug", type: "hashtags" }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "search.hashtags" },
+    });
+    await expect(
+      client.search.search({ query: "activityplug", type: "posts", resolve: true }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "search.posts" },
+    });
+    expect(seenOperations).toEqual(["publicTimeline", "searchActorsByHandle", "searchPost"]);
+  });
+
+  it("rejects expired injected tokens before GraphQL requests", async () => {
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async () => {
+          throw new TypeError("Expired token must be rejected before a remote request.");
+        },
+      }),
+      origin: "https://hackerspub.example",
+    });
+    const session = await client.auth.injectToken({
+      accessToken: "expired-token",
+      expiresAt: "2000-01-01T00:00:00.000Z",
+    });
+
+    await expect(
+      client.search.search({ query: "ActivityPlug", type: "posts", session }),
+    ).rejects.toMatchObject({
+      code: "AUTH_EXPIRED",
+      context: { operation: "search.posts" },
+    });
+  });
+
+  it("rejects expired injected tokens before viewer verification", async () => {
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async () => {
+          throw new TypeError("Expired token must be rejected before a remote request.");
+        },
+      }),
+      origin: "https://hackerspub.example",
+    });
+    const session = await client.auth.injectToken({
+      accessToken: "expired-token",
+      expiresAt: "2000-01-01T00:00:00.000Z",
+    });
+
+    await expect(client.auth.verifyCredentials(session)).rejects.toMatchObject({
+      code: "AUTH_EXPIRED",
+      context: { operation: "auth.verifyCredentials" },
+    });
+  });
+
   it("classifies malformed NodeInfo hrefs as remote response errors", async () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter({
@@ -196,5 +331,14 @@ function accountId(): string {
     origin: "https://hackerspub.example",
     type: "account",
     id: "actor-1",
+  }).id;
+}
+
+function postId(): string {
+  return createEntityRef({
+    adapter: "hackerspub",
+    origin: "https://hackerspub.example",
+    type: "post",
+    id: "post-1",
   }).id;
 }

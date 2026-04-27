@@ -9,10 +9,16 @@ import {
   type ActivityPlugAdapter,
   type AdapterOperationContext,
   type AuthAdapterContext,
+  type AuthSession,
   type AuthTokenType,
+  type BoostPostInput,
+  type CreatePostInput,
+  type DeletePostInput,
+  type DeletedEntity,
   type Connection,
   type InstanceProfile,
   type MediaAttachment,
+  type MuteAccountInput,
   type OAuthAuthorizationRequest,
   type OAuthAuthorizationUrlInput,
   type OAuthClientRegistration,
@@ -21,8 +27,16 @@ import {
   type OAuthRevokeInput,
   type PageInput,
   type Post,
+  type PostActionInput,
+  type PostVisibility,
+  type PublicTimelineInput,
+  type Relationship,
+  type RelationshipInput,
+  type SearchInput,
+  type SearchResult,
   type StoredAuthSession,
   type TokenSet,
+  type UploadMediaInput,
 } from "@activityplug/core";
 import ky, { HTTPError, TimeoutError, type KyInstance } from "ky";
 
@@ -36,6 +50,7 @@ export interface MastodonBaseAdapterOptions {
   readonly httpClient?: KyInstance;
   readonly supportsRefreshToken?: boolean;
   readonly instanceEndpointRequired?: boolean;
+  readonly supportsLocalVisibility?: boolean;
 }
 
 export interface MastodonApplicationResponse {
@@ -131,6 +146,34 @@ export interface MastodonStatusResponse {
   readonly favourites_count?: number;
 }
 
+export interface MastodonRelationshipResponse {
+  readonly id?: string;
+  readonly following?: boolean;
+  readonly followed_by?: boolean;
+  readonly requested?: boolean;
+  readonly blocking?: boolean;
+  readonly blocked_by?: boolean;
+  readonly muting?: boolean;
+  readonly muting_notifications?: boolean;
+  readonly domain_blocking?: boolean;
+  readonly showing_reblogs?: boolean;
+  readonly notifying?: boolean;
+}
+
+export interface MastodonSearchResponse {
+  readonly accounts?: readonly MastodonAccountResponse[];
+  readonly statuses?: readonly MastodonStatusResponse[];
+  readonly hashtags?: readonly {
+    readonly name?: string;
+    readonly url?: string;
+    readonly history?: readonly {
+      readonly day?: string;
+      readonly uses?: string | number;
+      readonly accounts?: string | number;
+    }[];
+  }[];
+}
+
 export interface MastodonPollResponse {
   readonly id?: string;
   readonly expires_at?: string | null;
@@ -180,9 +223,36 @@ export function createMastodonBaseAdapter(
         ),
         "auth.tokenInjection": capability("supported"),
         "instance.nodeInfo": capability("supported"),
+        "accounts.relationships": capability("supported"),
         "accounts.lookupById": capability("supported"),
         "accounts.lookupByHandle": capability("supported"),
         "posts.read": capability("supported"),
+        "posts.create": capability("supported"),
+        "posts.delete": capability("supported"),
+        "posts.reply": capability("supported"),
+        "posts.quote": capability(
+          "unsupported",
+          "This adapter does not expose a stable quote-post API.",
+        ),
+        "timelines.home": capability("supported"),
+        "timelines.public": capability("supported"),
+        "timelines.local": capability("supported"),
+        "timelines.hashtag": capability("supported"),
+        "media.upload": capability("supported"),
+        "polls.create": capability("supported"),
+        "search.accounts": capability("supported"),
+        "search.posts": capability("supported"),
+        "search.hashtags": capability("supported"),
+        "social.follow": capability("supported"),
+        "social.block": capability("supported"),
+        "social.mute": capability("supported"),
+        "social.favourite": capability("supported"),
+        "social.bookmark": capability("supported"),
+        "social.boost": capability("supported"),
+        "social.reaction": capability(
+          "unsupported",
+          "Mastodon-compatible base APIs do not assume emoji reaction support.",
+        ),
       }),
       ...(options.documentationUrl === undefined
         ? {}
@@ -196,7 +266,44 @@ export function createMastodonBaseAdapter(
       getById: async (input, context) => getAccountById(input.id, context, options),
       getByHandle: async (input, context) => getAccountByHandle(input.handle, context, options),
       listPosts: async (input, context) =>
-        listAccountPosts(input.accountId, input.page, context, options),
+        listAccountPosts(input.accountId, input.page, context, options, input.session),
+    },
+    posts: {
+      get: async (input, context) => getPost(input.id, context, options),
+      create: async (input, context) => createPost(input, context, options),
+      delete: async (input, context) => deletePost(input, context, options),
+    },
+    timelines: {
+      home: async (input, context) => listHomeTimeline(input.session, input.page, context, options),
+      public: async (input, context) => listPublicTimeline(input, context, options),
+      hashtag: async (input, context) =>
+        listHashtagTimeline(input.tag, input.page, context, options),
+    },
+    search: {
+      search: async (input, context) => search(input, context, options),
+    },
+    media: {
+      upload: async (input, context) => uploadMedia(input, context, options),
+    },
+    social: {
+      relationship: async (input, context) => relationship(input, context, options),
+      follow: async (input, context) =>
+        accountRelationshipAction(input, "follow", context, options),
+      unfollow: async (input, context) =>
+        accountRelationshipAction(input, "unfollow", context, options),
+      block: async (input, context) => accountRelationshipAction(input, "block", context, options),
+      unblock: async (input, context) =>
+        accountRelationshipAction(input, "unblock", context, options),
+      mute: async (input, context) => muteAccount(input, context, options),
+      unmute: async (input, context) =>
+        accountRelationshipAction(input, "unmute", context, options),
+      favourite: async (input, context) => postAction(input, "favourite", context, options),
+      unfavourite: async (input, context) => postAction(input, "unfavourite", context, options),
+      bookmark: async (input, context) => postAction(input, "bookmark", context, options),
+      unbookmark: async (input, context) => postAction(input, "unbookmark", context, options),
+      boost: async (input, context) => boostPost(input, context, options),
+      unboost: async (input, context) =>
+        postAction(input, "unreblog", context, options, "social.unboost"),
     },
     auth: {
       registerOAuthClient: async (input, context) => registerOAuthClient(input, context, options),
@@ -518,6 +625,7 @@ async function listAccountPosts(
   page: PageInput | undefined,
   context: AdapterOperationContext,
   options: MastodonBaseAdapterOptions,
+  session?: AuthSession,
 ): Promise<Connection<Post>> {
   const searchParams = new URLSearchParams();
   if (page?.limit !== undefined) searchParams.set("limit", String(page.limit));
@@ -528,6 +636,9 @@ async function listAccountPosts(
   const remoteResponse = await requestResponse(
     clientFor(context, options).get(`api/v1/accounts/${encodeURIComponent(accountId)}/statuses`, {
       searchParams,
+      ...(session === undefined
+        ? {}
+        : { headers: await tokenHeader(session, context, "account.posts") }),
     }),
     "account.posts",
     context,
@@ -541,6 +652,365 @@ async function listAccountPosts(
     nodes: response.map((status) => postFromResponse(status, context)),
     pageInfo: mastodonPageInfo(response, remoteResponse.headers, context),
   };
+}
+
+async function getPost(
+  id: string,
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+): Promise<Post> {
+  const response = await requestJson<MastodonStatusResponse>(
+    clientFor(context, options)
+      .get(`api/v1/statuses/${encodeURIComponent(id)}`)
+      .json(),
+    "post.get",
+    context,
+  );
+  return postFromResponse(response, context);
+}
+
+async function listHomeTimeline(
+  session: AuthSession,
+  page: PageInput | undefined,
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+): Promise<Connection<Post>> {
+  return listTimeline(
+    "api/v1/timelines/home",
+    page,
+    context,
+    options,
+    "timeline.home",
+    await tokenHeader(session, context, "timeline.home"),
+  );
+}
+
+async function listPublicTimeline(
+  input: PublicTimelineInput,
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+): Promise<Connection<Post>> {
+  const operation = input.local === true ? "timeline.local" : "timeline.public";
+  return listTimeline(
+    "api/v1/timelines/public",
+    input.page,
+    context,
+    options,
+    operation,
+    input.session === undefined ? undefined : await tokenHeader(input.session, context, operation),
+    input.local === true ? { local: "true" } : undefined,
+  );
+}
+
+async function listHashtagTimeline(
+  tag: string,
+  page: PageInput | undefined,
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+): Promise<Connection<Post>> {
+  if (tag.length === 0) {
+    throw new ActivityPlugError("VALIDATION_FAILED", "Hashtag must not be empty.", {
+      ...errorContext(context, "timeline.hashtag"),
+    });
+  }
+  return listTimeline(
+    `api/v1/timelines/tag/${encodeURIComponent(tag)}`,
+    page,
+    context,
+    options,
+    "timeline.hashtag",
+  );
+}
+
+async function listTimeline(
+  path: string,
+  page: PageInput | undefined,
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+  operation: string,
+  headers?: Record<string, string>,
+  extraSearchParams?: Record<string, string>,
+): Promise<Connection<Post>> {
+  const searchParams = mastodonPageSearchParams(page, context, operation);
+  for (const [name, value] of Object.entries(extraSearchParams ?? {}))
+    searchParams.set(name, value);
+  const remoteResponse = await requestResponse(
+    clientFor(context, options).get(path, {
+      searchParams,
+      ...(headers === undefined ? {} : { headers }),
+    }),
+    operation,
+    context,
+  );
+  const response = await parseJsonArray<MastodonStatusResponse>(remoteResponse, operation, context);
+  return {
+    nodes: response.map((status) => postFromResponse(status, context)),
+    pageInfo: mastodonPageInfoForOperation(response, remoteResponse.headers, context, operation),
+  };
+}
+
+async function search(
+  input: SearchInput,
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+): Promise<SearchResult> {
+  const searchParams = new URLSearchParams({
+    q: input.query,
+    ...(input.resolve === undefined ? {} : { resolve: String(input.resolve) }),
+  });
+  if (input.type === "accounts") searchParams.set("type", "accounts");
+  if (input.type === "posts") searchParams.set("type", "statuses");
+  if (input.type === "hashtags") searchParams.set("type", "hashtags");
+  if (input.page?.limit !== undefined) searchParams.set("limit", String(input.page.limit));
+  const headers =
+    input.session === undefined ? undefined : await tokenHeader(input.session, context, "search");
+  const response = await requestJson<MastodonSearchResponse>(
+    clientFor(context, options)
+      .get("api/v2/search", {
+        searchParams,
+        ...(headers === undefined ? {} : { headers }),
+      })
+      .json(),
+    "search",
+    context,
+  );
+  if (!isRecord(response)) {
+    throw invalidRemoteResponse("Mastodon search response is malformed.", {
+      context,
+      operation: "search",
+      raw: response,
+    });
+  }
+  return {
+    accounts: (optionalArray(response.accounts, "accounts", response, context, "search") ?? []).map(
+      (account) => accountFromResponse(account as MastodonAccountResponse, context, "search"),
+    ),
+    posts: (optionalArray(response.statuses, "statuses", response, context, "search") ?? []).map(
+      (status) => postFromResponse(status as MastodonStatusResponse, context),
+    ),
+    hashtags: (optionalArray(response.hashtags, "hashtags", response, context, "search") ?? []).map(
+      (hashtag) => hashtagFromResponse(hashtag, context),
+    ),
+    raw: response,
+  };
+}
+
+async function uploadMedia(
+  input: UploadMediaInput,
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+): Promise<MediaAttachment> {
+  if (input.sensitive === true) {
+    throw new ActivityPlugError(
+      "UNSUPPORTED_OPERATION",
+      "Mastodon-compatible media uploads do not support media-level sensitivity.",
+      {
+        adapter: context.adapterId,
+        origin: context.origin,
+        operation: "media.upload",
+        capability: "media.upload",
+      },
+    );
+  }
+  const form = new FormData();
+  form.set("file", input.file, input.filename);
+  if (input.description !== undefined) form.set("description", input.description);
+  const response = await requestJson<MastodonMediaAttachmentResponse>(
+    clientFor(context, options)
+      .post("api/v2/media", {
+        headers: await tokenHeader(input.session, context, "media.upload"),
+        body: form,
+      })
+      .json(),
+    "media.upload",
+    context,
+  );
+  return mediaAttachmentFromResponse(response, context, "media.upload");
+}
+
+async function createPost(
+  input: CreatePostInput,
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+): Promise<Post> {
+  if (input.quoteOfId !== undefined) {
+    throw new ActivityPlugError(
+      "UNSUPPORTED_OPERATION",
+      "This adapter cannot create quote posts without silently changing the request.",
+      { ...errorContext(context, "post.create"), capability: "posts.quote" },
+    );
+  }
+  const json = {
+    status: input.content,
+    ...(input.visibility === undefined
+      ? {}
+      : {
+          visibility: mastodonVisibilityInput(input.visibility, context, options, "post.create"),
+        }),
+    ...(input.sensitive === undefined ? {} : { sensitive: input.sensitive }),
+    ...(input.summary === undefined ? {} : { spoiler_text: input.summary }),
+    ...(input.replyToId === undefined ? {} : { in_reply_to_id: input.replyToId }),
+    ...(input.mediaIds === undefined ? {} : { media_ids: input.mediaIds }),
+    ...(input.poll === undefined
+      ? {}
+      : {
+          poll: {
+            options: input.poll.options,
+            multiple: input.poll.multiple ?? false,
+            ...(input.poll.expiresInSeconds === undefined
+              ? {}
+              : { expires_in: input.poll.expiresInSeconds }),
+          },
+        }),
+  };
+  const response = await requestJson<MastodonStatusResponse>(
+    clientFor(context, options)
+      .post("api/v1/statuses", {
+        headers: await tokenHeader(input.session, context, "post.create"),
+        json,
+      })
+      .json(),
+    "post.create",
+    context,
+  );
+  return postFromResponse(response, context);
+}
+
+async function deletePost(
+  input: DeletePostInput,
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+): Promise<DeletedEntity> {
+  const response = await requestJson<unknown>(
+    clientFor(context, options)
+      .delete(`api/v1/statuses/${encodeURIComponent(input.id)}`, {
+        headers: await tokenHeader(input.session, context, "post.delete"),
+      })
+      .json(),
+    "post.delete",
+    context,
+  );
+  return {
+    ref: createEntityRef({
+      adapter: context.adapterId,
+      origin: context.origin,
+      type: "post",
+      id: input.id,
+    }),
+    deleted: true,
+    raw: response,
+  };
+}
+
+async function relationship(
+  input: RelationshipInput,
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+): Promise<Relationship> {
+  const response = await requestJson<readonly MastodonRelationshipResponse[]>(
+    clientFor(context, options)
+      .get("api/v1/accounts/relationships", {
+        headers: await tokenHeader(input.session, context, "account.relationships"),
+        searchParams: { id: input.accountId },
+      })
+      .json(),
+    "account.relationships",
+    context,
+  );
+  if (!Array.isArray(response) || response[0] === undefined) {
+    throw invalidRemoteResponse("Mastodon relationship response is malformed.", {
+      context,
+      operation: "account.relationships",
+      raw: response,
+    });
+  }
+  return relationshipFromResponse(response[0], context);
+}
+
+async function accountRelationshipAction(
+  input: RelationshipInput,
+  action: "follow" | "unfollow" | "block" | "unblock" | "unmute",
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+): Promise<Relationship> {
+  const response = await requestJson<MastodonRelationshipResponse>(
+    clientFor(context, options)
+      .post(`api/v1/accounts/${encodeURIComponent(input.accountId)}/${action}`, {
+        headers: await tokenHeader(input.session, context, `social.${action}`),
+      })
+      .json(),
+    `social.${action}`,
+    context,
+  );
+  return relationshipFromResponse(response, context);
+}
+
+async function muteAccount(
+  input: MuteAccountInput,
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+): Promise<Relationship> {
+  const response = await requestJson<MastodonRelationshipResponse>(
+    clientFor(context, options)
+      .post(`api/v1/accounts/${encodeURIComponent(input.accountId)}/mute`, {
+        headers: await tokenHeader(input.session, context, "social.mute"),
+        json: {
+          ...(input.notifications === undefined ? {} : { notifications: input.notifications }),
+          ...(input.durationSeconds === undefined ? {} : { duration: input.durationSeconds }),
+        },
+      })
+      .json(),
+    "social.mute",
+    context,
+  );
+  return relationshipFromResponse(response, context);
+}
+
+async function postAction(
+  input: PostActionInput,
+  action: "favourite" | "unfavourite" | "bookmark" | "unbookmark" | "unreblog",
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+  operation = `social.${action}`,
+): Promise<Post> {
+  const response = await requestJson<MastodonStatusResponse>(
+    clientFor(context, options)
+      .post(`api/v1/statuses/${encodeURIComponent(input.postId)}/${action}`, {
+        headers: await tokenHeader(input.session, context, operation),
+      })
+      .json(),
+    operation,
+    context,
+  );
+  return postFromResponse(response, context);
+}
+
+async function boostPost(
+  input: BoostPostInput,
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+): Promise<Post> {
+  const response = await requestJson<MastodonStatusResponse>(
+    clientFor(context, options)
+      .post(`api/v1/statuses/${encodeURIComponent(input.postId)}/reblog`, {
+        headers: await tokenHeader(input.session, context, "social.boost"),
+        json:
+          input.visibility === undefined
+            ? {}
+            : {
+                visibility: mastodonVisibilityInput(
+                  input.visibility,
+                  context,
+                  options,
+                  "social.boost",
+                ),
+              },
+      })
+      .json(),
+    "social.boost",
+    context,
+  );
+  return postFromResponse(response, context);
 }
 
 async function registerOAuthClient(
@@ -678,6 +1148,7 @@ async function verifyCredentials(
   context: AuthAdapterContext,
   options: MastodonBaseAdapterOptions,
 ): Promise<Account> {
+  assertAccessTokenFresh(session.tokenSet, context, "auth.verifyCredentials");
   const response = await requestJson<MastodonAccountResponse>(
     clientFor(context, options)
       .get("api/v1/accounts/verify_credentials", {
@@ -893,11 +1364,12 @@ export function postFromResponse(
 function mediaAttachmentFromResponse(
   response: MastodonMediaAttachmentResponse,
   context: AdapterOperationContext,
+  operation = "posts.read",
 ): MediaAttachment {
   if (!isRecord(response) || !nonEmptyString(response.id) || !nonEmptyString(response.url)) {
     throw invalidRemoteResponse("Mastodon media attachment response is missing required fields.", {
       context,
-      operation: "posts.read",
+      operation,
       raw: response,
     });
   }
@@ -908,14 +1380,8 @@ function mediaAttachmentFromResponse(
   assertOptionalString(attachment.preview_url, "preview_url", attachment, context);
   assertOptionalString(attachment.description, "description", attachment, context);
   assertOptionalString(attachment.blurhash, "blurhash", attachment, context);
-  const meta = optionalObject(attachment.meta, "meta", attachment, context, "posts.read");
-  const original = optionalObject(
-    meta?.original,
-    "meta.original",
-    attachment,
-    context,
-    "posts.read",
-  );
+  const meta = optionalObject(attachment.meta, "meta", attachment, context, operation);
+  const original = optionalObject(meta?.original, "meta.original", attachment, context, operation);
   return {
     ref: createEntityRef({
       adapter: context.adapterId,
@@ -925,7 +1391,7 @@ function mediaAttachmentFromResponse(
       rawUrl: attachment.url,
     }),
     type: mediaAttachmentType(
-      optionalString(attachment.type, "type", attachment, context, "posts.read"),
+      optionalString(attachment.type, "type", attachment, context, operation),
     ),
     url: attachment.url,
     ...(attachment.preview_url === null || attachment.preview_url === undefined
@@ -943,7 +1409,7 @@ function mediaAttachmentFromResponse(
       "width",
       attachment,
       context,
-      "posts.read",
+      operation,
     ),
     ...renamedOptionalNumber(
       original?.height,
@@ -951,7 +1417,7 @@ function mediaAttachmentFromResponse(
       "height",
       attachment,
       context,
-      "posts.read",
+      operation,
     ),
     raw: attachment,
   };
@@ -1123,16 +1589,48 @@ function mastodonPageInfo(
   headers: Headers,
   context: AdapterOperationContext,
 ): Connection<Post>["pageInfo"] {
+  return mastodonPageInfoForOperation(response, headers, context, "account.posts");
+}
+
+function mastodonPageInfoForOperation(
+  response: readonly MastodonStatusResponse[],
+  headers: Headers,
+  context: AdapterOperationContext,
+  operation: string,
+): Connection<Post>["pageInfo"] {
   const links = parseLinkHeader(headers.get("link"));
   const firstId = response[0]?.id;
   const lastId = response.at(-1)?.id;
   return {
     hasNextPage: links.next !== undefined,
     hasPreviousPage: links.prev !== undefined,
-    ...(firstId === undefined ? {} : { startCursor: encodeAccountPostsCursor(firstId, context) }),
-    ...(lastId === undefined ? {} : { endCursor: encodeAccountPostsCursor(lastId, context) }),
-    raw: links,
+    ...(firstId === undefined
+      ? {}
+      : { startCursor: encodeOperationCursor(firstId, context, operation) }),
+    ...(lastId === undefined
+      ? {}
+      : { endCursor: encodeOperationCursor(lastId, context, operation) }),
+    raw: {
+      hasNextPageLink: links.next !== undefined,
+      hasPreviousPageLink: links.prev !== undefined,
+    },
   };
+}
+
+function mastodonPageSearchParams(
+  page: PageInput | undefined,
+  context: AdapterOperationContext,
+  operation: string,
+): URLSearchParams {
+  const searchParams = new URLSearchParams();
+  if (page?.limit !== undefined) searchParams.set("limit", String(page.limit));
+  if (page?.after !== undefined) {
+    searchParams.set("max_id", decodeOperationCursor(page.after, context, operation));
+  }
+  if (page?.before !== undefined) {
+    searchParams.set("min_id", decodeOperationCursor(page.before, context, operation));
+  }
+  return searchParams;
 }
 
 function parseLinkHeader(value: string | null): { readonly next?: string; readonly prev?: string } {
@@ -1151,20 +1649,32 @@ function parseLinkHeader(value: string | null): { readonly next?: string; readon
   return result;
 }
 
-function encodeAccountPostsCursor(cursor: string, context: AdapterOperationContext): string {
+function encodeOperationCursor(
+  cursor: string,
+  context: AdapterOperationContext,
+  operation: string,
+): string {
   return encodePageCursor({
     adapter: context.adapterId,
     origin: context.origin,
-    operation: "account.posts",
+    operation,
     cursor,
   });
 }
 
 function decodeAccountPostsCursor(cursor: string, context: AdapterOperationContext): string {
+  return decodeOperationCursor(cursor, context, "account.posts");
+}
+
+function decodeOperationCursor(
+  cursor: string,
+  context: AdapterOperationContext,
+  operation: string,
+): string {
   return decodePageCursor(cursor, {
     adapter: context.adapterId,
     origin: context.origin,
-    operation: "account.posts",
+    operation,
   });
 }
 
@@ -1208,6 +1718,251 @@ function mastodonVisibility(value: string | undefined): Post["visibility"] {
   if (value === "private") return "followers";
   if (value === "limited") return "list";
   return "unknown";
+}
+
+function mastodonVisibilityInput(
+  value: PostVisibility,
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+  operation: string,
+): string {
+  if (value === "followers") return "private";
+  if (value === "local" && options.supportsLocalVisibility === true) return value;
+  if (value === "public" || value === "unlisted" || value === "direct") {
+    return value;
+  }
+  throw new ActivityPlugError(
+    "VALIDATION_FAILED",
+    "The requested visibility cannot be represented by this adapter.",
+    { ...errorContext(context, operation), raw: { visibility: value } },
+  );
+}
+
+function relationshipFromResponse(
+  response: MastodonRelationshipResponse,
+  context: AdapterOperationContext,
+): Relationship {
+  if (!isRecord(response) || !nonEmptyString(response.id)) {
+    throw invalidRemoteResponse("Mastodon relationship response is missing required fields.", {
+      context,
+      operation: "account.relationships",
+      raw: response,
+    });
+  }
+  return {
+    account: createEntityRef({
+      adapter: context.adapterId,
+      origin: context.origin,
+      type: "account",
+      id: response.id,
+    }),
+    following:
+      optionalBoolean(
+        response.following,
+        "following",
+        response,
+        context,
+        "account.relationships",
+      ) ?? false,
+    followedBy:
+      optionalBoolean(
+        response.followed_by,
+        "followed_by",
+        response,
+        context,
+        "account.relationships",
+      ) ?? false,
+    requested:
+      optionalBoolean(
+        response.requested,
+        "requested",
+        response,
+        context,
+        "account.relationships",
+      ) ?? false,
+    blocking:
+      optionalBoolean(response.blocking, "blocking", response, context, "account.relationships") ??
+      false,
+    ...(optionalBoolean(
+      response.blocked_by,
+      "blocked_by",
+      response,
+      context,
+      "account.relationships",
+    ) === undefined
+      ? {}
+      : {
+          blockedBy: optionalBoolean(
+            response.blocked_by,
+            "blocked_by",
+            response,
+            context,
+            "account.relationships",
+          ),
+        }),
+    muting:
+      optionalBoolean(response.muting, "muting", response, context, "account.relationships") ??
+      false,
+    ...(optionalBoolean(
+      response.muting_notifications,
+      "muting_notifications",
+      response,
+      context,
+      "account.relationships",
+    ) === undefined
+      ? {}
+      : {
+          mutingNotifications: optionalBoolean(
+            response.muting_notifications,
+            "muting_notifications",
+            response,
+            context,
+            "account.relationships",
+          ),
+        }),
+    ...(optionalBoolean(
+      response.domain_blocking,
+      "domain_blocking",
+      response,
+      context,
+      "account.relationships",
+    ) === undefined
+      ? {}
+      : {
+          domainBlocking: optionalBoolean(
+            response.domain_blocking,
+            "domain_blocking",
+            response,
+            context,
+            "account.relationships",
+          ),
+        }),
+    ...(optionalBoolean(
+      response.showing_reblogs,
+      "showing_reblogs",
+      response,
+      context,
+      "account.relationships",
+    ) === undefined
+      ? {}
+      : {
+          showingReblogs: optionalBoolean(
+            response.showing_reblogs,
+            "showing_reblogs",
+            response,
+            context,
+            "account.relationships",
+          ),
+        }),
+    ...(optionalBoolean(
+      response.notifying,
+      "notifying",
+      response,
+      context,
+      "account.relationships",
+    ) === undefined
+      ? {}
+      : {
+          notifying: optionalBoolean(
+            response.notifying,
+            "notifying",
+            response,
+            context,
+            "account.relationships",
+          ),
+        }),
+    raw: response,
+  };
+}
+
+function hashtagFromResponse(
+  response: unknown,
+  context: AdapterOperationContext,
+): SearchResult["hashtags"][number] {
+  if (!isRecord(response) || !nonEmptyString(response.name)) {
+    throw invalidRemoteResponse("Mastodon hashtag response is missing required fields.", {
+      context,
+      operation: "search",
+      raw: response,
+    });
+  }
+  const history = optionalArray(response.history, "history", response, context, "search");
+  return {
+    name: response.name,
+    ...renamedOptionalString(response.url, "url", "url", response, context, "search"),
+    ...(history === undefined
+      ? {}
+      : {
+          history: history.map((item) => {
+            if (!isRecord(item) || typeof item.day !== "string") {
+              throw invalidRemoteResponse("Mastodon hashtag history response is malformed.", {
+                context,
+                operation: "search",
+                raw: item,
+              });
+            }
+            return {
+              day: item.day,
+              ...stringOrNumber(item.uses, "uses", item, context),
+              ...stringOrNumber(item.accounts, "accounts", item, context),
+              raw: item,
+            };
+          }),
+        }),
+    raw: response,
+  };
+}
+
+function stringOrNumber(
+  value: unknown,
+  field: "uses" | "accounts",
+  raw: unknown,
+  context: AdapterOperationContext,
+): Record<typeof field, number> {
+  if (value === undefined) return {} as Record<typeof field, number>;
+  const numberValue = typeof value === "string" ? Number(value) : value;
+  if (typeof numberValue !== "number" || !Number.isFinite(numberValue)) {
+    throw invalidRemoteResponse("Mastodon numeric string response is malformed.", {
+      context,
+      operation: "search",
+      raw,
+    });
+  }
+  return { [field]: numberValue } as Record<typeof field, number>;
+}
+
+async function tokenHeader(
+  session: AuthSession,
+  context: AdapterOperationContext,
+  operation: string,
+): Promise<Record<string, string>> {
+  const stored = await context.sessionStore?.get(session.id);
+  if (stored === undefined || stored === null) {
+    throw new ActivityPlugError("AUTH_REQUIRED", "Auth session is not available.", {
+      ...errorContext(context, operation),
+    });
+  }
+  if (stored.adapter !== context.adapterId || stored.origin !== context.origin) {
+    throw new ActivityPlugError("AUTH_REQUIRED", "Auth session does not belong to this adapter.", {
+      ...errorContext(context, operation),
+    });
+  }
+  assertAccessTokenFresh(stored.tokenSet, context, operation);
+  return authorizationHeader(stored.tokenSet);
+}
+
+function assertAccessTokenFresh(
+  tokenSet: TokenSet,
+  context: AuthAdapterContext | AdapterOperationContext,
+  operation: string,
+): void {
+  if (tokenSet.expiresAt === undefined) return;
+  const accessTokenExpiresAt = Date.parse(tokenSet.expiresAt);
+  if (!Number.isFinite(accessTokenExpiresAt) || accessTokenExpiresAt <= Date.now()) {
+    throw new ActivityPlugError("AUTH_EXPIRED", "Auth session access token has expired.", {
+      ...errorContext(context, operation),
+    });
+  }
 }
 
 function clientFor(

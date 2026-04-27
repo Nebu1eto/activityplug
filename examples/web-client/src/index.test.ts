@@ -88,6 +88,14 @@ describe("sample web client auth flow", () => {
         expect(await request.json()).toEqual({ username: "alice" });
         return jsonResponse(misskeyFixture.account);
       }
+      if (request.method === "POST" && url.pathname === "/api/users/search-by-username-and-host") {
+        expect(request.headers.get("Authorization")).toBe(null);
+        return jsonResponse([misskeyFixture.account]);
+      }
+      if (request.method === "POST" && url.pathname === "/api/notes/search") {
+        expect(request.headers.get("Authorization")).toBe("Bearer misskey-token-1");
+        return jsonResponse([misskeyFixture.post]);
+      }
       return jsonResponse({ error: "unexpected request" }, 404);
     });
 
@@ -116,6 +124,9 @@ describe("sample web client auth flow", () => {
     await expect(exchangedAuth.lookupAccountProfile("alice")).resolves.toMatchObject({
       username: "alice",
       displayName: "Alice",
+    });
+    await expect(exchangedAuth.search("ActivityPlug", "posts")).resolves.toMatchObject({
+      posts: [expect.objectContaining({ ref: expect.objectContaining({ rawId: "note9" }) })],
     });
   });
 });

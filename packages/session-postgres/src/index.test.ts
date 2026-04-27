@@ -96,13 +96,13 @@ class MemoryPostgresClient implements PostgresAuthSessionStoreClient {
       });
       return { rows: [] };
     }
-    if (sql.includes("storageExpiresAt")) {
+    if (sql.includes("expires_at is not null")) {
       const now = Date.parse(values[0] as string);
       const deletedRows = [];
       for (const [id, row] of this.#rows) {
-        const storageExpiresAt = (row.data as { readonly storageExpiresAt?: string })
-          .storageExpiresAt;
-        if (storageExpiresAt !== undefined && Date.parse(storageExpiresAt) <= now) {
+        const hasStorageExpiresAt =
+          (row.data as { readonly storageExpiresAt?: string }).storageExpiresAt !== undefined;
+        if (hasStorageExpiresAt && row.expiresAt !== null && Date.parse(row.expiresAt) <= now) {
           this.#rows.delete(id);
           deletedRows.push({ id });
         }

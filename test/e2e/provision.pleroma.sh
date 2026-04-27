@@ -4,12 +4,19 @@ set -euo pipefail
 COMPOSE="docker compose -f test/e2e/docker-compose.yml --profile pleroma"
 BASE_URL="http://pleroma.127.0.0.1.nip.io:43080"
 USERNAME="activityplug"
+SOCIAL_USERNAME="activityplugtarget"
 PASSWORD="activityplug-password"
+SEED_TEXT="ActivityPlug Pleroma E2E seed post #activityplug"
 
 $COMPOSE exec -T pleroma-web /opt/pleroma/bin/pleroma_ctl user new \
   "$USERNAME" activityplug@example.com \
   --password "$PASSWORD" \
   --name ActivityPlug \
+  --assume-yes >/dev/null 2>&1 || true
+$COMPOSE exec -T pleroma-web /opt/pleroma/bin/pleroma_ctl user new \
+  "$SOCIAL_USERNAME" activityplug-target@example.com \
+  --password "$PASSWORD" \
+  --name ActivityPlugTarget \
   --assume-yes >/dev/null 2>&1 || true
 
 APP=$(curl -sf -X POST "$BASE_URL/api/v1/apps" \
@@ -26,10 +33,17 @@ TOKEN=$(curl -sf -X POST "$BASE_URL/oauth/token" \
   -F "client_secret=$CLIENT_SECRET" \
   -F "scope=read write follow push" | jq -r ".access_token")
 
-curl -sf -X POST "$BASE_URL/api/v1/statuses" \
-  -H "Authorization: Bearer $TOKEN" \
-  -F "status=ActivityPlug Pleroma E2E seed post" \
-  -F "visibility=public" >/dev/null
+ACCOUNT_ID=$(curl -sf "$BASE_URL/api/v1/accounts/verify_credentials" \
+  -H "Authorization: Bearer $TOKEN" | jq -r ".id")
+if ! curl -sf "$BASE_URL/api/v1/accounts/$ACCOUNT_ID/statuses?limit=20" \
+  -H "Authorization: Bearer $TOKEN" | jq -e --arg text "$SEED_TEXT" \
+  'any(.[]; .content | contains($text))' >/dev/null; then
+  curl -sf -X POST "$BASE_URL/api/v1/statuses" \
+    -H "Authorization: Bearer $TOKEN" \
+    -F "status=$SEED_TEXT" \
+    -F "visibility=public" >/dev/null
+fi
 
-jq -nc --arg origin "$BASE_URL" --arg handle "$USERNAME" --arg token "$TOKEN" \
-  '{adapter:"pleroma",origin:$origin,accountHandle:$handle,token:$token}'
+jq -nc --arg origin "$BASE_URL" --arg handle "$USERNAME" --arg social "$SOCIAL_USERNAME" \
+  --arg token "$TOKEN" --arg postSearchQuery "ActivityPlug" \
+  '{adapter:"pleroma",origin:$origin,accountHandle:$handle,socialActionHandle:$social,token:$token,hashtag:"activityplug",postSearchQuery:$postSearchQuery}'

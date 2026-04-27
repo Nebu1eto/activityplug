@@ -12,6 +12,17 @@ redis:
   host: misskey-redis
   port: 6379
 
+fulltextSearch:
+  provider: meilisearch
+
+meilisearch:
+  host: misskey-meilisearch
+  port: 7700
+  apiKey: ""
+  ssl: false
+  index: activityplug-e2e
+  scope: local
+
 id: aidx
 
 allowedPrivateNetworks:

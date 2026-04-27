@@ -37,6 +37,19 @@ describe("Hollo adapter", () => {
       contentHtml: "<p>Hollo post.</p>",
       author: { ref: { rawId: "hollo-109" } },
     });
+    expect(client.capabilities["posts.reply"]).toMatchObject({ status: "unsupported" });
+    expect(client.capabilities["search.hashtags"]).toMatchObject({ status: "unsupported" });
+    expect(client.capabilities["timelines.hashtag"]).toMatchObject({ status: "unsupported" });
+    await expect(client.timelines.hashtag({ tag: "activityplug" })).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "timelines.hashtag", operation: "timeline.hashtag" },
+    });
+    await expect(
+      client.search.search({ query: "activityplug", type: "hashtags" }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "search.hashtags", operation: "search.hashtags" },
+    });
   });
 });
 

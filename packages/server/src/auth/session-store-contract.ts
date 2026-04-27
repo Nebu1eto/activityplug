@@ -125,6 +125,32 @@ export const authSessionStoreContractCases: readonly AuthSessionStoreContractCas
       assertEqual(await store.get("session-1"), null);
     },
   },
+  {
+    name: "fails closed for malformed storage expiration timestamps",
+    run: async (options) => {
+      const store = options.createStore();
+
+      await store.create(
+        createContractSession("session-1", {
+          storageExpiresAt: "not-a-date",
+        }),
+      );
+
+      assertEqual(await store.get("session-1"), null);
+      await store.create(
+        createContractSession("session-2", {
+          storageExpiresAt: "not-a-date",
+        }),
+      );
+      assertEqual(await store.consume("session-2"), null);
+      await store.create(
+        createContractSession("session-3", {
+          storageExpiresAt: "not-a-date",
+        }),
+      );
+      assertEqual(await store.deleteExpired(new Date("2026-04-26T00:00:00.000Z")), 1);
+    },
+  },
 ];
 
 export function createContractSession(

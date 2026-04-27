@@ -38,9 +38,12 @@ describe.skipIf(!runIntegration)("RedisAuthSessionStore integration", () => {
     });
 
     await store.create(createSession("expired", { storageExpiresAt: "2026-01-01T00:00:00.000Z" }));
-
-    await expect(store.deleteExpired()).resolves.toBe(1);
+    await delay(20);
     await expect(store.get("expired")).resolves.toBeNull();
+
+    await store.create(createSession("malformed", { storageExpiresAt: "not-a-date" }));
+    await delay(20);
+    await expect(store.get("malformed")).resolves.toBeNull();
   });
 });
 
@@ -80,4 +83,8 @@ async function deleteMatchingKeys(redis: Redis, prefix: string): Promise<void> {
       await redis.del(...keys);
     }
   } while (cursor !== "0");
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }

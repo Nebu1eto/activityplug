@@ -175,4 +175,325 @@ describe("library-mode clients", () => {
 
     expect(limits).toEqual([200]);
   });
+
+  it("rejects search cursors before adapter calls", async () => {
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet(),
+      },
+      search: {
+        search: async () => {
+          throw new Error("adapter should not be called");
+        },
+      },
+    };
+    const client = createActivityPlugClient({
+      adapter,
+      origin: "https://social.example",
+    });
+
+    await expect(
+      client.search.search({
+        query: "alice",
+        page: { after: "cursor" } as unknown as { readonly limit?: number },
+      }),
+    ).rejects.toMatchObject({ code: "VALIDATION_FAILED" });
+  });
+
+  it("rejects unsupported search subtypes before adapter calls", async () => {
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet({
+          "search.accounts": capability("supported"),
+          "search.posts": capability("unsupported"),
+        }),
+      },
+      search: {
+        search: async () => {
+          throw new Error("adapter should not be called");
+        },
+      },
+    };
+    const client = createActivityPlugClient({
+      adapter,
+      origin: "https://social.example",
+    });
+
+    await expect(client.search.search({ query: "hello", type: "posts" })).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "search.posts" },
+    });
+  });
+
+  it("rejects broad search when any search subtype is unsupported", async () => {
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet({
+          "search.accounts": capability("supported"),
+          "search.posts": capability("supported"),
+          "search.hashtags": capability("unsupported"),
+        }),
+      },
+      search: {
+        search: async () => {
+          throw new Error("adapter should not be called");
+        },
+      },
+    };
+    const client = createActivityPlugClient({
+      adapter,
+      origin: "https://social.example",
+    });
+
+    await expect(client.search.search({ query: "hello" })).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { operation: "search" },
+    });
+  });
+
+  it("rejects empty create-post payloads before adapter calls", async () => {
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet({
+          "auth.tokenInjection": capability("supported"),
+          "posts.create": capability("supported"),
+        }),
+      },
+      posts: {
+        create: async () => {
+          throw new Error("adapter should not be called");
+        },
+      },
+    };
+    const client = createActivityPlugClient({
+      adapter,
+      origin: "https://social.example",
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    for (const content of ["", "   "]) {
+      await expect(client.posts.create({ session, content })).rejects.toMatchObject({
+        code: "VALIDATION_FAILED",
+        context: { operation: "post.create" },
+      });
+    }
+  });
+
+  it("rejects malformed compose poll payloads before adapter calls", async () => {
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet({
+          "auth.tokenInjection": capability("supported"),
+          "posts.create": capability("supported"),
+        }),
+      },
+      posts: {
+        create: async () => {
+          throw new Error("adapter should not be called");
+        },
+      },
+    };
+    const client = createActivityPlugClient({ adapter, origin: "https://social.example" });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    await expect(
+      client.posts.create({ session, content: "", poll: { options: [] } }),
+    ).rejects.toMatchObject({ code: "VALIDATION_FAILED", context: { operation: "post.create" } });
+    await expect(
+      client.posts.create({ session, content: "", poll: { options: ["yes", " "] } }),
+    ).rejects.toMatchObject({ code: "VALIDATION_FAILED", context: { operation: "post.create" } });
+  });
+
+  it("rejects unsupported operation capabilities before adapter calls", async () => {
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet({
+          "auth.tokenInjection": capability("supported"),
+          "posts.create": capability("supported"),
+          "posts.reply": capability("supported"),
+          "posts.quote": capability("unsupported"),
+          "polls.create": capability("unsupported"),
+          "timelines.local": capability("unsupported"),
+          "media.upload": capability("unsupported"),
+        }),
+      },
+      posts: {
+        create: async () => {
+          throw new Error("adapter should not be called");
+        },
+      },
+      timelines: {
+        public: async () => {
+          throw new Error("adapter should not be called");
+        },
+      },
+      media: {
+        upload: async () => {
+          throw new Error("adapter should not be called");
+        },
+      },
+    };
+    const client = createActivityPlugClient({ adapter, origin: "https://social.example" });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+    const postId = createEntityRef({
+      adapter: "fake",
+      origin: "https://social.example",
+      type: "post",
+      id: "post",
+    }).id;
+
+    await expect(
+      client.posts.create({ session, content: "quote", quoteOfId: postId }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "posts.quote" },
+    });
+    await expect(
+      client.posts.create({
+        session,
+        content: "reply with quote",
+        replyToId: postId,
+        quoteOfId: postId,
+      }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "posts.quote" },
+    });
+    await expect(
+      client.posts.create({ session, content: "", poll: { options: ["yes", "no"] } }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "polls.create" },
+    });
+    await expect(client.timelines.local({})).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "timelines.local" },
+    });
+    await expect(client.media.upload({ session, file: new Blob(["x"]) })).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "media.upload" },
+    });
+  });
+
+  it("validates social action inputs and missing capability context in library mode", async () => {
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet({
+          "auth.tokenInjection": capability("supported"),
+          "social.reaction": capability("supported"),
+          "social.mute": capability("supported"),
+          "social.bookmark": capability("unsupported"),
+        }),
+      },
+      social: {
+        react: async () => {
+          throw new Error("adapter should not be called");
+        },
+        mute: async () => {
+          throw new Error("adapter should not be called");
+        },
+        bookmark: async () => {
+          throw new Error("adapter should not be called");
+        },
+      },
+    };
+    const client = createActivityPlugClient({ adapter, origin: "https://social.example" });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+    const postId = createEntityRef({
+      adapter: "fake",
+      origin: "https://social.example",
+      type: "post",
+      id: "post",
+    }).id;
+    const accountId = createEntityRef({
+      adapter: "fake",
+      origin: "https://social.example",
+      type: "account",
+      id: "alice",
+    }).id;
+
+    await expect(async () =>
+      client.social.react({ session, postId, emoji: "" }),
+    ).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+      context: { operation: "social.reaction" },
+    });
+    await expect(async () =>
+      client.social.mute({ session, accountId, durationSeconds: 0 }),
+    ).rejects.toMatchObject({ code: "VALIDATION_FAILED", context: { operation: "social.mute" } });
+    await expect(async () => client.social.unbookmark({ session, postId })).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { operation: "social.unbookmark", capability: "social.bookmark" },
+    });
+    await expect(async () => client.social.bookmark({ session, postId })).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "social.bookmark" },
+    });
+  });
+
+  it("rejects invalid runtime ID and media file values with typed errors", async () => {
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet({
+          "auth.tokenInjection": capability("supported"),
+          "posts.read": capability("supported"),
+          "media.upload": capability("supported"),
+        }),
+      },
+      posts: {
+        get: async () => {
+          throw new Error("adapter should not be called");
+        },
+      },
+      media: {
+        upload: async () => {
+          throw new Error("adapter should not be called");
+        },
+      },
+    };
+    const client = createActivityPlugClient({ adapter, origin: "https://social.example" });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    await expect(client.posts.get({ id: 1 as unknown as string })).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+    });
+    await expect(async () =>
+      client.media.upload({ session, file: "not-a-blob" as unknown as Blob }),
+    ).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+      context: { operation: "media.upload" },
+    });
+  });
 });

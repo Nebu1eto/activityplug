@@ -83,6 +83,12 @@ export interface Post {
   readonly raw: unknown;
 }
 
+export interface DeletedEntity {
+  readonly ref: EntityRef;
+  readonly deleted: true;
+  readonly raw?: unknown;
+}
+
 export type PostVisibility =
   | "public"
   | "unlisted"
@@ -157,6 +163,27 @@ export interface Relationship {
   readonly domainBlocking?: boolean;
   readonly showingReblogs?: boolean;
   readonly notifying?: boolean;
+  readonly raw: unknown;
+}
+
+export interface SearchResult {
+  readonly accounts: readonly Account[];
+  readonly posts: readonly Post[];
+  readonly hashtags: readonly Hashtag[];
+  readonly raw: unknown;
+}
+
+export interface Hashtag {
+  readonly name: string;
+  readonly url?: URIString;
+  readonly history?: readonly HashtagHistoryItem[];
+  readonly raw: unknown;
+}
+
+export interface HashtagHistoryItem {
+  readonly day: string;
+  readonly uses?: number;
+  readonly accounts?: number;
   readonly raw: unknown;
 }
 

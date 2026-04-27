@@ -29,9 +29,18 @@ import {
   type PublicPoll,
   type PublicPollOption,
   type PublicPost,
+  type PublicDeletedEntity,
+  type PublicHashtag,
+  type PublicRelationship,
+  type PublicSearchResult,
+  serializeDeletedEntity,
   serializeAccount,
   serializeInstanceProfile,
+  serializeMediaAttachment,
+  serializePost,
   serializePostConnection,
+  serializeRelationship,
+  serializeSearchResult,
 } from "../api/service.js";
 import { type TokenImportOptions } from "../http/app.js";
 
@@ -61,6 +70,9 @@ const builder = new SchemaBuilder<{
     Poll: PublicPoll;
     PollOption: PublicPollOption;
     Post: PublicPost;
+    DeletedEntity: PublicDeletedEntity;
+    Relationship: PublicRelationship;
+    SearchResult: PublicSearchResult;
   };
   Scalars: {
     JSON: {
@@ -113,6 +125,14 @@ const PostVisibilityEnum = builder.enumType("PostVisibility", {
   } as const,
 });
 
+const SearchTypeEnum = builder.enumType("SearchType", {
+  values: {
+    ACCOUNTS: { value: "accounts" },
+    POSTS: { value: "posts" },
+    HASHTAGS: { value: "hashtags" },
+  } as const,
+});
+
 const JsonScalar = builder.scalarType("JSON", {
   serialize: (value) => value,
 });
@@ -128,6 +148,12 @@ interface PageInfoPayload {
   readonly startCursor?: string;
   readonly endCursor?: string;
   readonly raw?: unknown;
+}
+
+interface PageInputValue {
+  readonly after?: string | null;
+  readonly before?: string | null;
+  readonly limit?: number | null;
 }
 
 interface AccountConnectionPayload {
@@ -237,10 +263,95 @@ const PageInput = builder.inputType("PageInput", {
   }),
 });
 
+const SearchPageInput = builder.inputType("SearchPageInput", {
+  fields: (t) => ({
+    limit: t.int({ required: false }),
+  }),
+});
+
 const DetectInstanceInput = builder.inputType("DetectInstanceInput", {
   fields: (t) => ({
     origin: t.string({ required: true }),
     adapter: t.field({ type: AdapterKindEnum, required: false }),
+  }),
+});
+
+const SearchInput = builder.inputType("SearchInput", {
+  fields: (t) => ({
+    origin: t.string({ required: true }),
+    adapter: t.field({ type: AdapterKindEnum, required: false }),
+    query: t.string({ required: true }),
+    type: t.field({
+      type: SearchTypeEnum,
+      required: false,
+      description:
+        "When omitted, all search subtypes must be supported by the selected adapter. Partial adapters should receive an explicit supported type.",
+    }),
+    resolve: t.boolean({ required: false }),
+    page: t.field({ type: SearchPageInput, required: false }),
+    sessionId: t.id({ required: false }),
+  }),
+});
+
+const UploadMediaInput = builder.inputType("UploadMediaInput", {
+  fields: (t) => ({
+    origin: t.string({ required: true }),
+    adapter: t.field({ type: AdapterKindEnum, required: false }),
+    sessionId: t.id({ required: true }),
+    fileBase64: t.string({ required: true }),
+    filename: t.string({ required: false }),
+    contentType: t.string({ required: false }),
+    description: t.string({ required: false }),
+    sensitive: t.boolean({ required: false }),
+  }),
+});
+
+const CreatePollInput = builder.inputType("CreatePollInput", {
+  fields: (t) => ({
+    options: t.stringList({ required: true }),
+    multiple: t.boolean({ required: false }),
+    expiresInSeconds: t.int({ required: false }),
+  }),
+});
+
+const CreatePostInput = builder.inputType("CreatePostInput", {
+  fields: (t) => ({
+    origin: t.string({ required: true }),
+    adapter: t.field({ type: AdapterKindEnum, required: false }),
+    sessionId: t.id({ required: true }),
+    content: t.string({ required: true }),
+    visibility: t.field({ type: PostVisibilityEnum, required: false }),
+    sensitive: t.boolean({ required: false }),
+    summary: t.string({ required: false }),
+    replyToId: t.id({ required: false }),
+    quoteOfId: t.id({ required: false }),
+    mediaIds: t.stringList({ required: false }),
+    poll: t.field({ type: CreatePollInput, required: false }),
+  }),
+});
+
+const MuteAccountInput = builder.inputType("MuteAccountInput", {
+  fields: (t) => ({
+    accountId: t.id({ required: true }),
+    sessionId: t.id({ required: true }),
+    notifications: t.boolean({ required: false }),
+    durationSeconds: t.int({ required: false }),
+  }),
+});
+
+const BoostPostInput = builder.inputType("BoostPostInput", {
+  fields: (t) => ({
+    postId: t.id({ required: true }),
+    sessionId: t.id({ required: true }),
+    visibility: t.field({ type: PostVisibilityEnum, required: false }),
+  }),
+});
+
+const ReactPostInput = builder.inputType("ReactPostInput", {
+  fields: (t) => ({
+    postId: t.id({ required: true }),
+    sessionId: t.id({ required: true }),
+    emoji: t.string({ required: true }),
   }),
 });
 
@@ -518,9 +629,54 @@ const PostType = builder.objectRef<PublicPost>("Post").implement({
 });
 const NotificationType = reservedObjectType("Notification");
 const ListType = reservedObjectType("List");
-const RelationshipType = reservedObjectType("Relationship");
-const SearchResultType = reservedObjectType("SearchResult");
-const DeletedEntityType = reservedObjectType("DeletedEntity");
+const RelationshipType = builder.objectRef<PublicRelationship>("Relationship").implement({
+  fields: (t) => ({
+    account: t.expose("account", { type: EntityRefType }),
+    following: t.exposeBoolean("following"),
+    followedBy: t.exposeBoolean("followedBy"),
+    requested: t.exposeBoolean("requested"),
+    blocking: t.exposeBoolean("blocking"),
+    blockedBy: t.exposeBoolean("blockedBy", { nullable: true }),
+    muting: t.exposeBoolean("muting"),
+    mutingNotifications: t.exposeBoolean("mutingNotifications", { nullable: true }),
+    domainBlocking: t.exposeBoolean("domainBlocking", { nullable: true }),
+    showingReblogs: t.exposeBoolean("showingReblogs", { nullable: true }),
+    notifying: t.exposeBoolean("notifying", { nullable: true }),
+    raw: t.field({ type: JsonScalar, resolve: (value) => value.raw }),
+  }),
+});
+type PublicHashtagHistoryItem = PublicHashtag["history"][number];
+const HashtagHistoryType = builder.objectRef<PublicHashtagHistoryItem>("HashtagHistory").implement({
+  fields: (t) => ({
+    day: t.exposeString("day"),
+    uses: t.exposeInt("uses", { nullable: true }),
+    accounts: t.exposeInt("accounts", { nullable: true }),
+    raw: t.field({ type: JsonScalar, resolve: (value) => value.raw }),
+  }),
+});
+const HashtagType = builder.objectRef<PublicHashtag>("Hashtag").implement({
+  fields: (t) => ({
+    name: t.exposeString("name"),
+    url: t.exposeString("url", { nullable: true }),
+    history: t.field({ type: [HashtagHistoryType], resolve: (value) => value.history }),
+    raw: t.field({ type: JsonScalar, resolve: (value) => value.raw }),
+  }),
+});
+const SearchResultType = builder.objectRef<PublicSearchResult>("SearchResult").implement({
+  fields: (t) => ({
+    accounts: t.expose("accounts", { type: [AccountType] }),
+    posts: t.expose("posts", { type: [PostType] }),
+    hashtags: t.field({ type: [HashtagType], resolve: (value) => value.hashtags }),
+    raw: t.field({ type: JsonScalar, resolve: (value) => value.raw }),
+  }),
+});
+const DeletedEntityType = builder.objectRef<PublicDeletedEntity>("DeletedEntity").implement({
+  fields: (t) => ({
+    ref: t.expose("ref", { type: EntityRefType }),
+    deleted: t.exposeBoolean("deleted"),
+    raw: t.field({ type: JsonScalar, nullable: true, resolve: (value) => value.raw }),
+  }),
+});
 
 const AccountConnectionType = builder
   .objectRef<AccountConnectionPayload>("AccountConnection")
@@ -681,7 +837,11 @@ builder.queryType({
     accountPosts: unsupportedGraphQLField(t, {
       type: PostConnectionType,
       operation: "account.posts",
-      args: { id: t.arg.id({ required: true }), page: t.arg({ type: PageInput }) },
+      args: {
+        id: t.arg.id({ required: true }),
+        page: t.arg({ type: PageInput }),
+        sessionId: t.arg.id(),
+      },
       resolve: async (
         _parent: unknown,
         args: {
@@ -691,6 +851,7 @@ builder.queryType({
             readonly before?: string | null;
             readonly limit?: number | null;
           } | null;
+          readonly sessionId?: string | null;
         },
         context: GraphQLContext,
       ) =>
@@ -699,6 +860,27 @@ builder.queryType({
             await context.service.accounts.posts({
               id: args.id,
               page: normalizePageInput(args.page),
+              ...(args.sessionId === null || args.sessionId === undefined
+                ? {}
+                : { sessionId: args.sessionId }),
+            }),
+          ),
+        ),
+    }),
+    accountRelationship: unsupportedGraphQLField(t, {
+      type: RelationshipType,
+      operation: "account.relationships",
+      args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+      resolve: async (
+        _parent: unknown,
+        args: { readonly id: string; readonly sessionId: string },
+        context: GraphQLContext,
+      ) =>
+        withGraphQLErrorContract(async () =>
+          serializeRelationship(
+            await context.service.social.relationship({
+              accountId: args.id,
+              sessionId: args.sessionId,
             }),
           ),
         ),
@@ -707,6 +889,10 @@ builder.queryType({
       type: PostType,
       operation: "post.get",
       args: { id: t.arg.id({ required: true }) },
+      resolve: async (_parent: unknown, args: { readonly id: string }, context: GraphQLContext) =>
+        withGraphQLErrorContract(async () =>
+          serializePost(await context.service.posts.get({ id: args.id })),
+        ),
     }),
     postContext: unsupportedGraphQLField(t, {
       type: PostContextType,
@@ -726,6 +912,24 @@ builder.queryType({
         sessionId: t.arg.id({ required: true }),
         page: t.arg({ type: PageInput }),
       },
+      resolve: async (
+        _parent: unknown,
+        args: {
+          readonly origin: string;
+          readonly sessionId: string;
+          readonly page?: PageInputValue | null;
+        },
+        context: GraphQLContext,
+      ) =>
+        withGraphQLErrorContract(async () =>
+          serializePostConnection(
+            await context.service.timelines.home({
+              origin: args.origin,
+              sessionId: args.sessionId,
+              page: normalizePageInput(args.page),
+            }),
+          ),
+        ),
     }),
     publicTimeline: unsupportedGraphQLField(t, {
       type: TimelineConnectionType,
@@ -733,9 +937,36 @@ builder.queryType({
       args: {
         origin: t.arg.string({ required: true }),
         adapter: t.arg({ type: AdapterKindEnum }),
+        sessionId: t.arg.id(),
         local: t.arg.boolean(),
         page: t.arg({ type: PageInput }),
       },
+      resolve: async (
+        _parent: unknown,
+        args: {
+          readonly origin: string;
+          readonly adapter?: AdapterKind | null;
+          readonly sessionId?: string | null;
+          readonly local?: boolean | null;
+          readonly page?: PageInputValue | null;
+        },
+        context: GraphQLContext,
+      ) =>
+        withGraphQLErrorContract(async () =>
+          serializePostConnection(
+            await context.service.timelines.public({
+              origin: args.origin,
+              ...(args.adapter === null || args.adapter === undefined
+                ? {}
+                : { adapter: args.adapter }),
+              ...(args.sessionId === null || args.sessionId === undefined
+                ? {}
+                : { sessionId: args.sessionId }),
+              ...(args.local === null || args.local === undefined ? {} : { local: args.local }),
+              page: normalizePageInput(args.page),
+            }),
+          ),
+        ),
     }),
     hashtagTimeline: unsupportedGraphQLField(t, {
       type: TimelineConnectionType,
@@ -746,6 +977,28 @@ builder.queryType({
         adapter: t.arg({ type: AdapterKindEnum }),
         page: t.arg({ type: PageInput }),
       },
+      resolve: async (
+        _parent: unknown,
+        args: {
+          readonly origin: string;
+          readonly tag: string;
+          readonly adapter?: AdapterKind | null;
+          readonly page?: PageInputValue | null;
+        },
+        context: GraphQLContext,
+      ) =>
+        withGraphQLErrorContract(async () =>
+          serializePostConnection(
+            await context.service.timelines.hashtag({
+              origin: args.origin,
+              tag: nonBlankString(args.tag, "tag"),
+              ...(args.adapter === null || args.adapter === undefined
+                ? {}
+                : { adapter: args.adapter }),
+              page: normalizePageInput(args.page),
+            }),
+          ),
+        ),
     }),
     listTimeline: unsupportedGraphQLField(t, {
       type: TimelineConnectionType,
@@ -755,7 +1008,17 @@ builder.queryType({
     search: unsupportedGraphQLField(t, {
       type: SearchResultType,
       operation: "search",
-      args: { input: t.arg({ type: JsonInput, required: true }) },
+      args: { input: t.arg({ type: SearchInput, required: true }) },
+      resolve: async (
+        _parent: unknown,
+        args: { readonly input: unknown },
+        context: GraphQLContext,
+      ) =>
+        withGraphQLErrorContract(async () =>
+          serializeSearchResult(
+            await context.service.search.search(normalizeSearchInput(args.input)),
+          ),
+        ),
     }),
     notifications: unsupportedGraphQLField(t, {
       type: NotificationConnectionType,
@@ -880,7 +1143,17 @@ builder.mutationType({
     uploadMedia: unsupportedGraphQLField(t, {
       type: MediaAttachmentType,
       operation: "media.upload",
-      args: { input: t.arg({ type: JsonInput, required: true }) },
+      args: { input: t.arg({ type: UploadMediaInput, required: true }) },
+      resolve: async (
+        _parent: unknown,
+        args: { readonly input: unknown },
+        context: GraphQLContext,
+      ) =>
+        withGraphQLErrorContract(async () =>
+          serializeMediaAttachment(
+            await context.service.media.upload(normalizeUploadMediaInput(args.input)),
+          ),
+        ),
     }),
     ingestMediaFromUrl: unsupportedGraphQLField(t, {
       type: MediaAttachmentType,
@@ -890,7 +1163,15 @@ builder.mutationType({
     createPost: unsupportedGraphQLField(t, {
       type: PostType,
       operation: "post.create",
-      args: { input: t.arg({ type: JsonInput, required: true }) },
+      args: { input: t.arg({ type: CreatePostInput, required: true }) },
+      resolve: async (
+        _parent: unknown,
+        args: { readonly input: unknown },
+        context: GraphQLContext,
+      ) =>
+        withGraphQLErrorContract(async () =>
+          serializePost(await context.service.posts.create(normalizeCreatePostInput(args.input))),
+        ),
     }),
     updatePost: unsupportedGraphQLField(t, {
       type: PostType,
@@ -901,76 +1182,128 @@ builder.mutationType({
       type: DeletedEntityType,
       operation: "post.delete",
       args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+      resolve: async (
+        _parent: unknown,
+        args: { readonly id: string; readonly sessionId: string },
+        context: GraphQLContext,
+      ) =>
+        withGraphQLErrorContract(async () =>
+          serializeDeletedEntity(
+            await context.service.posts.delete({ id: args.id, sessionId: args.sessionId }),
+          ),
+        ),
     }),
     followAccount: unsupportedGraphQLField(t, {
       type: RelationshipType,
       operation: "social.follow",
       args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+      resolve: accountActionResolver((service, input) => service.social.follow(input)),
     }),
     unfollowAccount: unsupportedGraphQLField(t, {
       type: RelationshipType,
       operation: "social.unfollow",
       args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+      resolve: accountActionResolver((service, input) => service.social.unfollow(input)),
     }),
     blockAccount: unsupportedGraphQLField(t, {
       type: RelationshipType,
       operation: "social.block",
       args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+      resolve: accountActionResolver((service, input) => service.social.block(input)),
     }),
     unblockAccount: unsupportedGraphQLField(t, {
       type: RelationshipType,
       operation: "social.unblock",
       args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+      resolve: accountActionResolver((service, input) => service.social.unblock(input)),
     }),
     muteAccount: unsupportedGraphQLField(t, {
       type: RelationshipType,
       operation: "social.mute",
-      args: { input: t.arg({ type: JsonInput, required: true }) },
+      args: { input: t.arg({ type: MuteAccountInput, required: true }) },
+      resolve: async (
+        _parent: unknown,
+        args: { readonly input: unknown },
+        context: GraphQLContext,
+      ) =>
+        withGraphQLErrorContract(async () =>
+          serializeRelationship(await context.service.social.mute(normalizeMuteInput(args.input))),
+        ),
     }),
     unmuteAccount: unsupportedGraphQLField(t, {
       type: RelationshipType,
       operation: "social.unmute",
       args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+      resolve: accountActionResolver((service, input) => service.social.unmute(input)),
     }),
     favouritePost: unsupportedGraphQLField(t, {
       type: PostType,
       operation: "social.favourite",
       args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+      resolve: postActionResolver((service, input) => service.social.favourite(input)),
     }),
     unfavouritePost: unsupportedGraphQLField(t, {
       type: PostType,
       operation: "social.unfavourite",
       args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+      resolve: postActionResolver((service, input) => service.social.unfavourite(input)),
     }),
     bookmarkPost: unsupportedGraphQLField(t, {
       type: PostType,
       operation: "social.bookmark",
       args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+      resolve: postActionResolver((service, input) => service.social.bookmark(input)),
     }),
     unbookmarkPost: unsupportedGraphQLField(t, {
       type: PostType,
       operation: "social.unbookmark",
       args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+      resolve: postActionResolver((service, input) => service.social.unbookmark(input)),
     }),
     boostPost: unsupportedGraphQLField(t, {
       type: PostType,
       operation: "social.boost",
-      args: { input: t.arg({ type: JsonInput, required: true }) },
+      args: { input: t.arg({ type: BoostPostInput, required: true }) },
+      resolve: async (
+        _parent: unknown,
+        args: { readonly input: unknown },
+        context: GraphQLContext,
+      ) =>
+        withGraphQLErrorContract(async () =>
+          serializePost(await context.service.social.boost(normalizeBoostInput(args.input))),
+        ),
     }),
     unboostPost: unsupportedGraphQLField(t, {
       type: PostType,
       operation: "social.unboost",
       args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+      resolve: postActionResolver((service, input) => service.social.unboost(input)),
     }),
     reactToPost: unsupportedGraphQLField(t, {
       type: PostType,
       operation: "social.reaction",
-      args: { input: t.arg({ type: JsonInput, required: true }) },
+      args: { input: t.arg({ type: ReactPostInput, required: true }) },
+      resolve: async (
+        _parent: unknown,
+        args: { readonly input: unknown },
+        context: GraphQLContext,
+      ) =>
+        withGraphQLErrorContract(async () =>
+          serializePost(await context.service.social.react(normalizeReactInput(args.input))),
+        ),
     }),
     unreactToPost: unsupportedGraphQLField(t, {
       type: PostType,
       operation: "social.unreaction",
-      args: { input: t.arg({ type: JsonInput, required: true }) },
+      args: { input: t.arg({ type: ReactPostInput, required: true }) },
+      resolve: async (
+        _parent: unknown,
+        args: { readonly input: unknown },
+        context: GraphQLContext,
+      ) =>
+        withGraphQLErrorContract(async () =>
+          serializePost(await context.service.social.unreact(normalizeReactInput(args.input))),
+        ),
     }),
     votePoll: unsupportedGraphQLField(t, {
       type: PollType,
@@ -1096,6 +1429,9 @@ function normalizeImportToken(input: {
     readonly scopes?: readonly string[] | null;
   };
 }): ImportTokenRequest {
+  if (input.token.expiresAt !== null && input.token.expiresAt !== undefined) {
+    assertValidDateTime(input.token.expiresAt, "expiresAt");
+  }
   return {
     adapter: input.adapter,
     origin: input.origin,
@@ -1113,6 +1449,12 @@ function normalizeImportToken(input: {
       ? {}
       : { scopes: input.token.scopes }),
   };
+}
+
+function assertValidDateTime(value: string, field: string): void {
+  if (!Number.isFinite(Date.parse(value))) {
+    throw new ActivityPlugError("VALIDATION_FAILED", `${field} must be a valid date-time string.`);
+  }
 }
 
 function normalizePageInput(
@@ -1151,6 +1493,383 @@ function normalizePageInput(
       ? {}
       : { limit: Math.min(input.limit, maxPageLimit) }),
   };
+}
+
+function normalizeSearchInput(
+  input: unknown,
+): Parameters<ActivityPlugApiService["search"]["search"]>[0] {
+  const request = requireJsonObject(input);
+  return {
+    ...jsonSelector(request),
+    query: requiredJsonString(request, "query"),
+    ...optionalSearchType(request),
+    ...optionalJsonBoolean(request, "resolve"),
+    ...optionalJsonString(request, "sessionId"),
+    page: normalizePageInput(optionalJsonObject(request, "page")),
+  };
+}
+
+function normalizeCreatePostInput(
+  input: unknown,
+): Parameters<ActivityPlugApiService["posts"]["create"]>[0] {
+  const request = requireJsonObject(input);
+  const normalized = {
+    ...jsonSelector(request),
+    sessionId: requiredJsonString(request, "sessionId"),
+    content: requiredJsonStringValue(request, "content"),
+    ...optionalVisibility(request),
+    ...optionalJsonBoolean(request, "sensitive"),
+    ...optionalJsonString(request, "summary"),
+    ...optionalJsonString(request, "replyToId"),
+    ...optionalJsonString(request, "quoteOfId"),
+    ...optionalJsonStringArray(request, "mediaIds"),
+    ...optionalJsonPoll(request),
+  };
+  assertCreatePostPayload(normalized);
+  return normalized;
+}
+
+function assertCreatePostPayload(request: {
+  readonly content: string;
+  readonly mediaIds?: readonly string[];
+  readonly poll?: unknown;
+  readonly replyToId?: string;
+  readonly quoteOfId?: string;
+}): void {
+  if (
+    request.content.trim().length > 0 ||
+    (request.mediaIds !== undefined && request.mediaIds.length > 0) ||
+    request.poll !== undefined ||
+    request.replyToId !== undefined ||
+    request.quoteOfId !== undefined
+  ) {
+    return;
+  }
+  throw new ActivityPlugError(
+    "VALIDATION_FAILED",
+    "Post creation requires text, media, a poll, or a reply/quote target.",
+  );
+}
+
+function normalizeUploadMediaInput(
+  input: unknown,
+): Parameters<ActivityPlugApiService["media"]["upload"]>[0] {
+  const request = requireJsonObject(input);
+  const contentType =
+    optionalJsonString(request, "contentType").contentType ?? "application/octet-stream";
+  return {
+    ...jsonSelector(request),
+    sessionId: requiredJsonString(request, "sessionId"),
+    file: new Blob([decodeBase64Field(request, "fileBase64")], {
+      type: contentType,
+    }),
+    ...optionalJsonString(request, "filename"),
+    ...optionalJsonString(request, "description"),
+    ...optionalJsonBoolean(request, "sensitive"),
+  };
+}
+
+function decodeBase64Field(request: Record<string, unknown>, field: string): ArrayBuffer {
+  const value = requiredJsonString(request, field);
+  if (!base64Pattern.test(value)) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `GraphQL input field must be valid base64: ${field}.`,
+    );
+  }
+  const decoded = Buffer.from(value, "base64");
+  if (decoded.byteLength > maxGraphQLUploadBytes) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `GraphQL base64 upload exceeds the ${maxGraphQLUploadBytes} byte limit.`,
+    );
+  }
+  const view = decoded.buffer.slice(decoded.byteOffset, decoded.byteOffset + decoded.byteLength);
+  return view;
+}
+
+const base64Pattern = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
+const maxGraphQLUploadBytes = 20 * 1024 * 1024;
+
+function normalizeMuteInput(
+  input: unknown,
+): Parameters<ActivityPlugApiService["social"]["mute"]>[0] {
+  const request = requireJsonObject(input);
+  return {
+    sessionId: requiredJsonString(request, "sessionId"),
+    accountId: requiredJsonString(request, "accountId"),
+    ...optionalJsonBoolean(request, "notifications"),
+    ...optionalJsonInteger(request, "durationSeconds"),
+  };
+}
+
+function normalizeBoostInput(
+  input: unknown,
+): Parameters<ActivityPlugApiService["social"]["boost"]>[0] {
+  const request = requireJsonObject(input);
+  return {
+    sessionId: requiredJsonString(request, "sessionId"),
+    postId: requiredJsonString(request, "postId"),
+    ...optionalVisibility(request),
+  };
+}
+
+function normalizeReactInput(
+  input: unknown,
+): Parameters<ActivityPlugApiService["social"]["react"]>[0] {
+  const request = requireJsonObject(input);
+  return {
+    sessionId: requiredJsonString(request, "sessionId"),
+    postId: requiredJsonString(request, "postId"),
+    emoji: requiredJsonNonBlankString(request, "emoji"),
+  };
+}
+
+function accountActionResolver(
+  action: (
+    service: ActivityPlugApiService,
+    input: { readonly accountId: string; readonly sessionId: string },
+  ) => Promise<import("@activityplug/core").Relationship>,
+) {
+  return async (
+    _parent: unknown,
+    args: { readonly id: string; readonly sessionId: string },
+    context: GraphQLContext,
+  ) =>
+    withGraphQLErrorContract(async () =>
+      serializeRelationship(
+        await action(context.service, { accountId: args.id, sessionId: args.sessionId }),
+      ),
+    );
+}
+
+function postActionResolver(
+  action: (
+    service: ActivityPlugApiService,
+    input: { readonly postId: string; readonly sessionId: string },
+  ) => Promise<import("@activityplug/core").Post>,
+) {
+  return async (
+    _parent: unknown,
+    args: { readonly id: string; readonly sessionId: string },
+    context: GraphQLContext,
+  ) =>
+    withGraphQLErrorContract(async () =>
+      serializePost(await action(context.service, { postId: args.id, sessionId: args.sessionId })),
+    );
+}
+
+function requireJsonObject(input: unknown): Record<string, unknown> {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw new ActivityPlugError("VALIDATION_FAILED", "GraphQL JSON input must be an object.");
+  }
+  return input as Record<string, unknown>;
+}
+
+function optionalJsonObject(
+  body: Record<string, unknown>,
+  field: string,
+): PageInputValue | undefined {
+  const value = body[field];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `GraphQL JSON field must be an object: ${field}.`,
+    );
+  }
+  return value as PageInputValue;
+}
+
+function jsonSelector(body: Record<string, unknown>): {
+  readonly adapter?: AdapterKind;
+  readonly origin: string;
+} {
+  return {
+    ...optionalAdapter(body),
+    origin: requiredJsonString(body, "origin"),
+  };
+}
+
+function optionalAdapter(body: Record<string, unknown>): { readonly adapter?: AdapterKind } {
+  const value = body.adapter;
+  if (value === undefined || value === null) return {};
+  if (
+    value !== "mastodon" &&
+    value !== "misskey" &&
+    value !== "pleroma" &&
+    value !== "hollo" &&
+    value !== "hackerspub"
+  ) {
+    throw new ActivityPlugError("VALIDATION_FAILED", "GraphQL adapter value is invalid.");
+  }
+  return { adapter: value };
+}
+
+function requiredJsonString(body: Record<string, unknown>, field: string): string {
+  const value = body[field];
+  if (typeof value !== "string" || value.length === 0) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `GraphQL JSON field must be a non-empty string: ${field}.`,
+    );
+  }
+  return value;
+}
+
+function requiredJsonNonBlankString(body: Record<string, unknown>, field: string): string {
+  const value = requiredJsonString(body, field);
+  return nonBlankString(value, field);
+}
+
+function nonBlankString(value: string, field: string): string {
+  if (value.trim().length === 0) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `GraphQL JSON field must be a non-empty string: ${field}.`,
+    );
+  }
+  return value;
+}
+
+function requiredJsonStringValue(body: Record<string, unknown>, field: string): string {
+  const value = body[field];
+  if (typeof value !== "string") {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `GraphQL JSON field must be a string: ${field}.`,
+    );
+  }
+  return value;
+}
+
+function optionalJsonString(body: Record<string, unknown>, field: string): Record<string, string> {
+  const value = body[field];
+  if (value === undefined || value === null) return {};
+  if (typeof value !== "string") {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `GraphQL JSON field must be a string: ${field}.`,
+    );
+  }
+  return { [field]: value };
+}
+
+function optionalJsonStringArray(
+  body: Record<string, unknown>,
+  field: string,
+): Record<string, readonly string[]> {
+  const value = body[field];
+  if (value === undefined || value === null) return {};
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `GraphQL JSON field must be a string array: ${field}.`,
+    );
+  }
+  return { [field]: value };
+}
+
+function optionalJsonBoolean(
+  body: Record<string, unknown>,
+  field: string,
+): Record<string, boolean> {
+  const value = body[field];
+  if (value === undefined || value === null) return {};
+  if (typeof value !== "boolean") {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `GraphQL JSON field must be a boolean: ${field}.`,
+    );
+  }
+  return { [field]: value };
+}
+
+function optionalJsonInteger(body: Record<string, unknown>, field: string): Record<string, number> {
+  const value = body[field];
+  if (value === undefined || value === null) return {};
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `GraphQL JSON field must be a positive integer: ${field}.`,
+    );
+  }
+  return { [field]: value };
+}
+
+function optionalSearchType(body: Record<string, unknown>): {
+  readonly type?: "accounts" | "posts" | "hashtags";
+} {
+  const value = body.type;
+  if (value === undefined || value === null) return {};
+  if (value !== "accounts" && value !== "posts" && value !== "hashtags") {
+    throw new ActivityPlugError("VALIDATION_FAILED", "GraphQL search type is invalid.");
+  }
+  return { type: value };
+}
+
+function optionalVisibility(body: Record<string, unknown>): {
+  readonly visibility?:
+    | "public"
+    | "unlisted"
+    | "followers"
+    | "direct"
+    | "local"
+    | "list"
+    | "none"
+    | "unknown";
+} {
+  const value = body.visibility;
+  if (value === undefined || value === null) return {};
+  if (
+    value !== "public" &&
+    value !== "unlisted" &&
+    value !== "followers" &&
+    value !== "direct" &&
+    value !== "local" &&
+    value !== "list" &&
+    value !== "none" &&
+    value !== "unknown"
+  ) {
+    throw new ActivityPlugError("VALIDATION_FAILED", "GraphQL post visibility is invalid.");
+  }
+  return { visibility: value };
+}
+
+function optionalJsonPoll(body: Record<string, unknown>): {
+  readonly poll?: {
+    readonly options: readonly string[];
+    readonly multiple?: boolean;
+    readonly expiresInSeconds?: number;
+  };
+} {
+  if (body.poll === undefined || body.poll === null) return {};
+  const poll = requireJsonObject(body.poll);
+  const options = requiredJsonStringArray(poll, "options");
+  if (options.length < 2 || options.some((option) => option.trim().length === 0)) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "GraphQL poll options must include at least two non-empty strings.",
+    );
+  }
+  return {
+    poll: {
+      options,
+      ...optionalJsonBoolean(poll, "multiple"),
+      ...optionalJsonInteger(poll, "expiresInSeconds"),
+    },
+  };
+}
+
+function requiredJsonStringArray(body: Record<string, unknown>, field: string): readonly string[] {
+  const value = body[field];
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `GraphQL JSON field must be a string array: ${field}.`,
+    );
+  }
+  return value;
 }
 
 function normalizeAuthStart(input: {

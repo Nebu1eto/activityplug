@@ -61,8 +61,14 @@ runner는 순차 target마다 `ACTIVITYPLUG_FEDIVERSE_REQUIRED_ADAPTERS`를
 설정하므로, 모든 서버를 동시에 띄우지 않고도 같은 strict check를 사용할 수
 있습니다.
 
-초기 baseline은 인스턴스 프로필 읽기, 토큰이 있을 때의 viewer 검증, 계정 조회,
-계정 게시물 목록, ActivityPlug page limit clamp를 검증합니다. 테스트는 공개
+baseline은 인스턴스 프로필 읽기, 토큰이 있을 때의 viewer 검증, 계정 조회, 계정
+게시물 목록, 공개 타임라인 읽기, 매핑된 경우의 local 타임라인 읽기, 매핑된
+경우의 hashtag 타임라인, 매핑된 경우의 계정 검색, 매핑된 경우의 hashtag 검색,
+매핑된 경우의 인증된 게시물 검색, 매핑된 경우의 홈 타임라인 읽기, 매핑된 경우의
+미디어 업로드, 매핑된 경우의 게시물 작성/삭제, 테스트가 소유한 게시물에 대한
+capability 기반 게시물 social action을 검증합니다. target이
+`socialActionHandle`을 제공하면 disposable local 계정을 대상으로
+follow/unfollow, block/unblock, mute/unmute도 검증합니다. 테스트는 공개
 인스턴스로 fallback하면 안 됩니다.
 
 대상별 참고 사항:
@@ -70,11 +76,15 @@ runner는 순차 target마다 `ACTIVITYPLUG_FEDIVERSE_REQUIRED_ADAPTERS`를
  -  Mastodon은 이 profile에서 공개 HTTPS origin을 요구하므로 로컬 Caddy 서비스
     뒤에서 실행합니다. `https://mastodon.127.0.0.1.nip.io:41080`을 사용하고,
     이 로컬 테스트에서만 `NODE_TLS_REJECT_UNAUTHORIZED=0`을 설정합니다.
- -  Misskey provision은 데이터베이스에서 federation을 켜고, admin session을 만든
-    뒤 seed note와 token target을 생성합니다.
+    Provision은 viewer account와 disposable social-action account를 모두
+    만듭니다.
+ -  Misskey provision은 데이터베이스에서 federation을 켜고, 기본
+    `canSearchNotes` policy를 활성화하며, note search를 위한 Meilisearch를
+    시작합니다. 그 뒤 admin session과 disposable social-action account를 만들고
+    seed note가 index될 때까지 기다린 다음 token target을 생성합니다.
  -  Pleroma provision은 `pleroma_ctl`로 로컬 사용자를 만들고,
     Mastodon-compatible OAuth application을 등록한 뒤 password-grant token과
-    public seed status를 만듭니다.
+    disposable social-action account, public seed status를 만듭니다.
  -  Hollo provision은 account, token, public post에 필요한 PostgreSQL row를 직접
     seed합니다. 고정된 Hollo image가 이 fixture에 필요한 전체
     Mastodon-compatible bootstrap surface를 제공하지 않기 때문입니다.

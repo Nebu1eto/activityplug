@@ -6,8 +6,11 @@ import {
   type Account,
   type AuthSession,
   type ActivityPlugClient,
+  type Connection,
   type OAuthCallbackInput,
   type OAuthClientRegistration,
+  type Post,
+  type SearchResult,
 } from "@activityplug/core";
 import { createMastodonAdapter } from "@activityplug/mastodon";
 import { createMisskeyAdapter } from "@activityplug/misskey";
@@ -51,6 +54,18 @@ export interface ExchangedAuth {
   readonly session: AuthSession;
   readonly verifyViewer: () => Promise<Account>;
   readonly lookupAccountProfile: (handle: string) => Promise<Account | null>;
+  readonly renderHomeTimeline: () => Promise<Connection<Post>>;
+  readonly renderPublicTimeline: () => Promise<Connection<Post>>;
+  readonly search: (
+    query: string,
+    type: "accounts" | "posts" | "hashtags",
+  ) => Promise<SearchResult>;
+  readonly compose: (content: string) => Promise<Post>;
+  readonly reply: (postId: string, content: string) => Promise<Post>;
+  readonly quote: (postId: string, content: string) => Promise<Post>;
+  readonly uploadMedia: (file: Blob, filename?: string) => Promise<string>;
+  readonly composeWithMedia: (content: string, mediaIds: readonly string[]) => Promise<Post>;
+  readonly deletePost: (id: string) => Promise<void>;
 }
 
 export async function startAuth(input: StartAuthInput): Promise<StartedAuth> {
@@ -110,6 +125,27 @@ export async function exchangeAuth(input: ExchangeAuthInput): Promise<ExchangedA
     session,
     verifyViewer: async () => (await client.auth.verifyCredentials(session)).account,
     lookupAccountProfile: (handle) => client.accounts.getByHandle({ handle }),
+    renderHomeTimeline: () => client.timelines.home({ session }),
+    renderPublicTimeline: () => client.timelines.public({}),
+    search: (query, type) => client.search.search({ query, type, session }),
+    compose: (content) => client.posts.create({ session, content, visibility: "public" }),
+    reply: (postId, content) =>
+      client.posts.create({ session, content, replyToId: postId, visibility: "public" }),
+    quote: (postId, content) =>
+      client.posts.create({ session, content, quoteOfId: postId, visibility: "public" }),
+    uploadMedia: async (file, filename) =>
+      (
+        await client.media.upload({
+          session,
+          file,
+          ...(filename === undefined ? {} : { filename }),
+        })
+      ).ref.id,
+    composeWithMedia: (content, mediaIds) =>
+      client.posts.create({ session, content, mediaIds, visibility: "public" }),
+    deletePost: async (id) => {
+      await client.posts.delete({ session, id });
+    },
   };
 }
 

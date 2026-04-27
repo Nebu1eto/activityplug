@@ -46,6 +46,7 @@ const child = spawn(
     "packages/pleroma/src/e2e.test.ts",
     "packages/hollo/src/e2e.test.ts",
     "packages/hackerspub/src/e2e.test.ts",
+    "packages/server/src/e2e.test.ts",
   ],
   {
     env: {

@@ -8,6 +8,7 @@ ACCOUNT_ID="00000000-0000-4000-8000-000000005001"
 ACTOR_ID="00000000-0000-4000-8000-000000005002"
 NOTE_SOURCE_ID="00000000-0000-4000-8000-000000005003"
 POST_ID="00000000-0000-4000-8000-000000005004"
+SESSION_ID="00000000-0000-4000-8000-000000005005"
 
 ${COMPOSE} exec -T hackerspub-db psql -U hackerspub -d hackerspub <<SQL >/dev/null
 INSERT INTO instance (host, software, software_version)
@@ -133,4 +134,12 @@ ON CONFLICT (id) DO UPDATE SET
   updated = CURRENT_TIMESTAMP;
 SQL
 
-printf '{"adapter":"hackerspub","origin":"%s","accountHandle":"activityplug"}\n' "${ORIGIN}"
+${COMPOSE} exec -T hackerspub-web deno eval "
+  import { kv } from './web/kv.ts';
+  import { createSession } from './models/session.ts';
+  await createSession(kv, { id: '${SESSION_ID}', accountId: '${ACCOUNT_ID}' });
+  Deno.exit(0);
+" >/dev/null
+
+printf '{"adapter":"hackerspub","origin":"%s","accountHandle":"activityplug","token":"%s","postSearchQuery":"ActivityPlug"}\n' \
+  "${ORIGIN}" "${SESSION_ID}"

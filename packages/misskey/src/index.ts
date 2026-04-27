@@ -9,10 +9,16 @@ import {
   type ActivityPlugAdapter,
   type AdapterOperationContext,
   type AuthAdapterContext,
+  type AuthSession,
   type AuthTokenType,
+  type BoostPostInput,
+  type CapabilityName,
   type Connection,
+  type CreatePostInput,
+  type DeletedEntity,
   type InstanceProfile,
   type MediaAttachment,
+  type MuteAccountInput,
   type OAuthAuthorizationRequest,
   type OAuthAuthorizationUrlInput,
   type OAuthClientRegistration,
@@ -20,8 +26,15 @@ import {
   type OAuthCodeExchangeInput,
   type PageInput,
   type Post,
+  type PostActionInput,
+  type ReactPostInput,
+  type Relationship,
+  type RelationshipInput,
+  type SearchInput,
+  type SearchResult,
   type StoredAuthSession,
   type TokenSet,
+  type UploadMediaInput,
 } from "@activityplug/core";
 import ky, { HTTPError, TimeoutError, type KyInstance } from "ky";
 
@@ -97,6 +110,15 @@ export interface MisskeyNoteResponse {
   readonly reactions?: Readonly<Record<string, number>>;
 }
 
+export interface MisskeyRelationshipResponse {
+  readonly id?: string;
+  readonly isFollowing?: boolean;
+  readonly isFollowed?: boolean;
+  readonly hasPendingFollowRequestFromYou?: boolean;
+  readonly isBlocking?: boolean;
+  readonly isMuted?: boolean;
+}
+
 export interface MisskeyPollResponse {
   readonly expiresAt?: string | null;
   readonly multiple?: boolean;
@@ -134,9 +156,36 @@ export function createMisskeyAdapter(options: MisskeyAdapterOptions = {}): Activ
         ),
         "auth.tokenInjection": capability("supported"),
         "instance.nodeInfo": capability("supported"),
+        "accounts.relationships": capability("supported"),
         "accounts.lookupById": capability("supported"),
         "accounts.lookupByHandle": capability("supported"),
         "posts.read": capability("supported"),
+        "posts.create": capability("supported"),
+        "posts.delete": capability("supported"),
+        "posts.reply": capability("supported"),
+        "posts.quote": capability("supported"),
+        "timelines.home": capability("supported"),
+        "timelines.public": capability("supported"),
+        "timelines.local": capability("supported"),
+        "timelines.hashtag": capability("supported"),
+        "media.upload": capability("supported"),
+        "polls.create": capability("supported"),
+        "search.accounts": capability("supported"),
+        "search.posts": capability("supported"),
+        "search.hashtags": capability(
+          "unsupported",
+          "Misskey hashtag search is not mapped by this adapter yet.",
+        ),
+        "social.follow": capability("supported"),
+        "social.block": capability("supported"),
+        "social.mute": capability("supported"),
+        "social.favourite": capability("supported"),
+        "social.bookmark": capability(
+          "unsupported",
+          "Misskey bookmark and clip semantics are not mapped by this adapter yet.",
+        ),
+        "social.boost": capability("supported"),
+        "social.reaction": capability("supported"),
       }),
     },
     instances: {
@@ -147,7 +196,68 @@ export function createMisskeyAdapter(options: MisskeyAdapterOptions = {}): Activ
       getById: async (input, context) => getAccountById(input.id, context, options),
       getByHandle: async (input, context) => getAccountByHandle(input.handle, context, options),
       listPosts: async (input, context) =>
-        listAccountPosts(input.accountId, input.page, context, options),
+        listAccountPosts(input.accountId, input.page, context, options, input.session),
+    },
+    posts: {
+      get: async (input, context) => getNote(input.id, context, options),
+      create: async (input, context) => createNote(input, context, options),
+      delete: async (input, context) => deleteNote(input, context, options),
+    },
+    timelines: {
+      home: async (input, context) =>
+        listTimeline(
+          "api/notes/timeline",
+          input.session,
+          input.page,
+          context,
+          options,
+          "timeline.home",
+        ),
+      public: async (input, context) =>
+        listTimeline(
+          input.local === true ? "api/notes/local-timeline" : "api/notes/global-timeline",
+          undefined,
+          input.page,
+          context,
+          options,
+          input.local === true ? "timeline.local" : "timeline.public",
+        ),
+      hashtag: async (input, context) =>
+        listHashtagTimeline(input.tag, input.page, context, options),
+    },
+    search: {
+      search: async (input, context) => search(input, context, options),
+    },
+    media: {
+      upload: async (input, context) => uploadMedia(input, context, options),
+    },
+    social: {
+      relationship: async (input, context) => relationship(input, context, options),
+      follow: async (input, context) =>
+        relationshipAction(input, "following/create", "social.follow", context, options),
+      unfollow: async (input, context) =>
+        relationshipAction(input, "following/delete", "social.unfollow", context, options),
+      block: async (input, context) =>
+        relationshipAction(input, "blocking/create", "social.block", context, options),
+      unblock: async (input, context) =>
+        relationshipAction(input, "blocking/delete", "social.unblock", context, options),
+      mute: async (input, context) => muteAccount(input, context, options),
+      unmute: async (input, context) =>
+        relationshipAction(input, "mute/delete", "social.unmute", context, options),
+      favourite: async (input, context) =>
+        noteAction(input, "notes/favorites/create", "social.favourite", context, options),
+      unfavourite: async (input, context) =>
+        noteAction(input, "notes/favorites/delete", "social.unfavourite", context, options),
+      bookmark: async (_input, context) =>
+        unsupportedPostOperation(context, "social.bookmark", "social.bookmark"),
+      unbookmark: async (_input, context) =>
+        unsupportedPostOperation(context, "social.unbookmark", "social.bookmark"),
+      boost: async (input, context) => boostNote(input, context, options),
+      unboost: async (input, context) => unboostNote(input, context, options),
+      react: async (input, context) =>
+        noteReaction(input, "notes/reactions/create", "social.reaction", context, options),
+      unreact: async (input, context) =>
+        noteReaction(input, "notes/reactions/delete", "social.unreaction", context, options),
     },
     auth: {
       registerOAuthClient: async (input, context) => registerOAuthClient(input, context),
@@ -339,12 +449,16 @@ async function listAccountPosts(
   page: PageInput | undefined,
   context: AdapterOperationContext,
   options: MisskeyAdapterOptions,
+  session?: AuthSession,
 ): Promise<Connection<Post>> {
   const requestedLimit = Math.min(page?.limit ?? 20, 99);
   const fetchLimit = requestedLimit + 1;
   const response = await requestJson<readonly MisskeyNoteResponse[]>(
     clientFor(context, options)
       .post("api/users/notes", {
+        ...(session === undefined
+          ? {}
+          : { headers: await tokenHeader(session, context, "account.posts") }),
         json: {
           userId: accountId,
           limit: fetchLimit,
@@ -375,6 +489,480 @@ async function listAccountPosts(
     nodes: nodes.map((note) => noteFromResponse(note, context)),
     pageInfo: misskeyPageInfo(nodes, response.length > nodes.length, page, context),
   };
+}
+
+async function getNote(
+  id: string,
+  context: AdapterOperationContext,
+  options: MisskeyAdapterOptions,
+): Promise<Post> {
+  const response = await requestJson<MisskeyNoteResponse>(
+    clientFor(context, options)
+      .post("api/notes/show", { json: { noteId: id } })
+      .json(),
+    "post.get",
+    context,
+  );
+  return noteFromResponse(response, context);
+}
+
+async function listTimeline(
+  path: string,
+  session: AuthSession | undefined,
+  page: PageInput | undefined,
+  context: AdapterOperationContext,
+  options: MisskeyAdapterOptions,
+  operation: string,
+): Promise<Connection<Post>> {
+  const requestedLimit = Math.min(page?.limit ?? 20, 99);
+  const response = await requestJson<readonly MisskeyNoteResponse[]>(
+    clientFor(context, options)
+      .post(path, {
+        ...(session === undefined
+          ? {}
+          : { headers: await tokenHeader(session, context, operation) }),
+        json: {
+          limit: requestedLimit + 1,
+          ...(page?.after === undefined
+            ? {}
+            : { untilId: decodeOperationCursor(page.after, context, operation) }),
+          ...(page?.before === undefined
+            ? {}
+            : { sinceId: decodeOperationCursor(page.before, context, operation) }),
+        },
+      })
+      .json(),
+    operation,
+    context,
+  );
+  if (!Array.isArray(response)) {
+    throw invalidRemoteResponse("Misskey timeline response did not include the expected array.", {
+      context,
+      operation,
+      raw: response,
+    });
+  }
+  const nodes =
+    page?.before === undefined
+      ? response.slice(0, requestedLimit)
+      : response.slice(0, requestedLimit).toReversed();
+  return {
+    nodes: nodes.map((note) => noteFromResponse(note, context)),
+    pageInfo: misskeyPageInfoForOperation(
+      nodes,
+      response.length > nodes.length,
+      page,
+      context,
+      operation,
+    ),
+  };
+}
+
+async function listHashtagTimeline(
+  tag: string,
+  page: PageInput | undefined,
+  context: AdapterOperationContext,
+  options: MisskeyAdapterOptions,
+): Promise<Connection<Post>> {
+  const requestedLimit = Math.min(page?.limit ?? 20, 99);
+  const response = await requestJson<readonly MisskeyNoteResponse[]>(
+    clientFor(context, options)
+      .post("api/notes/search-by-tag", {
+        json: {
+          tag,
+          limit: requestedLimit + 1,
+          ...(page?.after === undefined
+            ? {}
+            : { untilId: decodeOperationCursor(page.after, context, "timeline.hashtag") }),
+          ...(page?.before === undefined
+            ? {}
+            : { sinceId: decodeOperationCursor(page.before, context, "timeline.hashtag") }),
+        },
+      })
+      .json(),
+    "timeline.hashtag",
+    context,
+  );
+  if (!Array.isArray(response)) {
+    throw invalidRemoteResponse("Misskey hashtag timeline response is malformed.", {
+      context,
+      operation: "timeline.hashtag",
+      raw: response,
+    });
+  }
+  const nodes = response.slice(0, requestedLimit);
+  return {
+    nodes: nodes.map((note) => noteFromResponse(note, context)),
+    pageInfo: misskeyPageInfoForOperation(
+      nodes,
+      response.length > nodes.length,
+      page,
+      context,
+      "timeline.hashtag",
+    ),
+  };
+}
+
+async function search(
+  input: SearchInput,
+  context: AdapterOperationContext,
+  options: MisskeyAdapterOptions,
+): Promise<SearchResult> {
+  if (input.resolve === true) {
+    throw new ActivityPlugError(
+      "UNSUPPORTED_OPERATION",
+      "Misskey search does not support ActivityPlug resolve mode.",
+      {
+        adapter: context.adapterId,
+        origin: context.origin,
+        operation: "search",
+        capability: searchCapability(input.type),
+      },
+    );
+  }
+  if (input.type === "hashtags") {
+    throw new ActivityPlugError(
+      "UNSUPPORTED_OPERATION",
+      "Misskey hashtag search is not mapped by this adapter.",
+      {
+        adapter: context.adapterId,
+        origin: context.origin,
+        operation: "search",
+        capability: "search.hashtags",
+      },
+    );
+  }
+  const limit = Math.min(input.page?.limit ?? 20, 100);
+  const [accounts, posts] = await Promise.all([
+    input.type === undefined || input.type === "accounts"
+      ? requestJson<readonly MisskeyMeResponse[]>(
+          clientFor(context, options)
+            .post("api/users/search-by-username-and-host", {
+              json: { username: input.query, limit },
+            })
+            .json(),
+          "search",
+          context,
+        )
+      : [],
+    input.type === undefined || input.type === "posts"
+      ? requestJson<readonly MisskeyNoteResponse[]>(
+          clientFor(context, options)
+            .post("api/notes/search", {
+              ...(input.session === undefined
+                ? {}
+                : { headers: await tokenHeader(input.session, context, "search") }),
+              json: { query: input.query, limit },
+            })
+            .json(),
+          "search",
+          context,
+        )
+      : [],
+  ]);
+  if (!Array.isArray(accounts) || !Array.isArray(posts)) {
+    throw invalidRemoteResponse("Misskey search response is malformed.", {
+      context,
+      operation: "search",
+      raw: { accounts, posts },
+    });
+  }
+  return {
+    accounts: accounts.map((account) => accountFromResponse(account, context, "search")),
+    posts: posts.map((post) => noteFromResponse(post, context)),
+    hashtags: [],
+    raw: { accounts, posts },
+  };
+}
+
+function searchCapability(
+  type: "accounts" | "posts" | "hashtags" | undefined,
+): "search.accounts" | "search.posts" | "search.hashtags" {
+  if (type === "posts") return "search.posts";
+  if (type === "hashtags") return "search.hashtags";
+  return "search.accounts";
+}
+
+async function uploadMedia(
+  input: UploadMediaInput,
+  context: AdapterOperationContext,
+  options: MisskeyAdapterOptions,
+): Promise<MediaAttachment> {
+  const form = new FormData();
+  form.set("file", input.file, input.filename);
+  if (input.description !== undefined) form.set("comment", input.description);
+  if (input.sensitive !== undefined) form.set("isSensitive", String(input.sensitive));
+  const response = await requestJson<MisskeyFileResponse>(
+    clientFor(context, options)
+      .post("api/drive/files/create", {
+        headers: await tokenHeader(input.session, context, "media.upload"),
+        body: form,
+      })
+      .json(),
+    "media.upload",
+    context,
+  );
+  const [attachment] = mediaAttachmentFromResponse(response, context, "media.upload");
+  if (attachment === undefined) {
+    throw invalidRemoteResponse("Misskey media upload response is malformed.", {
+      context,
+      operation: "media.upload",
+      raw: response,
+    });
+  }
+  return attachment;
+}
+
+async function createNote(
+  input: CreatePostInput,
+  context: AdapterOperationContext,
+  options: MisskeyAdapterOptions,
+  operation = "post.create",
+  capabilityName: CapabilityName = "posts.create",
+): Promise<Post> {
+  if (input.sensitive === true) {
+    throw new ActivityPlugError(
+      "UNSUPPORTED_OPERATION",
+      "Misskey note creation does not support post-level sensitivity.",
+      {
+        adapter: context.adapterId,
+        origin: context.origin,
+        operation,
+        capability: capabilityName,
+      },
+    );
+  }
+  const response = await requestJson<{ readonly createdNote?: MisskeyNoteResponse }>(
+    clientFor(context, options)
+      .post("api/notes/create", {
+        headers: await tokenHeader(input.session, context, operation),
+        json: {
+          ...(input.content.length === 0 ? {} : { text: input.content }),
+          ...(input.visibility === undefined
+            ? {}
+            : misskeyVisibilityInput(input.visibility, context, operation)),
+          ...(input.summary === undefined ? {} : { cw: input.summary }),
+          ...(input.replyToId === undefined ? {} : { replyId: input.replyToId }),
+          ...(input.quoteOfId === undefined ? {} : { renoteId: input.quoteOfId }),
+          ...(input.mediaIds === undefined ? {} : { fileIds: input.mediaIds }),
+          ...(input.poll === undefined
+            ? {}
+            : {
+                poll: {
+                  choices: input.poll.options,
+                  multiple: input.poll.multiple ?? false,
+                  ...(input.poll.expiresInSeconds === undefined
+                    ? {}
+                    : { expiredAfter: input.poll.expiresInSeconds * 1000 }),
+                },
+              }),
+        },
+      })
+      .json(),
+    operation,
+    context,
+  );
+  if (!isRecord(response) || !isRecord(response.createdNote)) {
+    throw invalidRemoteResponse("Misskey note creation response is malformed.", {
+      context,
+      operation,
+      raw: response,
+    });
+  }
+  return noteFromResponse(response.createdNote, context);
+}
+
+async function deleteNote(
+  input: { readonly session: AuthSession; readonly id: string },
+  context: AdapterOperationContext,
+  options: MisskeyAdapterOptions,
+): Promise<DeletedEntity> {
+  await requestVoid(
+    clientFor(context, options)
+      .post("api/notes/delete", {
+        headers: await tokenHeader(input.session, context, "post.delete"),
+        json: { noteId: input.id },
+      })
+      .then(() => undefined),
+    "post.delete",
+    context,
+  );
+  return {
+    ref: createEntityRef({
+      adapter: context.adapterId,
+      origin: context.origin,
+      type: "post",
+      id: input.id,
+    }),
+    deleted: true,
+  };
+}
+
+async function relationship(
+  input: RelationshipInput,
+  context: AdapterOperationContext,
+  options: MisskeyAdapterOptions,
+): Promise<Relationship> {
+  const response = await requestJson<MisskeyRelationshipResponse>(
+    clientFor(context, options)
+      .post("api/users/relation", {
+        headers: await tokenHeader(input.session, context, "account.relationships"),
+        json: { userId: input.accountId },
+      })
+      .json(),
+    "account.relationships",
+    context,
+  );
+  return relationshipFromResponse(response, context);
+}
+
+async function relationshipAction(
+  input: RelationshipInput,
+  path: string,
+  operation: string,
+  context: AdapterOperationContext,
+  options: MisskeyAdapterOptions,
+): Promise<Relationship> {
+  await requestVoid(
+    clientFor(context, options)
+      .post(`api/${path}`, {
+        headers: await tokenHeader(input.session, context, operation),
+        json: { userId: input.accountId },
+      })
+      .then(() => undefined),
+    operation,
+    context,
+  );
+  return relationship(input, context, options);
+}
+
+async function muteAccount(
+  input: MuteAccountInput,
+  context: AdapterOperationContext,
+  options: MisskeyAdapterOptions,
+): Promise<Relationship> {
+  if (input.notifications !== undefined) {
+    throw new ActivityPlugError(
+      "UNSUPPORTED_OPERATION",
+      "Misskey mute creation does not support notification mute options.",
+      {
+        adapter: context.adapterId,
+        origin: context.origin,
+        operation: "social.mute",
+        capability: "social.mute",
+      },
+    );
+  }
+  await requestVoid(
+    clientFor(context, options)
+      .post("api/mute/create", {
+        headers: await tokenHeader(input.session, context, "social.mute"),
+        json: {
+          userId: input.accountId,
+          ...(input.durationSeconds === undefined
+            ? {}
+            : { expiresAt: Date.now() + input.durationSeconds * 1000 }),
+        },
+      })
+      .then(() => undefined),
+    "social.mute",
+    context,
+  );
+  return relationship(input, context, options);
+}
+
+async function noteAction(
+  input: PostActionInput,
+  path: string,
+  operation: string,
+  context: AdapterOperationContext,
+  options: MisskeyAdapterOptions,
+): Promise<Post> {
+  await requestVoid(
+    clientFor(context, options)
+      .post(`api/${path}`, {
+        headers: await tokenHeader(input.session, context, operation),
+        json: { noteId: input.postId },
+      })
+      .then(() => undefined),
+    operation,
+    context,
+  );
+  return getNote(input.postId, context, options);
+}
+
+function unsupportedPostOperation(
+  context: AdapterOperationContext,
+  operation: string,
+  capabilityName: CapabilityName,
+): Promise<Post> {
+  return Promise.reject(
+    new ActivityPlugError(
+      "UNSUPPORTED_OPERATION",
+      "This adapter does not support this operation.",
+      {
+        ...errorContext(context, operation),
+        capability: capabilityName,
+      },
+    ),
+  );
+}
+
+async function boostNote(
+  input: BoostPostInput,
+  context: AdapterOperationContext,
+  options: MisskeyAdapterOptions,
+): Promise<Post> {
+  return createNote(
+    {
+      session: input.session,
+      content: "",
+      quoteOfId: input.postId,
+      ...(input.visibility === undefined ? {} : { visibility: input.visibility }),
+    },
+    context,
+    options,
+    "social.boost",
+    "social.boost",
+  );
+}
+
+async function unboostNote(
+  input: PostActionInput,
+  context: AdapterOperationContext,
+  options: MisskeyAdapterOptions,
+): Promise<Post> {
+  await requestVoid(
+    clientFor(context, options)
+      .post("api/notes/unrenote", {
+        headers: await tokenHeader(input.session, context, "social.unboost"),
+        json: { noteId: input.postId },
+      })
+      .then(() => undefined),
+    "social.unboost",
+    context,
+  );
+  return getNote(input.postId, context, options);
+}
+
+async function noteReaction(
+  input: ReactPostInput,
+  path: string,
+  operation: string,
+  context: AdapterOperationContext,
+  options: MisskeyAdapterOptions,
+): Promise<Post> {
+  await requestVoid(
+    clientFor(context, options)
+      .post(`api/${path}`, {
+        headers: await tokenHeader(input.session, context, operation),
+        json: { noteId: input.postId, reaction: input.emoji },
+      })
+      .then(() => undefined),
+    operation,
+    context,
+  );
+  return getNote(input.postId, context, options);
 }
 
 export const misskeyAdapter = createMisskeyAdapter();
@@ -474,6 +1062,7 @@ async function verifyCredentials(
   context: AuthAdapterContext,
   options: MisskeyAdapterOptions,
 ): Promise<Account> {
+  assertAccessTokenFresh(session.tokenSet, context, "auth.verifyCredentials");
   const response = await requestJson<MisskeyMeResponse>(
     clientFor(context, options)
       .post("api/i", {
@@ -696,45 +1285,72 @@ function misskeyPageInfo(
   page: PageInput | undefined,
   context: AdapterOperationContext,
 ): Connection<Post>["pageInfo"] {
+  return misskeyPageInfoForOperation(response, hasExtraItem, page, context, "account.posts");
+}
+
+function misskeyPageInfoForOperation(
+  response: readonly MisskeyNoteResponse[],
+  hasExtraItem: boolean,
+  page: PageInput | undefined,
+  context: AdapterOperationContext,
+  operation: string,
+): Connection<Post>["pageInfo"] {
   const firstId = response[0]?.id;
   const lastId = response.at(-1)?.id;
   return {
     hasNextPage: page?.before === undefined ? hasExtraItem : true,
     hasPreviousPage: page?.before === undefined ? page?.after !== undefined : hasExtraItem,
-    ...(firstId === undefined ? {} : { startCursor: encodeAccountPostsCursor(firstId, context) }),
-    ...(lastId === undefined ? {} : { endCursor: encodeAccountPostsCursor(lastId, context) }),
+    ...(firstId === undefined
+      ? {}
+      : { startCursor: encodeOperationCursor(firstId, context, operation) }),
+    ...(lastId === undefined
+      ? {}
+      : { endCursor: encodeOperationCursor(lastId, context, operation) }),
     raw: {
-      ...(firstId === undefined ? {} : { sinceId: firstId }),
-      ...(lastId === undefined ? {} : { untilId: lastId }),
+      returned: response.length,
+      hasExtraItem,
     },
   };
 }
 
-function encodeAccountPostsCursor(cursor: string, context: AdapterOperationContext): string {
+function encodeOperationCursor(
+  cursor: string,
+  context: AdapterOperationContext,
+  operation: string,
+): string {
   return encodePageCursor({
     adapter: context.adapterId,
     origin: context.origin,
-    operation: "account.posts",
+    operation,
     cursor,
   });
 }
 
 function decodeAccountPostsCursor(cursor: string, context: AdapterOperationContext): string {
+  return decodeOperationCursor(cursor, context, "account.posts");
+}
+
+function decodeOperationCursor(
+  cursor: string,
+  context: AdapterOperationContext,
+  operation: string,
+): string {
   return decodePageCursor(cursor, {
     adapter: context.adapterId,
     origin: context.origin,
-    operation: "account.posts",
+    operation,
   });
 }
 
 function mediaAttachmentFromResponse(
   response: MisskeyFileResponse,
   context: AdapterOperationContext,
+  operation = "posts.read",
 ): readonly MediaAttachment[] {
   if (!isRecord(response) || !nonEmptyString(response.id) || !nonEmptyString(response.url)) {
     throw invalidRemoteResponse("Misskey file response is missing required fields.", {
       context,
-      operation: "posts.read",
+      operation,
       raw: response,
     });
   }
@@ -754,7 +1370,7 @@ function mediaAttachmentFromResponse(
         id: file.id,
         rawUrl: file.url,
       }),
-      type: mediaAttachmentType(optionalString(file.type, "type", file, context, "posts.read")),
+      type: mediaAttachmentType(optionalString(file.type, "type", file, context, operation)),
       url: file.url,
       ...(file.thumbnailUrl === null || file.thumbnailUrl === undefined
         ? {}
@@ -762,20 +1378,20 @@ function mediaAttachmentFromResponse(
       ...(file.comment === null || file.comment === undefined ? {} : { description: file.comment }),
       ...(file.blurhash === null || file.blurhash === undefined ? {} : { blurhash: file.blurhash }),
       ...renamedOptionalNumber(
-        optionalObject(file.properties, "properties", file, context, "posts.read")?.width,
+        optionalObject(file.properties, "properties", file, context, operation)?.width,
         "properties.width",
         "width",
         file,
         context,
-        "posts.read",
+        operation,
       ),
       ...renamedOptionalNumber(
-        optionalObject(file.properties, "properties", file, context, "posts.read")?.height,
+        optionalObject(file.properties, "properties", file, context, operation)?.height,
         "properties.height",
         "height",
         file,
         context,
-        "posts.read",
+        operation,
       ),
       raw: file,
     },
@@ -905,6 +1521,123 @@ function misskeyVisibility(
   return "unknown";
 }
 
+function misskeyVisibilityInput(
+  value: Post["visibility"],
+  context: AdapterOperationContext,
+  operation: string,
+): { readonly visibility: string; readonly localOnly?: boolean } {
+  if (value === "unlisted") return { visibility: "home" };
+  if (value === "direct") return { visibility: "specified" };
+  if (value === "local") {
+    return { visibility: "public", localOnly: true };
+  }
+  if (value === "public" || value === "followers") {
+    return { visibility: value };
+  }
+  throw new ActivityPlugError(
+    "VALIDATION_FAILED",
+    "The requested visibility cannot be represented by this adapter.",
+    { ...errorContext(context, operation), raw: { visibility: value } },
+  );
+}
+
+function relationshipFromResponse(
+  response: MisskeyRelationshipResponse,
+  context: AdapterOperationContext,
+): Relationship {
+  const relationshipBody = Array.isArray(response) ? response[0] : response;
+  if (!isRecord(relationshipBody) || !nonEmptyString(relationshipBody.id)) {
+    throw invalidRemoteResponse("Misskey relationship response is missing required fields.", {
+      context,
+      operation: "account.relationships",
+      raw: response,
+    });
+  }
+  return {
+    account: createEntityRef({
+      adapter: context.adapterId,
+      origin: context.origin,
+      type: "account",
+      id: relationshipBody.id,
+    }),
+    following:
+      optionalBoolean(
+        relationshipBody.isFollowing,
+        "isFollowing",
+        relationshipBody,
+        context,
+        "account.relationships",
+      ) ?? false,
+    followedBy:
+      optionalBoolean(
+        relationshipBody.isFollowed,
+        "isFollowed",
+        relationshipBody,
+        context,
+        "account.relationships",
+      ) ?? false,
+    requested:
+      optionalBoolean(
+        relationshipBody.hasPendingFollowRequestFromYou,
+        "hasPendingFollowRequestFromYou",
+        relationshipBody,
+        context,
+        "account.relationships",
+      ) ?? false,
+    blocking:
+      optionalBoolean(
+        relationshipBody.isBlocking,
+        "isBlocking",
+        relationshipBody,
+        context,
+        "account.relationships",
+      ) ?? false,
+    muting:
+      optionalBoolean(
+        relationshipBody.isMuted,
+        "isMuted",
+        relationshipBody,
+        context,
+        "account.relationships",
+      ) ?? false,
+    raw: response,
+  };
+}
+
+async function tokenHeader(
+  session: AuthSession,
+  context: AdapterOperationContext,
+  operation: string,
+): Promise<Record<string, string>> {
+  const stored = await context.sessionStore?.get(session.id);
+  if (stored === undefined || stored === null) {
+    throw new ActivityPlugError("AUTH_REQUIRED", "Auth session is not available.", {
+      ...errorContext(context, operation),
+    });
+  }
+  if (stored.adapter !== context.adapterId || stored.origin !== context.origin) {
+    throw new ActivityPlugError("AUTH_REQUIRED", "Auth session does not belong to this adapter.", {
+      ...errorContext(context, operation),
+    });
+  }
+  assertAccessTokenFresh(stored.tokenSet, context, operation);
+  return authorizationHeader(stored.tokenSet);
+}
+
+function assertAccessTokenFresh(
+  tokenSet: TokenSet,
+  context: AuthAdapterContext | AdapterOperationContext,
+  operation: string,
+): void {
+  if (tokenSet.expiresAt === undefined) return;
+  const expiresAt = Date.parse(tokenSet.expiresAt);
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+    throw new ActivityPlugError("AUTH_EXPIRED", "Auth session access token has expired.", {
+      ...errorContext(context, operation),
+    });
+  }
+}
+
 function parseHandle(
   handle: string,
   origin: string,
@@ -1007,6 +1740,18 @@ async function requestJson<T>(
         { cause },
       );
     }
+    throw await remoteError(cause, operation, context);
+  }
+}
+
+async function requestVoid(
+  request: Promise<void>,
+  operation: string,
+  context: AuthAdapterContext | AdapterOperationContext,
+): Promise<void> {
+  try {
+    await request;
+  } catch (cause) {
     throw await remoteError(cause, operation, context);
   }
 }

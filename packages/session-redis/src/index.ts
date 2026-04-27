@@ -112,5 +112,5 @@ export class RedisAuthSessionStore implements AuthSessionStore {
 function ttlMsUntil(expiresAt: string | undefined, now: Date): number | undefined {
   if (expiresAt === undefined) return undefined;
   const ttlMs = Date.parse(expiresAt) - now.getTime();
-  return ttlMs > 0 ? ttlMs : undefined;
+  return Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : 1;
 }
