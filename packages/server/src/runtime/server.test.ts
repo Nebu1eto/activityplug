@@ -20,6 +20,7 @@ describe("createActivityPlugServer", () => {
       adapters: [testAdapter],
       sessions: new InMemoryAuthSessionStore(),
       originPolicy: () => undefined,
+      tokenImport: { enabled: true },
     });
 
     const imported = await jsonRequest(
@@ -86,6 +87,42 @@ describe("createActivityPlugServer", () => {
     }
   });
 
+  it("returns discovered instance capabilities instead of static metadata only", async () => {
+    const server = createActivityPlugServer({
+      adapters: [
+        {
+          ...testAdapter,
+          instances: {
+            detect: async (_input, context) => ({
+              ref: createEntityRef({
+                adapter: context.adapterId,
+                origin: context.origin,
+                type: "instance",
+                id: context.origin,
+              }),
+              software: { name: "mastodon" },
+              languages: [],
+              capabilities: createCapabilitySet({
+                "posts.quote": capability("supported", "detected"),
+              }),
+              raw: {},
+            }),
+          },
+        },
+      ],
+      originPolicy: () => undefined,
+    });
+
+    await expect(
+      server.service.capabilities({ adapter: "mastodon", origin: "https://example.test" }),
+    ).resolves.toMatchObject({
+      "posts.quote": {
+        status: "supported",
+        reason: "detected",
+      },
+    });
+  });
+
   it("binds OAuth exchange to server-stored callback state and client material", async () => {
     const exchanges: OAuthCodeExchangeInput[] = [];
     const server = createActivityPlugServer({
@@ -146,6 +183,30 @@ describe("createActivityPlugServer", () => {
         codeVerifier: expect.any(String),
       },
     ]);
+  });
+
+  it("stores OAuth callback bindings with canonical URL origins", async () => {
+    const server = createActivityPlugServer({
+      adapters: [oauthAdapter([])],
+      sessions: new InMemoryAuthSessionStore(),
+      originPolicy: () => undefined,
+    });
+
+    const started = await server.service.auth.start({
+      adapter: "mastodon",
+      origin: "https://example.test/users/alice?ignored=1",
+      client: {
+        clientName: "ActivityPlug Test",
+        redirectUris: ["https://client.example/callback"],
+      },
+      redirectUri: "https://client.example/callback",
+      state: "state-canonical",
+    });
+
+    expect(started.callbackBinding).toMatchObject({
+      adapter: "mastodon",
+      origin: "https://example.test",
+    });
   });
 
   it("consumes OAuth callback state once and keeps client secrets out of session metadata", async () => {

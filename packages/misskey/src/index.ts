@@ -3,6 +3,8 @@ import {
   capability,
   createCapabilitySet,
   createEntityRef,
+  decodePageCursor,
+  encodePageCursor,
   type Account,
   type ActivityPlugAdapter,
   type AdapterOperationContext,
@@ -346,8 +348,12 @@ async function listAccountPosts(
         json: {
           userId: accountId,
           limit: fetchLimit,
-          ...(page?.after === undefined ? {} : { untilId: page.after }),
-          ...(page?.before === undefined ? {} : { sinceId: page.before }),
+          ...(page?.after === undefined
+            ? {}
+            : { untilId: decodeAccountPostsCursor(page.after, context) }),
+          ...(page?.before === undefined
+            ? {}
+            : { sinceId: decodeAccountPostsCursor(page.before, context) }),
         },
       })
       .json(),
@@ -367,11 +373,12 @@ async function listAccountPosts(
       : response.slice(0, requestedLimit).toReversed();
   return {
     nodes: nodes.map((note) => noteFromResponse(note, context)),
-    pageInfo: misskeyPageInfo(nodes, response.length > nodes.length, page),
+    pageInfo: misskeyPageInfo(nodes, response.length > nodes.length, page, context),
   };
 }
 
 export const misskeyAdapter = createMisskeyAdapter();
+export const misskey = createMisskeyAdapter;
 
 async function registerOAuthClient(
   input: OAuthClientRegistrationInput,
@@ -687,21 +694,39 @@ function misskeyPageInfo(
   response: readonly MisskeyNoteResponse[],
   hasExtraItem: boolean,
   page: PageInput | undefined,
+  context: AdapterOperationContext,
 ): Connection<Post>["pageInfo"] {
   const firstId = response[0]?.id;
   const lastId = response.at(-1)?.id;
   return {
     hasNextPage: page?.before === undefined ? hasExtraItem : true,
     hasPreviousPage: page?.before === undefined ? page?.after !== undefined : hasExtraItem,
-    ...(firstId === undefined ? {} : { startCursor: firstId }),
-    ...(lastId === undefined ? {} : { endCursor: lastId }),
-    ...(lastId === undefined ? {} : { rawNext: lastId }),
-    ...(firstId === undefined ? {} : { rawPrevious: firstId }),
+    ...(firstId === undefined ? {} : { startCursor: encodeAccountPostsCursor(firstId, context) }),
+    ...(lastId === undefined ? {} : { endCursor: encodeAccountPostsCursor(lastId, context) }),
+    ...(lastId === undefined ? {} : { rawNext: encodeAccountPostsCursor(lastId, context) }),
+    ...(firstId === undefined ? {} : { rawPrevious: encodeAccountPostsCursor(firstId, context) }),
     raw: {
       ...(firstId === undefined ? {} : { sinceId: firstId }),
       ...(lastId === undefined ? {} : { untilId: lastId }),
     },
   };
+}
+
+function encodeAccountPostsCursor(cursor: string, context: AdapterOperationContext): string {
+  return encodePageCursor({
+    adapter: context.adapterId,
+    origin: context.origin,
+    operation: "account.posts",
+    cursor,
+  });
+}
+
+function decodeAccountPostsCursor(cursor: string, context: AdapterOperationContext): string {
+  return decodePageCursor(cursor, {
+    adapter: context.adapterId,
+    origin: context.origin,
+    operation: "account.posts",
+  });
 }
 
 function mediaAttachmentFromResponse(

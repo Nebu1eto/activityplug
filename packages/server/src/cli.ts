@@ -1,3 +1,5 @@
+import { createMastodonAdapter } from "@activityplug/mastodon";
+import { createMisskeyAdapter } from "@activityplug/misskey";
 import { object } from "@optique/core/constructs";
 import { withDefault } from "@optique/core/modifiers";
 import { option } from "@optique/core/primitives";
@@ -7,6 +9,7 @@ import { run } from "@optique/run";
 import { configureServerLogging } from "./runtime/logging.js";
 import {
   assertRuntimeOptions,
+  createActivityPlugServer,
   startActivityPlugServer,
   type StartServerOptions,
 } from "./runtime/server.js";
@@ -77,9 +80,15 @@ function parseServerCliArgsWithOptions(
 }
 
 function toStartOptions(options: ServerCliOptions): StartServerOptions {
+  const server = createActivityPlugServer({
+    adapters: [createMastodonAdapter(), createMisskeyAdapter()],
+    tokenImport: { enabled: false },
+  });
   return {
     hostname: options.hostname,
     port: options.port,
+    service: server.service,
+    app: server.app,
   };
 }
 

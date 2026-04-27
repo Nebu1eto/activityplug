@@ -192,7 +192,6 @@ export interface PublicConnection<Node> {
 
 export interface AuthStartPayload {
   readonly clientId: string;
-  readonly clientSecret?: string;
   readonly redirectUris: readonly string[];
   readonly scopes?: readonly string[];
   readonly authorizationUrl: string;
@@ -231,13 +230,17 @@ export type AuthParseCallbackRequest = OAuthCallbackInput;
 
 export type AuthExchangeRequest =
   | (InstanceSelector &
-      Omit<OAuthCodeExchangeInput, "code" | "state"> & {
+      Omit<OAuthCodeExchangeInput, "client" | "code" | "state"> & {
         readonly callback: OAuthCallbackInput;
         readonly expectedState: string;
         readonly expectedBinding: OAuthCallbackStateBinding;
         readonly actualBinding: OAuthCallbackStateBinding;
       })
-  | (InstanceSelector & OAuthCodeExchangeInput);
+  | (InstanceSelector &
+      Omit<OAuthCodeExchangeInput, "client" | "state"> & {
+        readonly client?: OAuthCodeExchangeInput["client"];
+        readonly state: string;
+      });
 
 export type AuthRefreshRequest = InstanceSelector & OAuthRefreshInput;
 
@@ -437,9 +440,6 @@ export function serializeEntityRef(ref: EntityRef): PublicEntityRef {
 export function serializeAuthStart(result: AuthStartResult): AuthStartPayload {
   return {
     clientId: result.client.clientId,
-    ...(result.client.clientSecret === undefined
-      ? {}
-      : { clientSecret: result.client.clientSecret }),
     redirectUris: result.client.redirectUris,
     ...(result.client.scopes === undefined ? {} : { scopes: result.client.scopes }),
     authorizationUrl: result.authorization.url.href,

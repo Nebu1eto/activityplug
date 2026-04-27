@@ -149,18 +149,21 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
   return {
     health: () => ({ ok: true, version: "v1" }),
     capabilities: async (input) => {
-      await originPolicy({ origin: input.origin, operation: "capabilities" });
-      return resolveClient(input, options.adapters, sessions).capabilities;
+      const selector = normalizeSelector(input, "capabilities");
+      await originPolicy({ origin: selector.origin, operation: "capabilities" });
+      return (await detectInstance(selector, options.adapters, sessions)).capabilities;
     },
     instances: {
       detect: async (input) => {
-        await originPolicy({ origin: input.origin, operation: "instance.detect" });
-        return detectInstance(input, options.adapters, sessions);
+        const selector = normalizeSelector(input, "instance.detect");
+        await originPolicy({ origin: selector.origin, operation: "instance.detect" });
+        return detectInstance(selector, options.adapters, sessions);
       },
       get: async (input) => {
-        await originPolicy({ origin: input.origin, operation: "instance.get" });
-        return resolveClient(input, options.adapters, sessions).instances.getProfile({
-          origin: input.origin,
+        const selector = normalizeSelector(input, "instance.get");
+        await originPolicy({ origin: selector.origin, operation: "instance.get" });
+        return resolveClient(selector, options.adapters, sessions).instances.getProfile({
+          origin: selector.origin,
         });
       },
     },
@@ -175,8 +178,9 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
         ).accounts.getById({ id: input.id });
       },
       lookup: async (input) => {
-        await originPolicy({ origin: input.origin, operation: "account.lookup" });
-        return resolveClient(input, options.adapters, sessions).accounts.getByHandle({
+        const selector = normalizeSelector(input, "account.lookup");
+        await originPolicy({ origin: selector.origin, operation: "account.lookup" });
+        return resolveClient(selector, options.adapters, sessions).accounts.getByHandle({
           handle: input.handle,
         });
       },
@@ -196,15 +200,17 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
     auth: {
       importToken: async (input) => {
         const { adapter: _adapter, origin: _origin, ...token } = input;
-        await originPolicy({ origin: input.origin, operation: "auth.tokenInjection" });
-        return handlersFor(input, options.adapters, sessions).importToken(token);
+        const selector = normalizeSelector(input, "auth.tokenInjection");
+        await originPolicy({ origin: selector.origin, operation: "auth.tokenInjection" });
+        return handlersFor(selector, options.adapters, sessions).importToken(token);
       },
       start: async (input) => {
         const { adapter: _adapter, origin: _origin, ...start } = input;
-        await originPolicy({ origin: input.origin, operation: "auth.oauth.authorizationUrl" });
-        const adapter = resolveAdapter(input.adapter, options.adapters);
+        const selector = normalizeSelector(input, "auth.oauth.authorizationUrl");
+        await originPolicy({ origin: selector.origin, operation: "auth.oauth.authorizationUrl" });
+        const adapter = resolveAdapter(selector.adapter, options.adapters);
         const pkce = start.codeChallenge === undefined ? await createOAuthPkcePair() : undefined;
-        const result = await handlersFor(input, options.adapters, sessions).start({
+        const result = await handlersFor(selector, options.adapters, sessions).start({
           ...start,
           ...(pkce === undefined
             ? {}
@@ -212,7 +218,7 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
         });
         const callbackBinding = {
           adapter: adapter.metadata.id,
-          origin: input.origin,
+          origin: selector.origin,
           clientRequestId: randomUUID(),
         };
         const codeVerifier = result.authorization.codeVerifier ?? pkce?.codeVerifier;
@@ -232,8 +238,10 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
       parseCallback: (input) => parseOAuthCallback(input),
       exchange: async (input) => {
         const { adapter: _adapter, origin: _origin, ...exchange } = input;
-        await originPolicy({ origin: input.origin, operation: "auth.oauth.exchangeCode" });
-        const adapter = resolveAdapter(input.adapter, options.adapters);
+        const selector = normalizeSelector(input, "auth.oauth.exchangeCode");
+        const canonicalInput = { ...input, ...selector };
+        await originPolicy({ origin: selector.origin, operation: "auth.oauth.exchangeCode" });
+        const adapter = resolveAdapter(selector.adapter, options.adapters);
         if ("callback" in input) {
           const registeredBinding = await requireOAuthCallbackStateBinding(
             sessions,
@@ -261,13 +269,13 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
               },
             );
           }
-          assertExchangeTarget(input, adapter.metadata.id, registeredBinding);
+          assertExchangeTarget(canonicalInput, adapter.metadata.id, registeredBinding);
           const state = await consumeOAuthCallbackState(
             sessions,
             input.expectedState,
             oauthClientSecrets,
           );
-          return handlersFor(input, options.adapters, sessions).exchange({
+          return handlersFor(selector, options.adapters, sessions).exchange({
             ...exchange,
             client: state.client,
             redirectUri: state.redirectUri,
@@ -286,9 +294,9 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
           );
         }
         const registeredBinding = await requireOAuthCallbackStateBinding(sessions, input.state);
-        assertExchangeTarget(input, adapter.metadata.id, registeredBinding);
+        assertExchangeTarget(canonicalInput, adapter.metadata.id, registeredBinding);
         const state = await consumeOAuthCallbackState(sessions, input.state, oauthClientSecrets);
-        return handlersFor(input, options.adapters, sessions).exchange({
+        return handlersFor(selector, options.adapters, sessions).exchange({
           ...exchange,
           client: state.client,
           redirectUri: state.redirectUri,
@@ -297,8 +305,9 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
       },
       refresh: async (input) => {
         const { adapter: _adapter, origin: _origin, ...refresh } = input;
-        await originPolicy({ origin: input.origin, operation: "auth.oauth.refresh" });
-        return handlersFor(input, options.adapters, sessions).refresh(refresh);
+        const selector = normalizeSelector(input, "auth.oauth.refresh");
+        await originPolicy({ origin: selector.origin, operation: "auth.oauth.refresh" });
+        return handlersFor(selector, options.adapters, sessions).refresh(refresh);
       },
       refreshSession: async (input) => {
         const session = await requireSession(input.sessionId, sessions, "auth.oauth.refresh");
@@ -309,8 +318,9 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
       },
       revoke: async (input) => {
         const { adapter: _adapter, origin: _origin, ...revoke } = input;
-        await originPolicy({ origin: input.origin, operation: "auth.oauth.revoke" });
-        return handlersFor(input, options.adapters, sessions).revoke(revoke);
+        const selector = normalizeSelector(input, "auth.oauth.revoke");
+        await originPolicy({ origin: selector.origin, operation: "auth.oauth.revoke" });
+        return handlersFor(selector, options.adapters, sessions).revoke(revoke);
       },
       revokeSession: async (input) => {
         const session = await requireSession(input.sessionId, sessions, "auth.oauth.revoke");
@@ -344,6 +354,39 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
       ).viewer(toPublicSession(session));
     },
   };
+}
+
+function normalizeSelector(input: InstanceSelector, operation: string): InstanceSelector {
+  return {
+    ...input,
+    origin: normalizeServerOrigin(input.origin, operation, input.adapter),
+  };
+}
+
+function normalizeServerOrigin(
+  origin: string,
+  operation: string,
+  adapter: string | undefined,
+): string {
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      throw new ActivityPlugError("VALIDATION_FAILED", "Origin must use HTTP or HTTPS.", {
+        ...(adapter === undefined ? {} : { adapter }),
+        origin,
+        operation,
+      });
+    }
+    return url.origin;
+  } catch (cause) {
+    if (cause instanceof ActivityPlugError) throw cause;
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "Origin must be an absolute URL.",
+      { ...(adapter === undefined ? {} : { adapter }), origin, operation },
+      { cause },
+    );
+  }
 }
 
 async function requireSession(sessionId: string, sessions: AuthSessionStore, operation: string) {

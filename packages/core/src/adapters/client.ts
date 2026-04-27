@@ -14,6 +14,7 @@ import {
   type Post,
 } from "../types/entities.js";
 import { type AdapterMetadata } from "./metadata.js";
+import { maxPageLimit } from "./page.js";
 
 export interface ActivityPlugAdapter {
   readonly metadata: AdapterMetadata;
@@ -128,6 +129,24 @@ export function createActivityPlugClient(options: ActivityPlugClientOptions): Ac
   };
 }
 
+export const createActivityPlug = createActivityPlugClient;
+
+export function tokenAuth(
+  accessToken: string,
+  scopes?: readonly string[],
+): {
+  readonly accessToken: string;
+  readonly scopes?: readonly string[];
+} {
+  if (accessToken.length === 0) {
+    throw new ActivityPlugError("VALIDATION_FAILED", "Access token must not be empty.");
+  }
+  return {
+    accessToken,
+    ...(scopes === undefined ? {} : { scopes }),
+  };
+}
+
 function createInstanceService(client: RequiredClientContext): InstanceService {
   return {
     detect: async (input = {}) => {
@@ -210,10 +229,13 @@ function validatePageInput(
       },
     );
   }
-  if (page.limit !== undefined && (!Number.isInteger(page.limit) || page.limit < 1)) {
+  if (
+    page.limit !== undefined &&
+    (!Number.isInteger(page.limit) || page.limit < 1 || page.limit > maxPageLimit)
+  ) {
     throw new ActivityPlugError(
       "VALIDATION_FAILED",
-      "Page input limit must be a positive integer.",
+      `Page input limit must be an integer between 1 and ${maxPageLimit}.`,
       {
         adapter: client.adapter.metadata.id,
         origin: client.origin,
@@ -248,7 +270,7 @@ function normalizeOrigin(origin: string, operation: string, adapter: string): st
   }
   url.hash = "";
   url.search = "";
-  return url.toString().replace(/\/$/u, "");
+  return url.origin;
 }
 
 type RequiredClientContext = Omit<ActivityPlugClientOptions, "capabilities"> & {

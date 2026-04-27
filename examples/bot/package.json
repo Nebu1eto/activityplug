@@ -12,6 +12,7 @@
   "dependencies": {
     "@activityplug/core": "workspace:*",
     "@activityplug/mastodon": "workspace:*",
-    "@activityplug/misskey": "workspace:*"
+    "@activityplug/misskey": "workspace:*",
+    "@activityplug/test-fixtures": "workspace:*"
   }
 }

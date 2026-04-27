@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { ActivityPlugError, isActivityPlugError } from "@activityplug/core";
+import { ActivityPlugError, isActivityPlugError, maxPageLimit } from "@activityplug/core";
 import SchemaBuilder from "@pothos/core";
 import { GraphQLError } from "graphql";
 
@@ -30,7 +30,7 @@ import {
   serializeInstanceProfile,
   serializePostConnection,
 } from "../api/service.js";
-import { maxPageLimit, type TokenImportOptions } from "../http/app.js";
+import { type TokenImportOptions } from "../http/app.js";
 
 export interface GraphQLContext {
   readonly service: ActivityPlugApiService;
@@ -193,7 +193,7 @@ const AuthExchangeInput = builder.inputType("AuthExchangeInput", {
   fields: (t) => ({
     adapter: t.field({ type: AdapterKindEnum, required: true }),
     origin: t.string({ required: true }),
-    client: t.field({ type: OAuthRegisteredClientInput, required: true }),
+    client: t.field({ type: OAuthRegisteredClientInput, required: false }),
     code: t.string({ required: false }),
     callback: t.field({ type: AuthCallbackInput, required: false }),
     expectedState: t.string({ required: false }),
@@ -298,7 +298,6 @@ const AuthSessionType = builder.objectRef<PublicAuthSession>("AuthSession").impl
 const AuthStartPayloadType = builder.objectRef<AuthStartPayload>("AuthStartPayload").implement({
   fields: (t) => ({
     clientId: t.exposeString("clientId"),
-    clientSecret: t.exposeString("clientSecret", { nullable: true }),
     redirectUris: t.exposeStringList("redirectUris"),
     scopes: t.exposeStringList("scopes", { nullable: true }),
     authorizationUrl: t.exposeString("authorizationUrl"),
@@ -800,22 +799,7 @@ builder.mutationType({
       resolve: async (_parent, args, context) =>
         withGraphQLErrorContract(async () =>
           serializeAuthSession(
-            await context.service.auth.exchange(
-              normalizeAuthExchange({
-                ...args.input,
-                client: {
-                  clientId: args.input.client.clientId,
-                  ...(args.input.client.clientSecret === null ||
-                  args.input.client.clientSecret === undefined
-                    ? {}
-                    : { clientSecret: args.input.client.clientSecret }),
-                  redirectUris: args.input.client.redirectUris,
-                  ...(args.input.client.scopes === undefined
-                    ? {}
-                    : { scopes: args.input.client.scopes }),
-                },
-              }),
-            ),
+            await context.service.auth.exchange(normalizeAuthExchange(args.input)),
           ),
         ),
     }),
@@ -1036,7 +1020,7 @@ async function withGraphQLErrorContract<T>(operation: () => Promise<T> | T): Pro
 }
 
 async function enforceTokenImportPolicy(context: GraphQLContext): Promise<void> {
-  if (context.tokenImport?.enabled === false) {
+  if (context.tokenImport?.enabled !== true) {
     throw new ActivityPlugError(
       "UNSUPPORTED_OPERATION",
       "Token import is disabled for this server.",
@@ -1166,12 +1150,12 @@ function normalizeAuthStart(input: {
 function normalizeAuthExchange(input: {
   readonly adapter: AdapterKind;
   readonly origin: string;
-  readonly client: {
+  readonly client?: {
     readonly clientId: string;
     readonly clientSecret?: string | null;
     readonly redirectUris: readonly string[];
     readonly scopes?: readonly string[] | null;
-  };
+  } | null;
   readonly code?: string | null;
   readonly callback?: {
     readonly url?: string | null;
@@ -1200,16 +1184,6 @@ function normalizeAuthExchange(input: {
   const shared = {
     adapter: input.adapter,
     origin: input.origin,
-    client: {
-      clientId: input.client.clientId,
-      ...(input.client.clientSecret === null || input.client.clientSecret === undefined
-        ? {}
-        : { clientSecret: input.client.clientSecret }),
-      redirectUris: input.client.redirectUris,
-      ...(input.client.scopes === null || input.client.scopes === undefined
-        ? {}
-        : { scopes: input.client.scopes }),
-    },
     redirectUri: input.redirectUri,
     ...(input.codeVerifier === null || input.codeVerifier === undefined
       ? {}
@@ -1255,10 +1229,27 @@ function normalizeAuthExchange(input: {
   if (input.code === null || input.code === undefined) {
     throw new ActivityPlugError("VALIDATION_FAILED", "OAuth code exchange requires code.");
   }
+  if (input.state === null || input.state === undefined) {
+    throw new ActivityPlugError("VALIDATION_FAILED", "OAuth code exchange requires state.");
+  }
   return {
     ...shared,
+    ...(input.client === null || input.client === undefined
+      ? {}
+      : {
+          client: {
+            clientId: input.client.clientId,
+            ...(input.client.clientSecret === null || input.client.clientSecret === undefined
+              ? {}
+              : { clientSecret: input.client.clientSecret }),
+            redirectUris: input.client.redirectUris,
+            ...(input.client.scopes === null || input.client.scopes === undefined
+              ? {}
+              : { scopes: input.client.scopes }),
+          },
+        }),
     code: input.code,
-    ...(input.state === null || input.state === undefined ? {} : { state: input.state }),
+    state: input.state,
   };
 }
 

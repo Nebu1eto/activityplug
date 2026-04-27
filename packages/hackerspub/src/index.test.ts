@@ -27,6 +27,27 @@ describe("HackersPub adapter", () => {
       code: "REMOTE_ERROR",
     });
   });
+
+  it("classifies malformed NodeInfo hrefs as remote response errors", async () => {
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async () =>
+          Response.json({
+            links: [
+              {
+                rel: "http://nodeinfo.diaspora.software/ns/schema/2.1",
+                href: "http://[::1",
+              },
+            ],
+          }),
+      }),
+      origin: "https://hackerspub.example",
+    });
+
+    await expect(client.instances.detect()).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+    });
+  });
 });
 
 function createClientWithGraphQLResponse(data: unknown) {

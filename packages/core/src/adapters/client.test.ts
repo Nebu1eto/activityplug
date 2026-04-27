@@ -78,6 +78,25 @@ describe("library-mode clients", () => {
     expect(origins).toEqual(["https://override.example"]);
   });
 
+  it("normalizes public origins to URL origins only", () => {
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet(),
+      },
+    };
+
+    const client = createActivityPlugClient({
+      adapter,
+      origin: "https://social.example/users/alice?query=1#hash",
+    });
+
+    expect(client.origin).toBe("https://social.example");
+  });
+
   it("rejects malformed page input before adapter calls", async () => {
     const adapter: ActivityPlugAdapter = {
       metadata: {
@@ -118,6 +137,9 @@ describe("library-mode clients", () => {
     ).rejects.toMatchObject({ code: "VALIDATION_FAILED" });
     await expect(
       client.accounts.listPosts({ accountId, page: { before: "" } }),
+    ).rejects.toMatchObject({ code: "VALIDATION_FAILED" });
+    await expect(
+      client.accounts.listPosts({ accountId, page: { limit: 201 } }),
     ).rejects.toMatchObject({ code: "VALIDATION_FAILED" });
   });
 });

@@ -9,6 +9,7 @@ export interface CreateBotClientInput {
   readonly origin: string;
   readonly accessToken: string;
   readonly scopes?: readonly string[];
+  readonly fetch?: typeof globalThis.fetch;
 }
 
 export interface BotClient {
@@ -18,7 +19,10 @@ export interface BotClient {
 
 export async function createBotClient(input: CreateBotClientInput): Promise<BotClient> {
   const client = createActivityPlugClient({
-    adapter: input.adapter === "mastodon" ? createMastodonAdapter() : createMisskeyAdapter(),
+    adapter:
+      input.adapter === "mastodon"
+        ? createMastodonAdapter({ fetch: input.fetch })
+        : createMisskeyAdapter({ fetch: input.fetch }),
     origin: input.origin,
   });
   const session = await client.auth.injectToken({

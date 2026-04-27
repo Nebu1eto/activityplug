@@ -50,6 +50,9 @@ importers:
       '@activityplug/misskey':
         specifier: workspace:*
         version: link:../../packages/misskey
+      '@activityplug/test-fixtures':
+        specifier: workspace:*
+        version: link:../../packages/test-fixtures
 
   examples/web-client:
     dependencies:
@@ -62,6 +65,9 @@ importers:
       '@activityplug/misskey':
         specifier: workspace:*
         version: link:../../packages/misskey
+      '@activityplug/test-fixtures':
+        specifier: workspace:*
+        version: link:../../packages/test-fixtures
 
   packages/core:
     devDependencies:
@@ -128,6 +134,12 @@ importers:
       '@activityplug/core':
         specifier: workspace:*
         version: link:../core
+      '@activityplug/mastodon':
+        specifier: workspace:*
+        version: link:../mastodon
+      '@activityplug/misskey':
+        specifier: workspace:*
+        version: link:../misskey
       '@hono/node-server':
         specifier: ^2.0.0
         version: 2.0.0(hono@4.12.15)

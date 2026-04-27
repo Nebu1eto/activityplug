@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import {
   ActivityPlugError,
   isActivityPlugError,
+  maxPageLimit,
+  type OAuthClientRegistration,
   type ActivityPlugError as ActivityPlugErrorType,
 } from "@activityplug/core";
 import { createYoga } from "graphql-yoga";
@@ -27,8 +29,6 @@ import {
   type ImportTokenRequest,
 } from "../api/service.js";
 import { createGraphQLSchema, type GraphQLContext } from "../graphql/schema.js";
-
-export const maxPageLimit = 200;
 
 export interface CreateActivityPlugAppOptions {
   readonly service: ActivityPlugApiService;
@@ -59,7 +59,7 @@ export function createActivityPlugApp(options: CreateActivityPlugAppOptions): Ho
   }
   const openApiDocument = createOpenApiDocument({
     tokenImport:
-      options.tokenImport?.enabled === false
+      options.tokenImport?.enabled !== true
         ? "disabled"
         : options.tokenImport?.guard === undefined
           ? "open"
@@ -137,7 +137,7 @@ export function createActivityPlugApp(options: CreateActivityPlugAppOptions): Ho
     ),
   );
   app.post("/api/v1/auth/import-token", async (context) => {
-    if (options.tokenImport?.enabled === false) {
+    if (options.tokenImport?.enabled !== true) {
       throw new ActivityPlugError(
         "UNSUPPORTED_OPERATION",
         "Token import is disabled for this server.",
@@ -501,7 +501,6 @@ function authExchangeRequest(body: unknown): AuthExchangeRequest {
   const shared = {
     adapter: requiredString(request, "adapter"),
     origin: requiredString(request, "origin"),
-    client: oauthRegisteredClient(request.client),
     redirectUri: requiredString(request, "redirectUri"),
     ...optionalString(request, "codeVerifier"),
   };
@@ -521,8 +520,9 @@ function authExchangeRequest(body: unknown): AuthExchangeRequest {
   }
   return {
     ...shared,
+    ...(request.client === undefined ? {} : { client: oauthRegisteredClient(request.client) }),
     code: requiredString(request, "code"),
-    ...optionalString(request, "state"),
+    state: requiredString(request, "state"),
   };
 }
 
@@ -539,7 +539,7 @@ function oauthClientInput(value: unknown): AuthStartRequest["client"] {
   };
 }
 
-function oauthRegisteredClient(value: unknown): AuthExchangeRequest["client"] {
+function oauthRegisteredClient(value: unknown): OAuthClientRegistration {
   const request = requireObjectBody(value);
   return {
     clientId: requiredString(request, "clientId"),

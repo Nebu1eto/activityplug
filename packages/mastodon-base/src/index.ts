@@ -3,6 +3,8 @@ import {
   capability,
   createCapabilitySet,
   createEntityRef,
+  decodePageCursor,
+  encodePageCursor,
   type Account,
   type ActivityPlugAdapter,
   type AdapterOperationContext,
@@ -506,8 +508,10 @@ async function listAccountPosts(
 ): Promise<Connection<Post>> {
   const searchParams = new URLSearchParams();
   if (page?.limit !== undefined) searchParams.set("limit", String(page.limit));
-  if (page?.after !== undefined) searchParams.set("max_id", page.after);
-  if (page?.before !== undefined) searchParams.set("min_id", page.before);
+  if (page?.after !== undefined)
+    searchParams.set("max_id", decodeAccountPostsCursor(page.after, context));
+  if (page?.before !== undefined)
+    searchParams.set("min_id", decodeAccountPostsCursor(page.before, context));
   const remoteResponse = await requestResponse(
     clientFor(context, options).get(`api/v1/accounts/${encodeURIComponent(accountId)}/statuses`, {
       searchParams,
@@ -522,7 +526,7 @@ async function listAccountPosts(
   );
   return {
     nodes: response.map((status) => postFromResponse(status, context)),
-    pageInfo: mastodonPageInfo(response, remoteResponse.headers),
+    pageInfo: mastodonPageInfo(response, remoteResponse.headers, context),
   };
 }
 
@@ -1104,6 +1108,7 @@ function mediaAttachmentType(value: string | undefined): MediaAttachment["type"]
 function mastodonPageInfo(
   response: readonly MastodonStatusResponse[],
   headers: Headers,
+  context: AdapterOperationContext,
 ): Connection<Post>["pageInfo"] {
   const links = parseLinkHeader(headers.get("link"));
   const firstId = response[0]?.id;
@@ -1111,10 +1116,12 @@ function mastodonPageInfo(
   return {
     hasNextPage: links.next !== undefined,
     hasPreviousPage: links.prev !== undefined,
-    ...(firstId === undefined ? {} : { startCursor: firstId }),
-    ...(lastId === undefined ? {} : { endCursor: lastId }),
-    ...(links.next === undefined ? {} : { rawNext: links.next }),
-    ...(links.prev === undefined ? {} : { rawPrevious: links.prev }),
+    ...(firstId === undefined ? {} : { startCursor: encodeAccountPostsCursor(firstId, context) }),
+    ...(lastId === undefined ? {} : { endCursor: encodeAccountPostsCursor(lastId, context) }),
+    ...(links.next === undefined ? {} : { rawNext: encodeAccountPostsCursor(links.next, context) }),
+    ...(links.prev === undefined
+      ? {}
+      : { rawPrevious: encodeAccountPostsCursor(links.prev, context) }),
     raw: links,
   };
 }
@@ -1133,6 +1140,23 @@ function parseLinkHeader(value: string | null): { readonly next?: string; readon
     if (rel === "prev") result.prev = cursor;
   }
   return result;
+}
+
+function encodeAccountPostsCursor(cursor: string, context: AdapterOperationContext): string {
+  return encodePageCursor({
+    adapter: context.adapterId,
+    origin: context.origin,
+    operation: "account.posts",
+    cursor,
+  });
+}
+
+function decodeAccountPostsCursor(cursor: string, context: AdapterOperationContext): string {
+  return decodePageCursor(cursor, {
+    adapter: context.adapterId,
+    origin: context.origin,
+    operation: "account.posts",
+  });
 }
 
 function cursorFromUrl(href: string): string | undefined {

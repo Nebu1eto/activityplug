@@ -18,6 +18,7 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
   it("serves health, API root, and a validated OpenAPI document", async () => {
     const app = createActivityPlugApp({
       service: createTestService(),
+      tokenImport: { enabled: true },
     });
 
     await expect(jsonRequest(app.request("/health"))).resolves.toEqual({
@@ -116,6 +117,7 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
   it("exposes auth operations through HTTP and GraphQL", async () => {
     const app = createActivityPlugApp({
       service: createTestService(),
+      tokenImport: { enabled: true },
     });
     const importBody = {
       adapter: "mastodon",
@@ -530,6 +532,7 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
   it("rejects malformed auth request bodies with the typed error envelope", async () => {
     const app = createActivityPlugApp({
       service: createTestService(),
+      tokenImport: { enabled: true },
     });
 
     const response = await app.request("/api/v1/auth/import-token", {
@@ -599,6 +602,7 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
         },
       }),
       tokenImport: {
+        enabled: true,
         guard: () => {
           throw new ActivityPlugError("AUTH_REQUIRED", "Token import requires server auth.");
         },
@@ -665,7 +669,7 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
     const app = createActivityPlugApp({
       service: createTestService(),
     });
-    const openapi = createOpenApiDocument();
+    const openapi = createOpenApiDocument({ tokenImport: "open" });
     const introspection = getGraphQLIntrospection(
       await jsonRequest(
         app.request("/graphql", {
@@ -720,6 +724,13 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
     }
     expect(untrackedOpenApiOperations(openapi)).toEqual([]);
     expect(untrackedGraphQLOperations(introspection)).toEqual([]);
+  });
+
+  it("documents token import as disabled by default in standalone OpenAPI output", () => {
+    const operation = createOpenApiDocument().paths["/api/v1/auth/import-token"].post;
+
+    expect(operation.operationId).toBe("importToken");
+    expect(operation["x-activityplug-reserved"]).toBe(true);
   });
 
   it("sanitizes HTTP and GraphQL error responses", async () => {

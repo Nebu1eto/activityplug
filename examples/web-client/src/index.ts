@@ -50,6 +50,7 @@ export interface ExchangeAuthInput {
 export interface ExchangedAuth {
   readonly session: AuthSession;
   readonly verifyViewer: () => Promise<Account>;
+  readonly lookupAccountProfile: (handle: string) => Promise<Account | null>;
 }
 
 export async function startAuth(input: StartAuthInput): Promise<StartedAuth> {
@@ -108,6 +109,7 @@ export async function exchangeAuth(input: ExchangeAuthInput): Promise<ExchangedA
   return {
     session,
     verifyViewer: async () => (await client.auth.verifyCredentials(session)).account,
+    lookupAccountProfile: (handle) => client.accounts.getByHandle({ handle }),
   };
 }
 

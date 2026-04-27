@@ -21,3 +21,4 @@ export function createMastodonAdapter(options: MastodonAdapterOptions = {}): Act
 }
 
 export const mastodonAdapter = createMastodonAdapter();
+export const mastodon = createMastodonAdapter;

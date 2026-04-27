@@ -1,3 +1,5 @@
+import { maxPageLimit } from "@activityplug/core";
+
 import { activityPlugApiVersion } from "./service.js";
 
 export interface OpenApiDocument {
@@ -27,7 +29,7 @@ interface Operation {
 }
 
 export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): OpenApiDocument {
-  const tokenImport = options.tokenImport ?? "open";
+  const tokenImport = options.tokenImport ?? "disabled";
   return {
     openapi: "3.1.0",
     info: {
@@ -174,7 +176,6 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         }),
         AuthStartPayload: objectSchema(["clientId", "redirectUris", "authorizationUrl", "state"], {
           clientId: { type: "string" },
-          clientSecret: { type: "string" },
           redirectUris: { type: "array", items: { type: "string" } },
           scopes: { type: "array", items: { type: "string" } },
           authorizationUrl: { type: "string" },
@@ -195,7 +196,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         }),
         AuthExchangeRequest: {
           oneOf: [
-            objectSchema(["adapter", "origin", "client", "redirectUri", "code"], {
+            objectSchema(["adapter", "origin", "redirectUri", "code", "state"], {
               ...authExchangeCommonProperties(),
               code: { type: "string" },
               state: { type: "string" },
@@ -204,7 +205,6 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
               [
                 "adapter",
                 "origin",
-                "client",
                 "redirectUri",
                 "callback",
                 "expectedState",
@@ -540,7 +540,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
               name: "limit",
               in: "query",
               required: false,
-              schema: { type: "integer", minimum: 1, maximum: 200 },
+              schema: { type: "integer", minimum: 1, maximum: maxPageLimit },
             },
           ],
           listRef("Post"),
