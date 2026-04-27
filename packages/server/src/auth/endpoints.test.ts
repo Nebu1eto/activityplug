@@ -66,6 +66,8 @@ describe("server auth endpoint handlers", () => {
         redirectUri: "https://client.example/callback",
         callback: "https://client.example/callback?code=code-1&state=state-1",
         expectedState: "wrong-state",
+        expectedBinding: callbackBinding(),
+        actualBinding: callbackBinding(),
       }),
     ).rejects.toThrowError(expect.objectContaining({ code: "VALIDATION_FAILED" }));
 
@@ -77,6 +79,8 @@ describe("server auth endpoint handlers", () => {
       redirectUri: "https://client.example/callback",
       callback: "https://client.example/callback?code=code-1&state=state-1",
       expectedState: "state-1",
+      expectedBinding: callbackBinding(),
+      actualBinding: callbackBinding(),
       codeVerifier: "verifier-1",
     });
 
@@ -93,6 +97,29 @@ describe("server auth endpoint handlers", () => {
         state: "state-1",
       },
     ]);
+  });
+
+  it("rejects authorization redirect URIs that were not registered", async () => {
+    const handlers = createAuthEndpointHandlers({
+      auth: {
+        ...unsupportedAuthService(),
+        registerOAuthClient: async () => ({
+          clientId: "client-1",
+          redirectUris: ["https://client.example/callback"],
+        }),
+      },
+    });
+
+    await expect(
+      handlers.start({
+        client: {
+          clientName: "ActivityPlug Test",
+          redirectUris: ["https://client.example/callback"],
+        },
+        redirectUri: "https://evil.example/callback",
+        state: "state-1",
+      }),
+    ).rejects.toThrowError(expect.objectContaining({ code: "VALIDATION_FAILED" }));
   });
 
   it("validates callback state bindings before exchanging an OAuth code", async () => {
@@ -145,6 +172,14 @@ function fakeSession(): AuthSession {
     origin: "https://mastodon.example",
     scopes: [],
     capabilities: {},
+  };
+}
+
+function callbackBinding() {
+  return {
+    adapter: "mastodon",
+    origin: "https://mastodon.example",
+    clientRequestId: "request-1",
   };
 }
 

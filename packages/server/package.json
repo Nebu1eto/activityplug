@@ -3,6 +3,9 @@
   "version": "0.0.0",
   "description": "GraphQL and HTTP server surfaces for ActivityPlug.",
   "license": "Apache-2.0 OR MIT",
+  "bin": {
+    "activityplug-server": "./dist/bin.mjs"
+  },
   "files": [
     "dist"
   ],
@@ -23,6 +26,14 @@
     "test": "node --experimental-strip-types ../../scripts/run-package-tests.ts"
   },
   "dependencies": {
-    "@activityplug/core": "workspace:*"
+    "@activityplug/core": "workspace:*",
+    "@hono/node-server": "^2.0.0",
+    "@logtape/logtape": "^2.0.5",
+    "@optique/core": "^1.0.2",
+    "@optique/run": "^1.0.2",
+    "@pothos/core": "^4.12.0",
+    "graphql": "^16.13.2",
+    "graphql-yoga": "^5.21.0",
+    "hono": "^4.12.15"
   }
 }

@@ -33,14 +33,15 @@ export interface AuthStartInput {
 export interface AuthStartResult {
   readonly client: OAuthClientRegistration;
   readonly authorization: OAuthAuthorizationRequest;
+  readonly callbackBinding?: OAuthCallbackStateBinding;
 }
 
 export type AuthExchangeInput =
   | (Omit<OAuthCodeExchangeInput, "code" | "state"> & {
       readonly callback: OAuthCallbackInput;
       readonly expectedState: string;
-      readonly expectedBinding?: OAuthCallbackStateBinding;
-      readonly actualBinding?: OAuthCallbackStateBinding;
+      readonly expectedBinding: OAuthCallbackStateBinding;
+      readonly actualBinding: OAuthCallbackStateBinding;
     })
   | OAuthCodeExchangeInput;
 
@@ -59,6 +60,15 @@ export function createAuthEndpointHandlers(client: AuthEndpointClient): AuthEndp
     importToken: (input) => client.auth.injectToken(input),
     start: async (input) => {
       const registeredClient = await client.auth.registerOAuthClient(input.client);
+      if (!registeredClient.redirectUris.includes(input.redirectUri)) {
+        throw new ActivityPlugError(
+          "VALIDATION_FAILED",
+          "OAuth redirect URI must match a registered client redirect URI.",
+          {
+            operation: "auth.oauth.start",
+          },
+        );
+      }
       return {
         client: registeredClient,
         authorization: await client.auth.createAuthorizationUrl({
@@ -79,10 +89,8 @@ export function createAuthEndpointHandlers(client: AuthEndpointClient): AuthEndp
         const callback = parseOAuthCallback(input.callback);
         validateOAuthCallbackState(callback, {
           expectedState: input.expectedState,
-          ...(input.expectedBinding === undefined
-            ? {}
-            : { expectedBinding: input.expectedBinding }),
-          ...(input.actualBinding === undefined ? {} : { actualBinding: input.actualBinding }),
+          expectedBinding: input.expectedBinding,
+          actualBinding: input.actualBinding,
         });
         if (!callback.ok) {
           throw new ActivityPlugError(

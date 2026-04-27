@@ -45,12 +45,19 @@ export interface Account {
   readonly locked: boolean;
   readonly createdAt?: ISODateTimeString;
   readonly note?: string;
+  readonly fields?: readonly AccountField[];
   readonly counts?: {
     readonly followers?: number;
     readonly following?: number;
     readonly posts?: number;
   };
   readonly raw: unknown;
+}
+
+export interface AccountField {
+  readonly name: string;
+  readonly valueHtml: string;
+  readonly verifiedAt?: ISODateTimeString;
 }
 
 export interface Post {
@@ -150,6 +157,7 @@ export interface PageInfo {
   readonly hasPreviousPage: boolean;
   readonly startCursor?: string;
   readonly endCursor?: string;
+  readonly raw?: unknown;
   readonly rawNext?: string;
   readonly rawPrevious?: string;
 }

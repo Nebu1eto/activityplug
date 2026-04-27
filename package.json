@@ -20,6 +20,7 @@
     "typecheck": "pnpm -r --sort build && tsc -b"
   },
   "devDependencies": {
+    "@apidevtools/swagger-parser": "^12.1.0",
     "@types/node": "^25.6.0",
     "hongdown": "^0.3.10",
     "lefthook": "^2.1.6",
