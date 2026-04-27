@@ -23,6 +23,7 @@
     "test": "node --experimental-strip-types ../../scripts/run-package-tests.ts"
   },
   "dependencies": {
-    "@activityplug/core": "workspace:*"
+    "@activityplug/core": "workspace:*",
+    "ky": "^2.0.2"
   }
 }

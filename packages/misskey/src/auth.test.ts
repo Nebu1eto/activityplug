@@ -152,6 +152,89 @@ describe("Misskey auth adapter", () => {
       }),
     );
   });
+
+  it("reads instance, account, handle lookup, and account notes", async () => {
+    const requests: string[] = [];
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({
+        fetch: mockFetch(async (request) => {
+          const url = new URL(request.url);
+          requests.push(`${request.method} ${url.pathname}`);
+          if (url.pathname === "/.well-known/nodeinfo") {
+            return jsonResponse({
+              links: [{ href: "https://misskey.example/nodeinfo/2.1" }],
+            });
+          }
+          if (url.pathname === "/nodeinfo/2.1") {
+            return jsonResponse({ software: { name: "misskey", version: "2025.10.0" } });
+          }
+          if (url.pathname === "/api/meta") {
+            expect(await request.json()).toEqual({ detail: false });
+            return jsonResponse({
+              name: "Misskey Example",
+              version: "2025.10.0",
+              langs: ["en"],
+              disableRegistration: true,
+            });
+          }
+          if (url.pathname === "/api/users/show") {
+            const body = (await request.json()) as {
+              readonly userId?: string;
+              readonly username?: string;
+            };
+            expect(body.userId ?? body.username).toBeTruthy();
+            return misskeyAccount();
+          }
+          if (url.pathname === "/api/users/notes") {
+            expect(await request.json()).toMatchObject({ userId: "9s4u", limit: 2 });
+            return jsonResponse([
+              {
+                id: "note-1",
+                user: {
+                  id: "9s4u",
+                  username: "alice",
+                  host: null,
+                },
+                text: "<b>Hello</b>",
+                createdAt: "2026-04-27T00:00:00.000Z",
+                visibility: "home",
+              },
+            ]);
+          }
+          return jsonResponse({ error: "unexpected request" }, 404);
+        }),
+      }),
+      origin: "https://misskey.example",
+    });
+    const accountRef = (await client.accounts.getByHandle({ handle: "@alice@misskey.example" }))
+      ?.ref;
+    if (accountRef === undefined) {
+      throw new TypeError("Expected account lookup to return a fixture account.");
+    }
+
+    const [instance, account, posts] = await Promise.all([
+      client.instances.getProfile(),
+      client.accounts.getById({ id: accountRef.id }),
+      client.accounts.listPosts({ accountId: accountRef.id, page: { limit: 1 } }),
+    ]);
+
+    expect(instance).toMatchObject({
+      software: { name: "misskey", version: "2025.10.0" },
+      title: "Misskey Example",
+      registrations: { enabled: false },
+    });
+    expect(account.ref).toMatchObject({
+      adapter: "misskey",
+      origin: "https://misskey.example",
+      rawId: "9s4u",
+    });
+    expect(posts.nodes[0]).toMatchObject({
+      contentHtml: "&lt;b&gt;Hello&lt;/b&gt;",
+      contentText: "<b>Hello</b>",
+      visibility: "unlisted",
+    });
+    expect(requests).toContain("POST /api/users/notes");
+  });
 });
 
 function mockFetch(handler: (request: Request) => Promise<Response>): typeof fetch {
@@ -160,4 +243,14 @@ function mockFetch(handler: (request: Request) => Promise<Response>): typeof fet
 
 function jsonResponse(body: unknown, status = 200): Response {
   return Response.json(body, { status });
+}
+
+function misskeyAccount(): Response {
+  return jsonResponse({
+    id: "9s4u",
+    username: "alice",
+    host: null,
+    name: "Alice",
+    url: "https://misskey.example/@alice",
+  });
 }

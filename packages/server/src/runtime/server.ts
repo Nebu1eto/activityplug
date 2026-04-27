@@ -4,6 +4,7 @@ import {
   ActivityPlugError,
   createActivityPlugClient,
   createCapabilitySet,
+  decodeOpaqueId,
   parseOAuthCallback,
   type ActivityPlugAdapter,
   type AuthSession,
@@ -116,6 +117,39 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
   return {
     health: () => ({ ok: true, version: "v1" }),
     capabilities: (input) => resolveClient(input, options.adapters, sessions).capabilities,
+    instances: {
+      detect: async (input) =>
+        resolveClient(input, options.adapters, sessions).instances.detect({ origin: input.origin }),
+      get: async (input) =>
+        resolveClient(input, options.adapters, sessions).instances.getProfile({
+          origin: input.origin,
+        }),
+    },
+    accounts: {
+      get: async (input) => {
+        const ref = decodeOpaqueId(input.id);
+        return resolveClient(
+          { adapter: ref.adapter, origin: ref.origin },
+          options.adapters,
+          sessions,
+        ).accounts.getById({ id: input.id });
+      },
+      lookup: async (input) =>
+        resolveClient(input, options.adapters, sessions).accounts.getByHandle({
+          handle: input.handle,
+        }),
+      posts: async (input) => {
+        const ref = decodeOpaqueId(input.id);
+        return resolveClient(
+          { adapter: ref.adapter, origin: ref.origin },
+          options.adapters,
+          sessions,
+        ).accounts.listPosts({
+          accountId: input.id,
+          ...(input.page === undefined ? {} : { page: input.page }),
+        });
+      },
+    },
     auth: {
       importToken: async (input) => {
         const { adapter: _adapter, origin: _origin, ...token } = input;

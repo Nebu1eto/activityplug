@@ -24,7 +24,11 @@ import {
   type PublicAccountField,
   type PublicAuthSession,
   type PublicEntityRef,
+  type PublicInstanceProfile,
+  type PublicPost,
   serializeAccount,
+  serializeInstanceProfile,
+  serializePostConnection,
 } from "../api/service.js";
 import { type TokenImportOptions } from "../http/app.js";
 
@@ -51,7 +55,9 @@ const builder = new SchemaBuilder<{
     OAuthCallbackStateBinding: import("../api/service.js").PublicOAuthCallbackStateBinding;
     EntityRef: PublicEntityRef;
     Health: HealthStatus;
+    Instance: PublicInstanceProfile;
     ParsedAuthCallback: ParsedAuthCallback;
+    Post: PublicPost;
   };
   Scalars: {
     JSON: {
@@ -96,6 +102,8 @@ interface PageInfoPayload {
   readonly startCursor?: string;
   readonly endCursor?: string;
   readonly raw?: unknown;
+  readonly rawNext?: string;
+  readonly rawPrevious?: string;
 }
 
 interface AccountConnectionPayload {
@@ -369,6 +377,29 @@ const ParsedAuthCallbackType = builder
     }),
   });
 
+const InstanceType = builder.objectRef<PublicInstanceProfile>("Instance").implement({
+  fields: (t) => ({
+    ref: t.expose("ref", { type: EntityRefType }),
+    software: t.field({
+      type: JsonScalar,
+      resolve: (instance) => instance.software,
+    }),
+    title: t.exposeString("title", { nullable: true }),
+    description: t.exposeString("description", { nullable: true }),
+    languages: t.exposeStringList("languages"),
+    registrations: t.field({
+      type: JsonScalar,
+      nullable: true,
+      resolve: (instance) => instance.registrations,
+    }),
+    capabilities: t.expose("capabilities", { type: CapabilitySet }),
+    raw: t.field({
+      type: JsonScalar,
+      resolve: (instance) => instance.raw,
+    }),
+  }),
+});
+
 const PageInfoType = builder.objectRef<PageInfoPayload>("PageInfo").implement({
   fields: (t) => ({
     hasNextPage: t.exposeBoolean("hasNextPage"),
@@ -380,6 +411,8 @@ const PageInfoType = builder.objectRef<PageInfoPayload>("PageInfo").implement({
       nullable: true,
       resolve: (value) => value.raw,
     }),
+    rawNext: t.exposeString("rawNext", { nullable: true }),
+    rawPrevious: t.exposeString("rawPrevious", { nullable: true }),
   }),
 });
 
@@ -395,8 +428,40 @@ function reservedObjectType(name: string) {
   });
 }
 
-const InstanceType = reservedObjectType("Instance");
-const PostType = reservedObjectType("Post");
+const PostType = builder.objectRef<PublicPost>("Post").implement({
+  fields: (t) => ({
+    ref: t.expose("ref", { type: EntityRefType }),
+    author: t.expose("author", { type: EntityRefType }),
+    url: t.exposeString("url", { nullable: true }),
+    contentHtml: t.exposeString("contentHtml"),
+    contentText: t.exposeString("contentText", { nullable: true }),
+    createdAt: t.exposeString("createdAt"),
+    visibility: t.exposeString("visibility"),
+    sensitive: t.exposeBoolean("sensitive"),
+    spoilerText: t.exposeString("spoilerText", { nullable: true }),
+    attachments: t.field({
+      type: [JsonScalar],
+      resolve: (post) => post.attachments,
+    }),
+    poll: t.field({
+      type: JsonScalar,
+      nullable: true,
+      resolve: (post) => post.poll,
+    }),
+    replyTo: t.expose("replyTo", { type: EntityRefType, nullable: true }),
+    quoteOf: t.expose("quoteOf", { type: EntityRefType, nullable: true }),
+    reblogOf: t.expose("reblogOf", { type: EntityRefType, nullable: true }),
+    counts: t.field({
+      type: JsonScalar,
+      nullable: true,
+      resolve: (post) => post.counts,
+    }),
+    raw: t.field({
+      type: JsonScalar,
+      resolve: (post) => post.raw,
+    }),
+  }),
+});
 const PostContextType = reservedObjectType("PostContext");
 const MediaAttachmentType = reservedObjectType("MediaAttachment");
 const PollType = reservedObjectType("Poll");
@@ -486,16 +551,52 @@ builder.queryType({
       type: InstanceType,
       operation: "instance.get",
       args: { origin: t.arg.string({ required: true }), adapter: t.arg({ type: AdapterKindEnum }) },
+      resolve: async (
+        _parent: unknown,
+        args: { readonly origin: string; readonly adapter?: AdapterKind | null },
+        context: GraphQLContext,
+      ) =>
+        withGraphQLErrorContract(async () =>
+          serializeInstanceProfile(
+            await context.service.instances.get({
+              origin: args.origin,
+              ...(args.adapter === null || args.adapter === undefined
+                ? {}
+                : { adapter: args.adapter }),
+            }),
+          ),
+        ),
     }),
     detectInstance: unsupportedGraphQLField(t, {
       type: InstanceType,
       operation: "instance.detect",
       args: { input: t.arg({ type: DetectInstanceInput, required: true }) },
+      resolve: async (
+        _parent: unknown,
+        args: {
+          readonly input: { readonly origin: string; readonly adapter?: AdapterKind | null };
+        },
+        context: GraphQLContext,
+      ) =>
+        withGraphQLErrorContract(async () =>
+          serializeInstanceProfile(
+            await context.service.instances.detect({
+              origin: args.input.origin,
+              ...(args.input.adapter === null || args.input.adapter === undefined
+                ? {}
+                : { adapter: args.input.adapter }),
+            }),
+          ),
+        ),
     }),
     account: unsupportedGraphQLField(t, {
       type: AccountType,
       operation: "account.get",
       args: { id: t.arg.id({ required: true }) },
+      resolve: async (_parent: unknown, args: { readonly id: string }, context: GraphQLContext) =>
+        withGraphQLErrorContract(async () =>
+          serializeAccount(await context.service.accounts.get({ id: args.id })),
+        ),
     }),
     accountByHandle: unsupportedGraphQLField(t, {
       type: AccountType,
@@ -505,11 +606,59 @@ builder.queryType({
         handle: t.arg.string({ required: true }),
         adapter: t.arg({ type: AdapterKindEnum }),
       },
+      resolve: async (
+        _parent: unknown,
+        args: {
+          readonly origin: string;
+          readonly handle: string;
+          readonly adapter?: AdapterKind | null;
+        },
+        context: GraphQLContext,
+      ) =>
+        withGraphQLErrorContract(async () => {
+          const account = await context.service.accounts.lookup({
+            origin: args.origin,
+            handle: args.handle,
+            ...(args.adapter === null || args.adapter === undefined
+              ? {}
+              : { adapter: args.adapter }),
+          });
+          if (account === null) {
+            throw new ActivityPlugError("NOT_FOUND", "Account was not found.", {
+              ...(args.adapter === null || args.adapter === undefined
+                ? {}
+                : { adapter: args.adapter }),
+              origin: args.origin,
+              operation: "account.lookup",
+            });
+          }
+          return serializeAccount(account);
+        }),
     }),
     accountPosts: unsupportedGraphQLField(t, {
       type: PostConnectionType,
       operation: "account.posts",
       args: { id: t.arg.id({ required: true }), page: t.arg({ type: PageInput }) },
+      resolve: async (
+        _parent: unknown,
+        args: {
+          readonly id: string;
+          readonly page?: {
+            readonly after?: string | null;
+            readonly before?: string | null;
+            readonly limit?: number | null;
+          } | null;
+        },
+        context: GraphQLContext,
+      ) =>
+        withGraphQLErrorContract(async () =>
+          serializePostConnection(
+            await context.service.accounts.posts({
+              id: args.id,
+              page: normalizePageInput(args.page),
+            }),
+          ),
+        ),
     }),
     post: unsupportedGraphQLField(t, {
       type: PostType,
@@ -856,12 +1005,15 @@ function unsupportedGraphQLField(
     readonly type: unknown;
     readonly operation: string;
     readonly args?: Record<string, unknown>;
+    readonly nullable?: boolean;
+    readonly resolve?: (...args: never[]) => unknown;
   },
 ): never {
   return (t as { field: (options: object) => unknown }).field({
     type: options.type,
     ...(options.args === undefined ? {} : { args: options.args }),
-    resolve: unsupportedGraphQLResolver(options.operation),
+    ...(options.nullable === undefined ? {} : { nullable: options.nullable }),
+    resolve: options.resolve ?? unsupportedGraphQLResolver(options.operation),
   }) as never;
 }
 
@@ -932,6 +1084,42 @@ function normalizeImportToken(input: {
     ...(input.token.scopes === null || input.token.scopes === undefined
       ? {}
       : { scopes: input.token.scopes }),
+  };
+}
+
+function normalizePageInput(
+  input:
+    | {
+        readonly after?: string | null;
+        readonly before?: string | null;
+        readonly limit?: number | null;
+      }
+    | null
+    | undefined,
+): { readonly after?: string; readonly before?: string; readonly limit?: number } | undefined {
+  if (input === null || input === undefined) return undefined;
+  if (input.limit !== null && input.limit !== undefined && input.limit < 1) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "GraphQL page input field must be a positive integer: limit.",
+    );
+  }
+  if (input.after !== null && input.after !== undefined && input.after.length === 0) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "GraphQL page input field must be a non-empty string: after.",
+    );
+  }
+  if (input.before !== null && input.before !== undefined && input.before.length === 0) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "GraphQL page input field must be a non-empty string: before.",
+    );
+  }
+  return {
+    ...(input.after === null || input.after === undefined ? {} : { after: input.after }),
+    ...(input.before === null || input.before === undefined ? {} : { before: input.before }),
+    ...(input.limit === null || input.limit === undefined ? {} : { limit: input.limit }),
   };
 }
 

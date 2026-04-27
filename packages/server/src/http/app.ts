@@ -17,7 +17,9 @@ import {
   serializeAuthStart,
   serializeAuthSession,
   serializeCapabilitySetPayload,
+  serializeInstanceProfile,
   serializeParsedAuthCallback,
+  serializePostConnection,
   type ActivityPlugApiService,
   type AuthExchangeRequest,
   type AuthParseCallbackRequest,
@@ -103,7 +105,30 @@ export function createActivityPlugApp(options: CreateActivityPlugAppOptions): Ho
         serializeCapabilitySetPayload(
           await options.service.capabilities({
             ...optionalQuery(context.req.query("adapter"), "adapter"),
-            origin: decodeURIComponent(context.req.param("origin")),
+            origin: decodePathOrigin(context.req.param("origin")),
+          }),
+        ),
+      ),
+    ),
+  );
+  app.post("/api/v1/instances/detect", async (context) =>
+    context.json(
+      data(
+        serializeInstanceProfile(
+          await options.service.instances.detect(
+            instanceSelectorRequest(await parseJsonBody(context.req.json())),
+          ),
+        ),
+      ),
+    ),
+  );
+  app.get("/api/v1/instances/:origin", async (context) =>
+    context.json(
+      data(
+        serializeInstanceProfile(
+          await options.service.instances.get({
+            ...optionalQuery(context.req.query("adapter"), "adapter"),
+            origin: decodePathOrigin(context.req.param("origin")),
           }),
         ),
       ),
@@ -195,6 +220,45 @@ export function createActivityPlugApp(options: CreateActivityPlugAppOptions): Ho
       ),
     ),
   );
+  app.get("/api/v1/accounts/lookup", async (context) => {
+    const account = await options.service.accounts.lookup({
+      ...optionalQuery(context.req.query("adapter"), "adapter"),
+      origin: requiredQuery(context, "origin"),
+      handle: requiredQuery(context, "handle"),
+    });
+    if (account === null) {
+      throw new ActivityPlugError("NOT_FOUND", "Account was not found.", {
+        adapter: context.req.query("adapter"),
+        origin: context.req.query("origin"),
+        operation: "account.lookup",
+      });
+    }
+    return context.json(data(serializeAccount(account)));
+  });
+  app.get("/api/v1/accounts/:id", async (context) =>
+    context.json(
+      data(
+        serializeAccount(
+          await options.service.accounts.get({
+            id: context.req.param("id"),
+          }),
+        ),
+      ),
+    ),
+  );
+  app.get("/api/v1/accounts/:id/posts", async (context) => {
+    const page = pageQuery(context);
+    return context.json(
+      data(
+        serializePostConnection(
+          await options.service.accounts.posts({
+            id: context.req.param("id"),
+            ...(page === undefined ? {} : { page }),
+          }),
+        ),
+      ),
+    );
+  });
   for (const route of unsupportedHttpRoutes) {
     app.on(route.method, route.path, () => {
       throw new ActivityPlugError(
@@ -213,11 +277,6 @@ export function createActivityPlugApp(options: CreateActivityPlugAppOptions): Ho
 }
 
 const unsupportedHttpRoutes = [
-  { method: "post", path: "/api/v1/instances/detect", operation: "instance.detect" },
-  { method: "get", path: "/api/v1/instances/:origin", operation: "instance.get" },
-  { method: "get", path: "/api/v1/accounts/lookup", operation: "account.lookup" },
-  { method: "get", path: "/api/v1/accounts/:id", operation: "account.get" },
-  { method: "get", path: "/api/v1/accounts/:id/posts", operation: "account.posts" },
   { method: "get", path: "/api/v1/accounts/:id/relationships", operation: "account.relationships" },
   { method: "post", path: "/api/v1/accounts/:id/follow", operation: "social.follow" },
   { method: "post", path: "/api/v1/accounts/:id/unfollow", operation: "social.unfollow" },
@@ -297,6 +356,71 @@ function optionalQuery(value: string | undefined, name: string): Record<string, 
   return { [name]: value };
 }
 
+function decodePathOrigin(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch (cause) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "Request path origin must be valid percent-encoded text.",
+      { operation: "instance.get", raw: { origin: value } },
+      { cause },
+    );
+  }
+}
+
+function requiredQuery(context: Context, name: string): string {
+  const value = context.req.query(name);
+  if (value === undefined || value.length === 0) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `Request query parameter must be a non-empty string: ${name}.`,
+    );
+  }
+  return value;
+}
+
+function pageQuery(context: Context):
+  | {
+      readonly after?: string;
+      readonly before?: string;
+      readonly limit?: number;
+    }
+  | undefined {
+  const page = {
+    ...optionalPageCursor(context.req.query("after"), "after"),
+    ...optionalPageCursor(context.req.query("before"), "before"),
+    ...optionalLimit(context.req.query("limit")),
+  };
+  return Object.keys(page).length === 0 ? undefined : page;
+}
+
+function optionalPageCursor(
+  value: string | undefined,
+  name: "after" | "before",
+): Record<string, string> {
+  if (value === undefined) return {};
+  if (value.length === 0) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `Request query parameter must be a non-empty string: ${name}.`,
+    );
+  }
+  return { [name]: value };
+}
+
+function optionalLimit(value: string | undefined): { readonly limit?: number } {
+  if (value === undefined || value.length === 0) return {};
+  const limit = Number(value);
+  if (!Number.isInteger(limit) || limit < 1) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "Request query parameter must be a positive integer: limit.",
+    );
+  }
+  return { limit };
+}
+
 async function parseJsonBody(body: Promise<unknown>): Promise<unknown> {
   try {
     return await body;
@@ -337,6 +461,17 @@ function authStartRequest(body: unknown): AuthStartRequest {
     ...(scopes === undefined ? {} : { scopes }),
     ...optionalString(request, "codeChallenge"),
     ...optionalCodeChallengeMethod(request),
+  };
+}
+
+function instanceSelectorRequest(body: unknown): {
+  readonly adapter?: string;
+  readonly origin: string;
+} {
+  const request = requireObjectBody(body);
+  return {
+    ...optionalString(request, "adapter"),
+    origin: requiredString(request, "origin"),
   };
 }
 

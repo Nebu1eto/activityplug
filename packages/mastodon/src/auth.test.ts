@@ -137,6 +137,98 @@ describe("Mastodon auth adapter", () => {
       bot: true,
     });
   });
+
+  it("reads instance, account, handle lookup, and account posts", async () => {
+    const requests: string[] = [];
+    const client = createActivityPlugClient({
+      adapter: createMastodonAdapter({
+        fetch: mockFetch(async (request) => {
+          const url = new URL(request.url);
+          requests.push(`${request.method} ${url.pathname}`);
+          if (url.pathname === "/.well-known/nodeinfo") {
+            return jsonResponse({
+              links: [
+                {
+                  rel: "http://nodeinfo.diaspora.software/ns/schema/2.1",
+                  href: "https://mastodon.example/nodeinfo/2.1",
+                },
+              ],
+            });
+          }
+          if (url.pathname === "/nodeinfo/2.1") {
+            return jsonResponse({ software: { name: "mastodon", version: "4.3.0" } });
+          }
+          if (url.pathname === "/api/v2/instance") {
+            return jsonResponse({
+              domain: "mastodon.example",
+              title: "Mastodon Example",
+              version: "4.3.0",
+              languages: ["en"],
+              registrations: { enabled: true, approval_required: false },
+            });
+          }
+          if (url.pathname === "/api/v1/accounts/109") {
+            return mastodonAccount();
+          }
+          if (url.pathname === "/api/v1/accounts/lookup") {
+            expect(url.searchParams.get("acct")).toBe("alice@mastodon.example");
+            return mastodonAccount();
+          }
+          if (url.pathname === "/api/v1/accounts/109/statuses") {
+            expect(url.searchParams.get("limit")).toBe("1");
+            return jsonResponse([
+              {
+                id: "status-1",
+                url: "https://mastodon.example/@alice/1",
+                account: {
+                  id: "109",
+                  username: "alice",
+                  acct: "alice",
+                },
+                content: "<p>Hello</p>",
+                created_at: "2026-04-27T00:00:00.000Z",
+                visibility: "public",
+              },
+            ]);
+          }
+          return jsonResponse({ error: "unexpected request" }, 404);
+        }),
+      }),
+      origin: "https://mastodon.example",
+    });
+    const accountRef = (await client.accounts.getByHandle({ handle: "@alice@mastodon.example" }))
+      ?.ref;
+    if (accountRef === undefined) {
+      throw new TypeError("Expected account lookup to return a fixture account.");
+    }
+
+    const [instance, account, posts] = await Promise.all([
+      client.instances.getProfile(),
+      client.accounts.getById({ id: accountRef.id }),
+      client.accounts.listPosts({ accountId: accountRef.id, page: { limit: 1 } }),
+    ]);
+
+    expect(instance).toMatchObject({
+      software: { name: "mastodon", version: "4.3.0" },
+      title: "Mastodon Example",
+      languages: ["en"],
+    });
+    expect(account.ref).toMatchObject({
+      adapter: "mastodon",
+      origin: "https://mastodon.example",
+      rawId: "109",
+      rawUrl: "https://mastodon.example/@alice",
+    });
+    expect(posts.nodes[0]).toMatchObject({
+      contentHtml: "<p>Hello</p>",
+      visibility: "public",
+      author: {
+        rawId: "109",
+      },
+    });
+    expect(requests).toContain("GET /.well-known/nodeinfo");
+    expect(requests).toContain("GET /api/v1/accounts/109/statuses");
+  });
 });
 
 function mockFetch(handler: (request: Request) => Promise<Response>): typeof fetch {
@@ -145,4 +237,15 @@ function mockFetch(handler: (request: Request) => Promise<Response>): typeof fet
 
 function jsonResponse(body: unknown, status = 200): Response {
   return Response.json(body, { status });
+}
+
+function mastodonAccount(): Response {
+  return jsonResponse({
+    id: "109",
+    username: "alice",
+    acct: "alice",
+    display_name: "Alice",
+    url: "https://mastodon.example/@alice",
+    fields: [{ name: "Website", value: '<a href="https://alice.example">alice.example</a>' }],
+  });
 }

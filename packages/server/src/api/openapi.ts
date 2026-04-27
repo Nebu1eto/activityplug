@@ -101,9 +101,54 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
           startCursor: { type: "string" },
           endCursor: { type: "string" },
           raw: { type: "object", additionalProperties: true },
+          rawNext: { type: "string" },
+          rawPrevious: { type: "string" },
         }),
         AccountConnection: connectionSchema({ $ref: "#/components/schemas/Account" }),
-        PostConnection: connectionSchema({ type: "object", additionalProperties: true }),
+        InstanceProfile: objectSchema(["ref", "software", "languages", "capabilities", "raw"], {
+          ref: { $ref: "#/components/schemas/EntityRef" },
+          software: { type: "object", additionalProperties: true },
+          title: { type: "string" },
+          description: { type: "string" },
+          languages: { type: "array", items: { type: "string" } },
+          registrations: { type: "object", additionalProperties: true },
+          capabilities: { $ref: "#/components/schemas/CapabilitySet" },
+          raw: { type: "object", additionalProperties: true },
+        }),
+        Post: objectSchema(
+          [
+            "ref",
+            "author",
+            "contentHtml",
+            "createdAt",
+            "visibility",
+            "sensitive",
+            "attachments",
+            "raw",
+          ],
+          {
+            ref: { $ref: "#/components/schemas/EntityRef" },
+            author: { $ref: "#/components/schemas/EntityRef" },
+            url: { type: "string" },
+            contentHtml: { type: "string" },
+            contentText: { type: "string" },
+            createdAt: { type: "string" },
+            visibility: { type: "string" },
+            sensitive: { type: "boolean" },
+            spoilerText: { type: "string" },
+            attachments: {
+              type: "array",
+              items: { type: "object", additionalProperties: true },
+            },
+            poll: { type: "object", additionalProperties: true },
+            replyTo: { $ref: "#/components/schemas/EntityRef" },
+            quoteOf: { $ref: "#/components/schemas/EntityRef" },
+            reblogOf: { $ref: "#/components/schemas/EntityRef" },
+            counts: { type: "object", additionalProperties: true },
+            raw: { type: "object", additionalProperties: true },
+          },
+        ),
+        PostConnection: connectionSchema({ $ref: "#/components/schemas/Post" }),
         TimelineConnection: connectionSchema({ type: "object", additionalProperties: true }),
         NotificationConnection: connectionSchema({ type: "object", additionalProperties: true }),
         ListConnection: connectionSchema({ type: "object", additionalProperties: true }),
@@ -361,10 +406,34 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         ),
       },
       "/api/v1/instances/detect": {
-        post: unsupportedOperation("detectInstance", "instances"),
+        post: operation(
+          "detectInstance",
+          "instances",
+          undefined,
+          dataRef("InstanceProfile"),
+          requestBodySchema(
+            objectSchema(["origin"], {
+              origin: { type: "string" },
+              adapter: adapterSchema(),
+            }),
+          ),
+        ),
       },
       "/api/v1/instances/{origin}": {
-        get: unsupportedOperation("getInstance", "instances", [originPathParameter()]),
+        get: operation(
+          "getInstance",
+          "instances",
+          [
+            originPathParameter(),
+            {
+              name: "adapter",
+              in: "query",
+              required: false,
+              schema: adapterSchema(),
+            },
+          ],
+          dataRef("InstanceProfile"),
+        ),
       },
       "/api/v1/auth/import-token": {
         post:
@@ -428,18 +497,51 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         get: authenticatedOperation("getViewer", "auth", undefined, dataRef("Account")),
       },
       "/api/v1/accounts/{id}": {
-        get: unsupportedOperation("getAccount", "accounts", [idPathParameter()]),
+        get: operation("getAccount", "accounts", [idPathParameter()], dataRef("Account")),
       },
       "/api/v1/accounts/lookup": {
-        get: unsupportedOperation("lookupAccount", "accounts"),
+        get: operation(
+          "lookupAccount",
+          "accounts",
+          [
+            {
+              name: "origin",
+              in: "query",
+              required: true,
+              schema: { type: "string" },
+            },
+            {
+              name: "adapter",
+              in: "query",
+              required: false,
+              schema: adapterSchema(),
+            },
+            {
+              name: "handle",
+              in: "query",
+              required: true,
+              schema: { type: "string" },
+            },
+          ],
+          dataRef("Account"),
+        ),
       },
       "/api/v1/accounts/{id}/posts": {
-        get: unsupportedOperation(
+        get: operation(
           "getAccountPosts",
           "accounts",
-          [idPathParameter()],
-          false,
-          listRef("PostConnection"),
+          [
+            idPathParameter(),
+            pageParameter("after"),
+            pageParameter("before"),
+            {
+              name: "limit",
+              in: "query",
+              required: false,
+              schema: { type: "integer", minimum: 1 },
+            },
+          ],
+          dataRef("PostConnection"),
         ),
       },
       "/api/v1/accounts/{id}/relationships": {
@@ -847,7 +949,7 @@ function originPathParameter(): unknown {
     name: "origin",
     in: "path",
     required: true,
-    schema: { type: "string" },
+    schema: { type: "string", minLength: 1 },
   };
 }
 
@@ -867,37 +969,34 @@ function requestBodyRef(name: string): unknown {
   };
 }
 
+function requestBodySchema(schema: unknown): unknown {
+  return {
+    required: true,
+    content: jsonContent(schema),
+  };
+}
+
+function pageParameter(name: "after" | "before"): unknown {
+  return {
+    name,
+    in: "query",
+    required: false,
+    schema: { type: "string", minLength: 1 },
+  };
+}
+
 function dataRef(name: string): unknown {
   return dataSchema({ $ref: `#/components/schemas/${name}` });
 }
 
 function listRef(name: string): unknown {
-  return listSchema(nodeSchemaForConnection(name));
+  return dataRef(name);
 }
 
 function dataSchema(schema: unknown): unknown {
   return objectSchema(["data"], {
     data: schema,
   });
-}
-
-function listSchema(nodeSchema: unknown): unknown {
-  return objectSchema(["data", "pageInfo"], {
-    data: {
-      type: "array",
-      items: nodeSchema,
-    },
-    pageInfo: { $ref: "#/components/schemas/PageInfo" },
-  });
-}
-
-function nodeSchemaForConnection(name: string): unknown {
-  switch (name) {
-    case "AccountConnection":
-      return { $ref: "#/components/schemas/Account" };
-    default:
-      return { type: "object", additionalProperties: true };
-  }
 }
 
 function objectSchema(required: readonly string[], properties: Record<string, unknown>): unknown {

@@ -6,7 +6,9 @@ import {
   type Account,
   type CapabilityDecision,
   type CapabilitySet,
+  type Connection,
   type EntityRef,
+  type InstanceProfile,
   type InjectTokenInput,
   type OAuthCallbackInput,
   type OAuthCallbackResult,
@@ -15,6 +17,7 @@ import {
   type OAuthCodeExchangeInput,
   type OAuthRefreshInput,
   type OAuthRevokeInput,
+  type Post,
   type VerifyCredentialsResult,
 } from "@activityplug/core";
 
@@ -35,8 +38,21 @@ export interface HealthStatus {
 export interface ActivityPlugApiService {
   readonly health: () => Promise<HealthStatus> | HealthStatus;
   readonly capabilities: (input: InstanceSelector) => Promise<CapabilitySet> | CapabilitySet;
+  readonly instances: ActivityPlugInstanceApiService;
+  readonly accounts: ActivityPlugAccountApiService;
   readonly auth: ActivityPlugAuthApiService;
   readonly viewer: (input: ViewerInput) => Promise<VerifyCredentialsResult>;
+}
+
+export interface ActivityPlugInstanceApiService {
+  readonly detect: (input: InstanceSelector) => Promise<InstanceProfile>;
+  readonly get: (input: InstanceSelector) => Promise<InstanceProfile>;
+}
+
+export interface ActivityPlugAccountApiService {
+  readonly get: (input: AccountIdRequest) => Promise<Account>;
+  readonly lookup: (input: AccountLookupRequest) => Promise<Account | null>;
+  readonly posts: (input: AccountPostsRequest) => Promise<Connection<Post>>;
 }
 
 export interface ActivityPlugAuthApiService {
@@ -116,6 +132,64 @@ export interface PublicAuthSession {
   readonly expiresAt?: string;
 }
 
+export interface PublicInstanceProfile {
+  readonly ref: PublicEntityRef;
+  readonly software: {
+    readonly name: string;
+    readonly version?: string;
+    readonly repository?: string;
+    readonly homepage?: string;
+  };
+  readonly title?: string;
+  readonly description?: string;
+  readonly languages: readonly string[];
+  readonly registrations?: {
+    readonly enabled: boolean;
+    readonly approvalRequired?: boolean;
+    readonly inviteRequired?: boolean;
+  };
+  readonly capabilities: CapabilitySetPayload;
+  readonly raw: unknown;
+}
+
+export interface PublicPost {
+  readonly ref: PublicEntityRef;
+  readonly author: PublicEntityRef;
+  readonly url?: string;
+  readonly contentHtml: string;
+  readonly contentText?: string;
+  readonly createdAt: string;
+  readonly visibility: string;
+  readonly sensitive: boolean;
+  readonly spoilerText?: string;
+  readonly attachments: readonly unknown[];
+  readonly poll?: unknown;
+  readonly replyTo?: PublicEntityRef;
+  readonly quoteOf?: PublicEntityRef;
+  readonly reblogOf?: PublicEntityRef;
+  readonly counts?: {
+    readonly replies?: number;
+    readonly reblogs?: number;
+    readonly favourites?: number;
+  };
+  readonly raw: unknown;
+}
+
+export interface PublicPageInfo {
+  readonly hasNextPage: boolean;
+  readonly hasPreviousPage: boolean;
+  readonly startCursor?: string;
+  readonly endCursor?: string;
+  readonly raw?: unknown;
+  readonly rawNext?: string;
+  readonly rawPrevious?: string;
+}
+
+export interface PublicConnection<Node> {
+  readonly nodes: readonly Node[];
+  readonly pageInfo: PublicPageInfo;
+}
+
 export interface AuthStartPayload {
   readonly clientId: string;
   readonly clientSecret?: string;
@@ -177,13 +251,48 @@ export interface ViewerInput {
   readonly sessionId: string;
 }
 
+export interface AccountIdRequest {
+  readonly id: string;
+}
+
+export interface AccountLookupRequest extends InstanceSelector {
+  readonly handle: string;
+}
+
+export interface PageRequest {
+  readonly after?: string;
+  readonly before?: string;
+  readonly limit?: number;
+}
+
+export interface AccountPostsRequest {
+  readonly id: string;
+  readonly page?: PageRequest;
+}
+
 export function createDefaultApiService(capabilities: CapabilitySet): ActivityPlugApiService {
   const unsupportedAuth = async (): Promise<never> => {
     throw new ActivityPlugError("AUTH_UNSUPPORTED", "No ActivityPlug auth service is configured.");
   };
+  const unsupportedApiOperation = (operation: string) => async (): Promise<never> => {
+    throw new ActivityPlugError(
+      "UNSUPPORTED_OPERATION",
+      `ActivityPlug operation service is not configured: ${operation}.`,
+      { operation },
+    );
+  };
   return {
     health: () => ({ ok: true, version: activityPlugApiVersion }),
     capabilities: () => capabilities,
+    instances: {
+      detect: unsupportedApiOperation("instance.detect"),
+      get: unsupportedApiOperation("instance.get"),
+    },
+    accounts: {
+      get: unsupportedApiOperation("account.get"),
+      lookup: unsupportedApiOperation("account.lookup"),
+      posts: unsupportedApiOperation("account.posts"),
+    },
     auth: {
       importToken: unsupportedAuth,
       start: unsupportedAuth,
@@ -256,6 +365,49 @@ export function serializeAccount(account: Account): PublicAccount {
     ...(account.counts?.posts === undefined ? {} : { postsCount: account.counts.posts }),
     extensions: {},
     raw: account.raw,
+  };
+}
+
+export function serializeInstanceProfile(profile: InstanceProfile): PublicInstanceProfile {
+  return {
+    ref: serializeEntityRef(profile.ref),
+    software: profile.software,
+    ...(profile.title === undefined ? {} : { title: profile.title }),
+    ...(profile.description === undefined ? {} : { description: profile.description }),
+    languages: profile.languages,
+    ...(profile.registrations === undefined ? {} : { registrations: profile.registrations }),
+    capabilities: serializeCapabilitySetPayload(profile.capabilities),
+    raw: profile.raw,
+  };
+}
+
+export function serializePost(post: Post): PublicPost {
+  return {
+    ref: serializeEntityRef(post.ref),
+    author: serializeEntityRef(post.author),
+    ...(post.url === undefined ? {} : { url: post.url }),
+    contentHtml: post.contentHtml,
+    ...(post.contentText === undefined ? {} : { contentText: post.contentText }),
+    createdAt: post.createdAt,
+    visibility: post.visibility,
+    sensitive: post.sensitive,
+    ...(post.spoilerText === undefined ? {} : { spoilerText: post.spoilerText }),
+    attachments: post.attachments,
+    ...(post.poll === undefined ? {} : { poll: post.poll }),
+    ...(post.replyTo === undefined ? {} : { replyTo: serializeEntityRef(post.replyTo) }),
+    ...(post.quoteOf === undefined ? {} : { quoteOf: serializeEntityRef(post.quoteOf) }),
+    ...(post.reblogOf === undefined ? {} : { reblogOf: serializeEntityRef(post.reblogOf) }),
+    ...(post.counts === undefined ? {} : { counts: post.counts }),
+    raw: post.raw,
+  };
+}
+
+export function serializePostConnection(
+  connection: Connection<Post>,
+): PublicConnection<PublicPost> {
+  return {
+    nodes: connection.nodes.map((post) => serializePost(post)),
+    pageInfo: connection.pageInfo,
   };
 }
 

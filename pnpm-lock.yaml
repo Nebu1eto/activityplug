@@ -74,6 +74,9 @@ importers:
       '@activityplug/core':
         specifier: workspace:*
         version: link:../core
+      ky:
+        specifier: ^2.0.2
+        version: 2.0.2
 
   packages/hollo:
     dependencies:

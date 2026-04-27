@@ -3,7 +3,9 @@ import {
   capability,
   createCapabilitySet,
   createEntityRef,
+  type Account,
   type AuthSession,
+  type InstanceProfile,
 } from "@activityplug/core";
 import SwaggerParser from "@apidevtools/swagger-parser";
 import { describe, expect, it } from "vitest";
@@ -337,6 +339,116 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
     });
   });
 
+  it("returns the same instance and account read fields through HTTP and GraphQL", async () => {
+    const accountId = testViewerAccount.ref.id;
+    const app = createActivityPlugApp({
+      service: createTestService({
+        accounts: {
+          get: async () => testViewerAccount,
+          lookup: async () => testViewerAccount,
+          posts: async () => ({
+            nodes: [
+              {
+                ref: createEntityRef({
+                  adapter: "mastodon",
+                  origin: "https://example.test",
+                  type: "post",
+                  id: "post-1",
+                }),
+                author: testViewerAccount.ref,
+                contentHtml: "<p>Hello</p>",
+                createdAt: "2026-04-27T00:00:00.000Z",
+                visibility: "public",
+                sensitive: false,
+                attachments: [],
+                raw: { id: "post-1" },
+              },
+            ],
+            pageInfo: {
+              hasNextPage: false,
+              hasPreviousPage: false,
+              rawNext: "next-cursor",
+              rawPrevious: "previous-cursor",
+              raw: { cursor: null },
+            },
+          }),
+        },
+      }),
+    });
+
+    await expect(
+      jsonRequest(
+        app.request(
+          `/api/v1/accounts/${encodeURIComponent(accountId)}?origin=https://example.test`,
+        ),
+      ),
+    ).resolves.toMatchObject({
+      data: {
+        ref: {
+          id: accountId,
+          adapter: "mastodon",
+          origin: "https://example.test",
+          rawId: "1",
+        },
+        username: "alice",
+        handle: "alice@example.test",
+      },
+    });
+
+    await expect(
+      jsonRequest(
+        app.request("/graphql", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            query: `query($id: ID!) {
+              account(id: $id) {
+                ref { id adapter origin rawId }
+                username
+                handle
+              }
+              accountPosts(id: $id) {
+                nodes { ref { rawId } author { rawId } contentHtml attachments }
+                pageInfo { hasNextPage hasPreviousPage raw rawNext rawPrevious }
+              }
+            }`,
+            variables: { id: accountId },
+          }),
+        }),
+      ),
+    ).resolves.toEqual({
+      data: {
+        account: {
+          ref: {
+            id: accountId,
+            adapter: "MASTODON",
+            origin: "https://example.test",
+            rawId: "1",
+          },
+          username: "alice",
+          handle: "alice@example.test",
+        },
+        accountPosts: {
+          nodes: [
+            {
+              ref: { rawId: "post-1" },
+              author: { rawId: "1" },
+              contentHtml: "<p>Hello</p>",
+              attachments: [],
+            },
+          ],
+          pageInfo: {
+            hasNextPage: false,
+            hasPreviousPage: false,
+            rawNext: "next-cursor",
+            rawPrevious: "previous-cursor",
+            raw: { cursor: null },
+          },
+        },
+      },
+    });
+  });
+
   it("rejects malformed auth request bodies with the typed error envelope", async () => {
     const app = createActivityPlugApp({
       service: createTestService(),
@@ -614,15 +726,15 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
       service: createTestService(),
     });
 
-    const lookup = await app.request("/api/v1/accounts/lookup");
+    const relationship = await app.request("/api/v1/accounts/ap_1_bad/relationships");
     const notification = await app.request("/api/v1/notifications");
 
-    expect(lookup.status).toBe(400);
-    await expect(lookup.json()).resolves.toEqual({
+    expect(relationship.status).toBe(400);
+    await expect(relationship.json()).resolves.toEqual({
       error: {
         code: "UNSUPPORTED_OPERATION",
         message: "This API operation is reserved but not implemented yet.",
-        operation: "account.lookup",
+        operation: "account.relationships",
       },
     });
     expect(notification.status).toBe(400);
@@ -644,6 +756,45 @@ const testSession: AuthSession = {
   capabilities: {},
 };
 
+const testViewerAccount: Account = {
+  ref: createEntityRef({
+    adapter: "mastodon",
+    origin: "https://example.test",
+    type: "account",
+    id: "1",
+  }),
+  username: "alice",
+  acct: "alice@example.test",
+  displayName: "Alice",
+  fields: [
+    {
+      name: "Website",
+      valueHtml: '<a href="https://alice.example">alice.example</a>',
+    },
+  ],
+  bot: false,
+  locked: false,
+  raw: {},
+};
+
+const testInstance: InstanceProfile = {
+  ref: createEntityRef({
+    adapter: "mastodon",
+    origin: "https://example.test",
+    type: "instance",
+    id: "example.test",
+    rawUrl: "https://example.test",
+  }),
+  software: {
+    name: "mastodon",
+    version: "4.3.0",
+  },
+  title: "Example",
+  languages: ["en"],
+  capabilities: createCapabilitySet(),
+  raw: {},
+};
+
 const publicOperationMatrix = [
   {
     graphqlType: "query",
@@ -654,6 +805,56 @@ const publicOperationMatrix = [
     httpPath: "/api/v1/instances/{origin}/capabilities",
     httpRequestRef: undefined,
     httpResponseDataRef: "#/components/schemas/CapabilitySet",
+  },
+  {
+    graphqlType: "query",
+    graphqlField: "instance",
+    graphqlArgs: ["adapter", "origin"],
+    graphqlReturnType: "Instance",
+    httpMethod: "get",
+    httpPath: "/api/v1/instances/{origin}",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/InstanceProfile",
+  },
+  {
+    graphqlType: "query",
+    graphqlField: "detectInstance",
+    graphqlArgs: ["input"],
+    graphqlReturnType: "Instance",
+    httpMethod: "post",
+    httpPath: "/api/v1/instances/detect",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/InstanceProfile",
+  },
+  {
+    graphqlType: "query",
+    graphqlField: "account",
+    graphqlArgs: ["id"],
+    graphqlReturnType: "Account",
+    httpMethod: "get",
+    httpPath: "/api/v1/accounts/{id}",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/Account",
+  },
+  {
+    graphqlType: "query",
+    graphqlField: "accountByHandle",
+    graphqlArgs: ["adapter", "handle", "origin"],
+    graphqlReturnType: "Account",
+    httpMethod: "get",
+    httpPath: "/api/v1/accounts/lookup",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/Account",
+  },
+  {
+    graphqlType: "query",
+    graphqlField: "accountPosts",
+    graphqlArgs: ["id", "page"],
+    graphqlReturnType: "PostConnection",
+    httpMethod: "get",
+    httpPath: "/api/v1/accounts/{id}/posts",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/PostConnection",
   },
   {
     graphqlType: "mutation",
@@ -728,11 +929,6 @@ const publicOperationMatrix = [
 ] as const;
 
 const reservedOperationMatrix = [
-  reserved("query", "instance", "Instance", "get", "/api/v1/instances/{origin}", false),
-  reserved("query", "detectInstance", "Instance", "post", "/api/v1/instances/detect", false),
-  reserved("query", "account", "Account", "get", "/api/v1/accounts/{id}", false),
-  reserved("query", "accountByHandle", "Account", "get", "/api/v1/accounts/lookup", false),
-  reserved("query", "accountPosts", "PostConnection", "get", "/api/v1/accounts/{id}/posts", false),
   reserved("query", "post", "Post", "get", "/api/v1/posts/{id}", false),
   reserved("query", "postContext", "PostContext", "get", "/api/v1/posts/{id}/context", false),
   reserved("query", "postQuotes", "PostConnection", "get", "/api/v1/posts/{id}/quotes", false),
@@ -933,6 +1129,21 @@ function createTestService(
   return {
     health: () => ({ ok: true, version: "v1" }),
     capabilities: () => createCapabilitySet(),
+    instances: {
+      detect: async () => testInstance,
+      get: async () => testInstance,
+    },
+    accounts: {
+      get: async () => testViewerAccount,
+      lookup: async () => testViewerAccount,
+      posts: async () => ({
+        nodes: [],
+        pageInfo: {
+          hasNextPage: false,
+          hasPreviousPage: false,
+        },
+      }),
+    },
     auth: {
       importToken: async () => testSession,
       start: async () => ({
@@ -958,30 +1169,7 @@ function createTestService(
       revokeSession: async () => undefined,
     },
     viewer: async () => ({
-      account: {
-        ref: {
-          ...createEntityRef({
-            adapter: "mastodon",
-            origin: "https://example.test",
-            type: "account",
-            id: "1",
-          }),
-          adapter: "mastodon",
-          origin: "https://example.test",
-        },
-        username: "alice",
-        acct: "alice@example.test",
-        displayName: "Alice",
-        fields: [
-          {
-            name: "Website",
-            valueHtml: '<a href="https://alice.example">alice.example</a>',
-          },
-        ],
-        bot: false,
-        locked: false,
-        raw: {},
-      },
+      account: testViewerAccount,
       session: testSession,
     }),
     ...overrides,
