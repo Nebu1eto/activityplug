@@ -40,6 +40,7 @@ import {
   assertMutationSuccess,
   encodeAccountPostsCursor,
   encodeOperationCursor,
+  forwardTimelinePageVariables,
   pollFromResponse,
   postFromMutationPayload,
   postFromResponse,
@@ -624,9 +625,9 @@ async function listActorPosts(
     } | null;
   }>(
     `
-      query ($id: UUID!, $first: Int, $after: String) {
+      query ($id: UUID!, $first: Int, $after: String, $last: Int, $before: String) {
         actorByUuid(uuid: $id) {
-          posts(first: $first, after: $after) {
+          posts(first: $first, after: $after, last: $last, before: $before) {
             edges {
               node {
                 ${postSelection()}
@@ -797,7 +798,12 @@ async function listPublicTimeline(
     "publicTimeline",
     {
       local: local === true,
-      ...relayPageVariables(page, context, local === true ? "timeline.local" : "timeline.public"),
+      ...forwardTimelinePageVariables(
+        page,
+        context,
+        local === true ? "timeline.local" : "timeline.public",
+        local === true ? "timelines.local" : "timelines.public",
+      ),
     },
     context,
     options,
@@ -830,7 +836,7 @@ async function listHomeTimeline(
       }
     `,
     "personalTimeline",
-    relayPageVariables(page, context, "timeline.home"),
+    forwardTimelinePageVariables(page, context, "timeline.home", "timelines.home"),
     context,
     options,
     "timeline.home",

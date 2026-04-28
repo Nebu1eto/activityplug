@@ -36,8 +36,12 @@ export interface HackersPubPost {
   readonly content?: string | null;
   readonly summary?: string | null;
   readonly visibility?: string;
+  readonly sensitive?: boolean | null;
   readonly published?: string;
   readonly poll?: HackersPubPoll | null;
+  readonly replyTarget?: HackersPubPost | null;
+  readonly quotedPost?: HackersPubPost | null;
+  readonly sharedPost?: HackersPubPost | null;
 }
 
 export interface HackersPubMediaUploadResponse {

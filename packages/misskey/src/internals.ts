@@ -211,9 +211,7 @@ export function noteFromResponse(
             id: requiredNonEmptyString(note.replyId, "replyId", note, context, "posts.read"),
           }),
         }),
-    ...(note.renote === null || note.renote === undefined
-      ? {}
-      : { boostOf: noteFromResponse(note.renote, context).ref }),
+    ...renoteReferenceFromResponse(note, context),
     counts: {
       ...renamedOptionalNumber(
         note.repliesCount,
@@ -300,6 +298,28 @@ export function decodeOperationCursor(
     origin: context.origin,
     operation,
   });
+}
+
+function renoteReferenceFromResponse(
+  note: MisskeyNoteResponse,
+  context: AdapterOperationContext,
+): Pick<Post, "boostOf" | "quoteOf"> {
+  if (note.renote === null || note.renote === undefined) return {};
+  const ref = noteFromResponse(note.renote, context).ref;
+  if (isMisskeyQuote(note)) return { quoteOf: ref };
+  return { boostOf: ref };
+}
+
+function isMisskeyQuote(note: MisskeyNoteResponse): boolean {
+  if (note.renoteId === null || note.renoteId === undefined) return false;
+  if (note.text !== null && note.text !== undefined && note.text.length > 0) return true;
+  if (note.cw !== null && note.cw !== undefined && note.cw.length > 0) return true;
+  if (note.replyId !== null && note.replyId !== undefined) return true;
+  if (note.poll !== null && note.poll !== undefined) return true;
+  return (
+    (note.files !== undefined && note.files.length > 0) ||
+    (note.fileIds !== undefined && note.fileIds.length > 0)
+  );
 }
 
 export function mediaAttachmentFromResponse(

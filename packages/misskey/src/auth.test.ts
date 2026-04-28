@@ -1,4 +1,9 @@
-import { createActivityPlugClient, createEntityRef } from "@activityplug/core";
+import {
+  createActivityPlugClient,
+  createEntityRef,
+  decodePageCursor,
+  encodePageCursor,
+} from "@activityplug/core";
 import { describe, expect, it, vi } from "vitest";
 
 import { createMisskeyAdapter } from "./index.js";
@@ -505,6 +510,95 @@ describe("Misskey auth adapter", () => {
     });
 
     expect(created.ref.rawId).toBe("created-1");
+  });
+
+  it("maps quote notes separately from boosts", async () => {
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({
+        fetch: mockFetch(async (request) => {
+          expect(new URL(request.url).pathname).toBe("/api/notes/show");
+          return jsonResponse({
+            ...misskeyNote("quote-note"),
+            text: "Quoted locally",
+            renoteId: "quoted-note",
+            renote: misskeyNote("quoted-note"),
+          });
+        }),
+      }),
+      origin: "https://misskey.example",
+    });
+
+    const post = await client.posts.get({ id: misskeyPostRef("quote-note").id });
+
+    expect(post.quoteOf?.rawId).toBe("quoted-note");
+    expect(post.boostOf).toBeUndefined();
+  });
+
+  it("maps Misskey reply quotes as replies and quotes", async () => {
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({
+        fetch: mockFetch(async (request) => {
+          expect(new URL(request.url).pathname).toBe("/api/notes/show");
+          return jsonResponse({
+            ...misskeyNote("reply-quote"),
+            text: null,
+            replyId: "reply-target",
+            renoteId: "quoted-note",
+            renote: misskeyNote("quoted-note"),
+          });
+        }),
+      }),
+      origin: "https://misskey.example",
+    });
+
+    const post = await client.posts.get({ id: misskeyPostRef("reply-quote").id });
+
+    expect(post.replyTo?.rawId).toBe("reply-target");
+    expect(post.quoteOf?.rawId).toBe("quoted-note");
+    expect(post.boostOf).toBeUndefined();
+  });
+
+  it("keeps hashtag before pages in oldest-to-newest order", async () => {
+    const requestedBefore = encodePageCursor({
+      adapter: "misskey",
+      origin: "https://misskey.example",
+      operation: "timeline.hashtag",
+      cursor: "note-before",
+    });
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({
+        fetch: mockFetch(async (request) => {
+          expect(new URL(request.url).pathname).toBe("/api/notes/search-by-tag");
+          expect(await request.json()).toMatchObject({
+            tag: "activitypub",
+            sinceId: "note-before",
+          });
+          return jsonResponse([misskeyNote("newer"), misskeyNote("older")]);
+        }),
+      }),
+      origin: "https://misskey.example",
+    });
+
+    const posts = await client.timelines.hashtag({
+      tag: "activitypub",
+      page: { before: requestedBefore, limit: 2 },
+    });
+
+    expect(posts.nodes.map((post) => post.ref.rawId)).toEqual(["older", "newer"]);
+    expect(
+      decodePageCursor(posts.pageInfo.startCursor ?? "", {
+        adapter: "misskey",
+        origin: "https://misskey.example",
+        operation: "timeline.hashtag",
+      }),
+    ).toBe("older");
+    expect(
+      decodePageCursor(posts.pageInfo.endCursor ?? "", {
+        adapter: "misskey",
+        origin: "https://misskey.example",
+        operation: "timeline.hashtag",
+      }),
+    ).toBe("newer");
   });
 
   it("rejects unsupported post sensitivity and mute notification options", async () => {

@@ -64,6 +64,7 @@ export interface MisskeyNoteResponse {
   readonly localOnly?: boolean;
   readonly renote?: MisskeyNoteResponse | null;
   readonly files?: readonly MisskeyFileResponse[];
+  readonly fileIds?: readonly string[];
   readonly poll?: MisskeyPollResponse | null;
   readonly replyId?: string | null;
   readonly renoteId?: string | null;

@@ -495,7 +495,10 @@ async function listHashtagTimeline(
       raw: response,
     });
   }
-  const nodes = response.slice(0, requestedLimit);
+  const nodes =
+    page?.before === undefined
+      ? response.slice(0, requestedLimit)
+      : response.slice(0, requestedLimit).toReversed();
   return {
     nodes: nodes.map((note) => noteFromResponse(note, context)),
     pageInfo: misskeyPageInfoForOperation(

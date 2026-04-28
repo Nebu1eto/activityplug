@@ -49,7 +49,26 @@ describe("HackersPub adapter", () => {
       operation: "account.posts",
       cursor: "relay_after",
     });
+    const requestedBefore = encodePageCursor({
+      adapter: "hackerspub",
+      origin: "https://hackerspub.example",
+      operation: "account.posts",
+      cursor: "relay_before",
+    });
     const seenVariables: unknown[] = [];
+    const relationshipPost = {
+      id: "Tm90ZTowMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDM=",
+      uuid: "00000000-0000-4000-8000-000000000003",
+      iri: "https://hackers.pub/posts/00000000-0000-4000-8000-000000000003",
+      url: "https://hackers.pub/posts/00000000-0000-4000-8000-000000000003",
+    };
+    const post = {
+      ...fixture.post,
+      sensitive: true,
+      replyTarget: relationshipPost,
+      quotedPost: relationshipPost,
+      sharedPost: relationshipPost,
+    };
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter({
         fetch: async (input, init) => {
@@ -60,7 +79,7 @@ describe("HackersPub adapter", () => {
             data: {
               actorByUuid: {
                 posts: {
-                  edges: [{ node: fixture.post }],
+                  edges: [{ node: post }],
                   pageInfo: {
                     hasNextPage: true,
                     hasPreviousPage: false,
@@ -80,10 +99,19 @@ describe("HackersPub adapter", () => {
       accountId: accountId(),
       page: { after: requestedAfter, limit: 1 },
     });
+    await client.accounts.listPosts({
+      accountId: accountId(),
+      page: { before: requestedBefore, limit: 1 },
+    });
 
     expect(seenVariables).toEqual([
       expect.objectContaining({
+        first: 1,
         after: "relay_after",
+      }),
+      expect.objectContaining({
+        last: 1,
+        before: "relay_before",
       }),
     ]);
     expect(connection.nodes).toHaveLength(1);
@@ -110,9 +138,12 @@ describe("HackersPub adapter", () => {
       contentHtml: "<p>Post.</p>",
       createdAt: "2024-01-02T00:00:00.000Z",
       visibility: "public",
-      sensitive: false,
+      sensitive: true,
+      replyTo: { rawId: "00000000-0000-4000-8000-000000000003" },
+      quoteOf: { rawId: "00000000-0000-4000-8000-000000000003" },
+      boostOf: { rawId: "00000000-0000-4000-8000-000000000003" },
       media: [],
-      raw: fixture.post,
+      raw: post,
     });
     expect(connection.pageInfo.startCursor).not.toBe("relay_start");
     expect(connection.pageInfo.endCursor).not.toBe("relay_end");
@@ -533,6 +564,51 @@ describe("HackersPub adapter", () => {
     expect(seenOperations).toEqual(
       expect.arrayContaining(["publicTimeline", "searchActorsByHandle", "searchPost"]),
     );
+  });
+
+  it("rejects unsupported HackersPub timeline backward pagination before remote fetches", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter({ fetch }),
+      origin: "https://hackerspub.example",
+    });
+    const publicBefore = encodePageCursor({
+      adapter: "hackerspub",
+      origin: "https://hackerspub.example",
+      operation: "timeline.public",
+      cursor: "2026-04-29T00:00:00.000Z",
+    });
+    const localBefore = encodePageCursor({
+      adapter: "hackerspub",
+      origin: "https://hackerspub.example",
+      operation: "timeline.local",
+      cursor: "2026-04-29T00:00:00.000Z",
+    });
+    const homeBefore = encodePageCursor({
+      adapter: "hackerspub",
+      origin: "https://hackerspub.example",
+      operation: "timeline.home",
+      cursor: "2026-04-29T00:00:00.000Z",
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    await expect(client.timelines.public({ page: { before: publicBefore } })).rejects.toMatchObject(
+      {
+        code: "UNSUPPORTED_OPERATION",
+        context: { capability: "timelines.public", operation: "timeline.public" },
+      },
+    );
+    await expect(client.timelines.local({ page: { before: localBefore } })).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "timelines.local", operation: "timeline.local" },
+    });
+    await expect(
+      client.timelines.home({ session, page: { before: homeBefore } }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "timelines.home", operation: "timeline.home" },
+    });
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("maps GraphQL social actions, deletion, and HTTP poll voting", async () => {

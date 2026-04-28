@@ -84,7 +84,7 @@ export function postFromResponse(
     visibility: hackersPubVisibility(
       optionalString(post.visibility, "visibility", post, context, operation),
     ),
-    sensitive: false,
+    sensitive: optionalBoolean(post.sensitive, "sensitive", post, context, operation) ?? false,
     ...renameOptionalStringField(post.summary, "summary", post, context, operation),
     media: [],
     ...(post.poll === null || post.poll === undefined
@@ -97,8 +97,53 @@ export function postFromResponse(
             operation,
           ),
         }),
+    ...(post.replyTarget === null || post.replyTarget === undefined
+      ? {}
+      : { replyTo: postRelationshipRef(post.replyTarget, context, operation, "replyTarget") }),
+    ...(post.quotedPost === null || post.quotedPost === undefined
+      ? {}
+      : { quoteOf: postRelationshipRef(post.quotedPost, context, operation, "quotedPost") }),
+    ...(post.sharedPost === null || post.sharedPost === undefined
+      ? {}
+      : { boostOf: postRelationshipRef(post.sharedPost, context, operation, "sharedPost") }),
     raw: post,
   };
+}
+
+function postRelationshipRef(
+  response: HackersPubPost,
+  context: AdapterOperationContext,
+  operation: string,
+  field: string,
+): Post["ref"] {
+  if (!isRecord(response)) {
+    throw activityPlugError(
+      "REMOTE_ERROR",
+      `HackersPub post relationship field is malformed: ${field}.`,
+      context,
+      operation,
+      response,
+    );
+  }
+  const rawId = validatedRemoteId(response.id, response.uuid, response, context, operation);
+  if (rawId === undefined) {
+    throw activityPlugError(
+      "REMOTE_ERROR",
+      `HackersPub post relationship field is missing an ID: ${field}.`,
+      context,
+      operation,
+      response,
+    );
+  }
+  const iri = optionalString(response.iri, "iri", response, context, operation);
+  const url = optionalString(response.url, "url", response, context, operation);
+  return createEntityRef({
+    adapter: context.adapterId,
+    origin: context.origin,
+    type: "post",
+    id: rawId,
+    rawUrl: iri ?? url,
+  });
 }
 
 export function hackersPubGlobalId(
@@ -634,6 +679,24 @@ export function optionalString(
   throw activityPlugError(
     "REMOTE_ERROR",
     `HackersPub response field must be a string when present: ${field}.`,
+    context,
+    operation,
+    raw,
+  );
+}
+
+function optionalBoolean(
+  value: unknown,
+  field: string,
+  raw: unknown,
+  context: AdapterOperationContext,
+  operation: string,
+): boolean | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value === "boolean") return value;
+  throw activityPlugError(
+    "REMOTE_ERROR",
+    `Remote response field must be a boolean when present: ${field}.`,
     context,
     operation,
     raw,

@@ -66,6 +66,13 @@ describe("Hollo adapter", () => {
     expect(client.capabilities["social.reaction"]).toMatchObject({ status: "supported" });
     expect(client.capabilities["search.hashtags"]).toMatchObject({ status: "unsupported" });
     expect(client.capabilities["timelines.hashtag"]).toMatchObject({ status: "unsupported" });
+    expect(client.capabilities["streaming.timeline"]).toMatchObject({ status: "unsupported" });
+    expect(client.capabilities["streaming.notifications"]).toMatchObject({
+      status: "unsupported",
+    });
+    expect(client.capabilities["streaming.conversations"]).toMatchObject({
+      status: "unsupported",
+    });
     expect(reacted.ref.rawId).toBe("hollo-900");
     await expect(client.timelines.hashtag({ tag: "activityplug" })).rejects.toMatchObject({
       code: "UNSUPPORTED_OPERATION",

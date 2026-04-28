@@ -1,10 +1,12 @@
 import {
+  ActivityPlugError,
   createEntityRef,
   decodePageCursor,
   encodePageCursor,
   type Account,
   type AdapterOperationContext,
   type AuthSession,
+  type CapabilityName,
   type PageInput,
   type Poll,
   type Relationship,
@@ -38,20 +40,39 @@ export function relayPageVariables(
   context: AdapterOperationContext,
   operation: string,
 ): Record<string, unknown> {
-  if (page?.before !== undefined) {
-    throw activityPlugError(
-      "VALIDATION_FAILED",
-      "HackersPub pagination only supports forward cursors for this operation.",
-      context,
-      operation,
-    );
-  }
   const limit = page?.limit ?? 20;
+  if (page?.before !== undefined) {
+    return {
+      last: limit,
+      before: decodeOperationCursor(page.before, context, operation),
+    };
+  }
   return {
     first: limit,
     after:
       page?.after === undefined ? undefined : decodeOperationCursor(page.after, context, operation),
   };
+}
+
+export function forwardTimelinePageVariables(
+  page: PageInput | undefined,
+  context: AdapterOperationContext,
+  operation: string,
+  capability: CapabilityName,
+): Record<string, unknown> {
+  if (page?.before !== undefined) {
+    throw new ActivityPlugError(
+      "UNSUPPORTED_OPERATION",
+      "HackersPub timelines do not support backward pagination.",
+      {
+        adapter: context.adapterId,
+        origin: context.origin,
+        operation,
+        capability,
+      },
+    );
+  }
+  return relayPageVariables(page, context, operation);
 }
 
 export function postNodeFromEdge(
@@ -410,7 +431,26 @@ export function postSelection(): string {
     content
     summary
     visibility
+    sensitive
     published
+    replyTarget {
+      id
+      uuid
+      iri
+      url
+    }
+    quotedPost {
+      id
+      uuid
+      iri
+      url
+    }
+    sharedPost {
+      id
+      uuid
+      iri
+      url
+    }
     ... on Question {
       poll {
         id

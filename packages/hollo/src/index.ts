@@ -61,6 +61,15 @@ export function createHolloAdapter(options: HolloAdapterOptions = {}): ActivityP
           "unsupported",
           "Hollo hashtag timelines are not mapped by this adapter yet.",
         ),
+        "streaming.timeline": capability("unsupported", "Hollo does not expose streaming APIs."),
+        "streaming.notifications": capability(
+          "unsupported",
+          "Hollo does not expose streaming APIs.",
+        ),
+        "streaming.conversations": capability(
+          "unsupported",
+          "Hollo does not expose streaming APIs.",
+        ),
       }),
     },
     posts: {
