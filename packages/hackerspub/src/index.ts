@@ -24,6 +24,13 @@ import {
 
 import { createHackersPubStaticCapabilities } from "./capabilities.js";
 import { createHackersPubPost } from "./compose.js";
+import {
+  actorByHandleDocument,
+  actorByUuidDocument,
+  deletePostDocument,
+  searchActorsByHandleDocument,
+  viewerDocument,
+} from "./graphql-documents.js";
 import { getInstanceProfile } from "./instance.js";
 import {
   actorFromMutationPayload,
@@ -59,13 +66,11 @@ import {
   validPageInfo,
 } from "./transport.js";
 import {
-  type HackersPubActor,
   type HackersPubAdapterOptions,
   type HackersPubPoll,
   type HackersPubPost,
   type HackersPubPostEdge,
   type HackersPubPostConnection,
-  type HackersPubViewerAccount,
 } from "./types.js";
 
 export function createHackersPubAdapter(
@@ -214,31 +219,8 @@ async function searchActors(
       operation,
     });
   }
-  const response = await graphql<{ readonly searchActorsByHandle?: readonly HackersPubActor[] }>(
-    `
-      query ($prefix: String!, $limit: Int) {
-        searchActorsByHandle(prefix: $prefix, limit: $limit) {
-          id
-          uuid
-          iri
-          username
-          handle
-          rawName
-          name
-          bio
-          avatarUrl
-          headerUrl
-          automaticallyApprovesFollowers
-          url
-          published
-          created
-          fields {
-            name
-            value
-          }
-        }
-      }
-    `,
+  const response = await graphql(
+    searchActorsByHandleDocument,
     { prefix: input.query, limit: Math.min(input.page?.limit ?? 20, 25) },
     context,
     options,
@@ -280,20 +262,8 @@ async function verifyCredentials(
     "Authorization",
     `${session.tokenSet.tokenType ?? "Bearer"} ${session.tokenSet.accessToken}`,
   );
-  const response = await graphql<{ readonly viewer?: HackersPubViewerAccount | null }>(
-    `
-      query {
-        viewer {
-          uuid
-          username
-          name
-          handle
-          bio
-          avatarUrl
-          created
-        }
-      }
-    `,
+  const response = await graphql(
+    viewerDocument,
     {},
     operationContext,
     options,
@@ -517,19 +487,8 @@ async function deletePost(
   options: HackersPubAdapterOptions,
 ): Promise<DeletedEntity> {
   return withPostGlobalId(id, context, "post.delete", async (postId) => {
-    const response = await graphql<{
-      readonly deletePost?: { readonly deletedPostId?: string } | null;
-    }>(
-      `
-        mutation ($input: DeletePostInput!) {
-          deletePost(input: $input) {
-            __typename
-            ... on DeletePostPayload {
-              deletedPostId
-            }
-          }
-        }
-      `,
+    const response = await graphql(
+      deletePostDocument,
       { input: { id: postId } },
       context,
       options,
@@ -598,36 +557,7 @@ async function getActorById(
   context: AdapterOperationContext,
   options: HackersPubAdapterOptions,
 ): Promise<Account> {
-  const response = await graphql<{ readonly actorByUuid?: HackersPubActor | null }>(
-    `
-      query ($id: UUID!) {
-        actorByUuid(uuid: $id) {
-          id
-          uuid
-          iri
-          username
-          handle
-          rawName
-          name
-          bio
-          avatarUrl
-          headerUrl
-          automaticallyApprovesFollowers
-          url
-          published
-          created
-          fields {
-            name
-            value
-          }
-        }
-      }
-    `,
-    { id },
-    context,
-    options,
-    "account.get",
-  );
+  const response = await graphql(actorByUuidDocument, { id }, context, options, "account.get");
   assertSelectedField(response, "actorByUuid", context, "account.get");
   const node = response.actorByUuid;
   if (node === undefined) {
@@ -650,31 +580,8 @@ async function getActorByHandle(
   context: AdapterOperationContext,
   options: HackersPubAdapterOptions,
 ): Promise<Account | null> {
-  const response = await graphql<{ readonly actorByHandle?: HackersPubActor | null }>(
-    `
-      query ($handle: String!) {
-        actorByHandle(handle: $handle, allowLocalHandle: true) {
-          id
-          uuid
-          iri
-          username
-          handle
-          rawName
-          name
-          bio
-          avatarUrl
-          headerUrl
-          automaticallyApprovesFollowers
-          url
-          published
-          created
-          fields {
-            name
-            value
-          }
-        }
-      }
-    `,
+  const response = await graphql(
+    actorByHandleDocument,
     { handle },
     context,
     options,

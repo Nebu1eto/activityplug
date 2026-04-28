@@ -5,11 +5,6 @@ export interface HackersPubAdapterOptions {
   readonly httpClient?: KyInstance;
 }
 
-export interface HackersPubGraphQLResponse<T> {
-  readonly data?: T;
-  readonly errors?: readonly { readonly message?: string }[];
-}
-
 export interface HackersPubActor {
   readonly id?: string;
   readonly uuid?: string;

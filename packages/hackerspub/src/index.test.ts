@@ -5,7 +5,8 @@ import {
   encodePageCursor,
 } from "@activityplug/core";
 import { accountMappingFixtures } from "@activityplug/test-fixtures";
-import { describe, expect, it } from "vitest";
+import ky from "ky";
+import { describe, expect, it, vi } from "vitest";
 
 import { createHackersPubAdapter } from "./index.js";
 
@@ -157,6 +158,275 @@ describe("HackersPub adapter", () => {
     await expect(client.accounts.listPosts({ accountId: accountId() })).rejects.toMatchObject({
       code: "REMOTE_ERROR",
     });
+  });
+
+  it("classifies malformed GraphQL envelopes as remote errors", async () => {
+    const malformedJsonClient = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async () => new Response("not json"),
+      }),
+      origin: "https://hackerspub.example",
+    });
+    const malformedErrorsClient = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async () =>
+          Response.json({
+            data: { actorByUuid: fixture.account },
+            errors: "not-an-array",
+          }),
+      }),
+      origin: "https://hackerspub.example",
+    });
+    const emptyEnvelopeClient = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async () => Response.json({}),
+      }),
+      origin: "https://hackerspub.example",
+    });
+    const malformedErrorEntryClient = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async () => Response.json({ errors: [null] }),
+      }),
+      origin: "https://hackerspub.example",
+    });
+
+    await expect(malformedJsonClient.accounts.getById({ id: accountId() })).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { operation: "account.get" },
+    });
+    await expect(malformedErrorsClient.accounts.getById({ id: accountId() })).rejects.toMatchObject(
+      {
+        code: "REMOTE_ERROR",
+        context: { operation: "account.get" },
+      },
+    );
+    await expect(emptyEnvelopeClient.accounts.getById({ id: accountId() })).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { operation: "account.get" },
+    });
+    await expect(
+      malformedErrorEntryClient.accounts.getById({ id: accountId() }),
+    ).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { operation: "account.get" },
+    });
+  });
+
+  it("accepts successful GraphQL data with an empty errors array", async () => {
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async () =>
+          Response.json({
+            data: { actorByUuid: fixture.account },
+            errors: [],
+          }),
+      }),
+      origin: "https://hackerspub.example",
+    });
+
+    await expect(client.accounts.getById({ id: accountId() })).resolves.toMatchObject({
+      ref: { rawId: actorUuid },
+    });
+  });
+
+  it("keeps missing GraphQL data errors explicit when errors is empty", async () => {
+    const missingDataClient = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async () => Response.json({ errors: [] }),
+      }),
+      origin: "https://hackerspub.example",
+    });
+    const nullDataClient = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async () => Response.json({ data: null, errors: [] }),
+      }),
+      origin: "https://hackerspub.example",
+    });
+
+    await expect(missingDataClient.accounts.getById({ id: accountId() })).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { raw: { errors: [] } },
+      message: "HackersPub GraphQL response did not include data.",
+    });
+    await expect(nullDataClient.accounts.getById({ id: accountId() })).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { raw: { data: null, errors: [] } },
+      message: "HackersPub GraphQL response did not include data.",
+    });
+  });
+
+  it("keeps original GraphQL error envelopes in diagnostics", async () => {
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async () =>
+          Response.json({
+            errors: [{ message: "GraphQL rejected the request.", path: ["actorByUuid"] }],
+          }),
+      }),
+      origin: "https://hackerspub.example",
+    });
+
+    await expect(client.accounts.getById({ id: accountId() })).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: {
+        operation: "account.get",
+        raw: [{ message: "GraphQL rejected the request.", path: ["actorByUuid"] }],
+      },
+      message: "GraphQL rejected the request.",
+    });
+  });
+
+  it("uses a stable fallback for GraphQL errors without messages", async () => {
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async () => Response.json({ errors: [{}] }),
+      }),
+      origin: "https://hackerspub.example",
+    });
+
+    await expect(client.accounts.getById({ id: accountId() })).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: {
+        operation: "account.get",
+        raw: [{}],
+      },
+      message: "HackersPub GraphQL request failed.",
+    });
+  });
+
+  it("preserves GraphQL HTTP diagnostics after urql consumes the response", async () => {
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async () =>
+          new Response("bad upstream", {
+            status: 502,
+            headers: { "content-type": "text/plain" },
+          }),
+      }),
+      origin: "https://hackerspub.example",
+    });
+
+    await expect(client.accounts.getById({ id: accountId() })).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: {
+        operation: "account.get",
+        raw: { status: 502, body: "bad upstream" },
+      },
+    });
+  });
+
+  it("rejects non-2xx GraphQL responses even when they include data", async () => {
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async () =>
+          Response.json(
+            { data: { actorByUuid: fixture.account } },
+            {
+              status: 500,
+            },
+          ),
+      }),
+      origin: "https://hackerspub.example",
+    });
+
+    await expect(client.accounts.getById({ id: accountId() })).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: {
+        operation: "account.get",
+        raw: { status: 500 },
+      },
+    });
+  });
+
+  it("keeps manual redirects and the custom fetch call shape for GraphQL requests", async () => {
+    const seenRequests: Array<{
+      readonly accept: string | null;
+      readonly hasInit: boolean;
+      readonly query: string;
+      readonly redirect: RequestRedirect;
+    }> = [];
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async (input, init) => {
+          const request = new Request(input, init);
+          const body = (await request.json()) as { readonly query?: string };
+          seenRequests.push({
+            accept: request.headers.get("accept"),
+            hasInit: init !== undefined,
+            query: body.query ?? "",
+            redirect: request.redirect,
+          });
+          return Response.json({ data: { actorByUuid: fixture.account } });
+        },
+      }),
+      origin: "https://hackerspub.example",
+    });
+
+    await expect(client.accounts.getById({ id: accountId() })).resolves.toMatchObject({
+      ref: { rawId: actorUuid },
+    });
+    expect(seenRequests).toEqual([
+      expect.objectContaining({
+        accept: "application/json",
+        redirect: "manual",
+        hasInit: true,
+      }),
+    ]);
+    expect(seenRequests[0]?.query).not.toContain("__typename");
+  });
+
+  it("routes GraphQL requests through the injected HTTP client", async () => {
+    const originalFetch = globalThis.fetch;
+    const seenRequests: Array<{ readonly redirect: RequestRedirect; readonly url: string }> = [];
+    const httpClient = ky.create({
+      prefix: "https://hackerspub.example",
+      redirect: "follow",
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        seenRequests.push({ redirect: request.redirect, url: request.url });
+        return Response.json({ data: { actorByUuid: fixture.account } });
+      },
+    });
+    globalThis.fetch = async () => {
+      throw new TypeError("Global fetch must not handle injected GraphQL requests.");
+    };
+    try {
+      const client = createActivityPlugClient({
+        adapter: createHackersPubAdapter({ httpClient }),
+        origin: "https://hackerspub.example",
+      });
+
+      await expect(client.accounts.getById({ id: accountId() })).resolves.toMatchObject({
+        ref: { rawId: actorUuid },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    expect(seenRequests).toEqual([
+      { redirect: "follow", url: "https://hackerspub.example/graphql" },
+    ]);
+  });
+
+  it("times out GraphQL fetch implementations that ignore abort signals", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = createActivityPlugClient({
+        adapter: createHackersPubAdapter({
+          fetch: async () => new Promise<Response>(() => {}),
+        }),
+        origin: "https://hackerspub.example",
+      });
+
+      const request = client.accounts.getById({ id: accountId() });
+      const assertion = expect(request).rejects.toMatchObject({
+        code: "TIMEOUT",
+        context: { operation: "account.get" },
+      });
+      await vi.advanceTimersByTimeAsync(10_000);
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps account post operation context for malformed nested actors", async () => {

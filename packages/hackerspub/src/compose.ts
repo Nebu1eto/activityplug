@@ -10,6 +10,7 @@ import {
   type UploadMediaInput,
 } from "@activityplug/core";
 
+import { postGlobalIdDocument } from "./graphql-documents.js";
 import { assertMutationSuccess, postFromMutationPayload } from "./mapping.js";
 import {
   activityPlugError,
@@ -20,11 +21,7 @@ import {
   postFromResponse,
   requestJson,
 } from "./transport.js";
-import {
-  type HackersPubAdapterOptions,
-  type HackersPubMediaUploadResponse,
-  type HackersPubPost,
-} from "./types.js";
+import { type HackersPubAdapterOptions, type HackersPubMediaUploadResponse } from "./types.js";
 
 export async function createHackersPubPost(
   input: CreatePostInput,
@@ -202,21 +199,7 @@ async function assertPostGlobalId(
   context: AdapterOperationContext,
   options: HackersPubAdapterOptions,
 ): Promise<void> {
-  const response = await graphql<{ readonly node?: HackersPubPost | null }>(
-    `
-      query ($id: ID!) {
-        node(id: $id) {
-          ... on Post {
-            uuid
-          }
-        }
-      }
-    `,
-    { id },
-    context,
-    options,
-    "post.get",
-  );
+  const response = await graphql(postGlobalIdDocument, { id }, context, options, "post.get");
   if (response.node === null) {
     throw activityPlugError("NOT_FOUND", "HackersPub post was not found.", context, "post.get");
   }
