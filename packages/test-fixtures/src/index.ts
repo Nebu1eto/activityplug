@@ -239,8 +239,8 @@ export const accountMappingFixtures = {
   },
   hackerspub: {
     account: {
-      id: "actor-1",
-      uuid: "actor-1",
+      id: "QWN0b3I6MDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAx",
+      uuid: "00000000-0000-4000-8000-000000000001",
       iri: "https://hackers.pub/@alice",
       username: "alice",
       handle: "alice@hackers.pub",
@@ -253,16 +253,16 @@ export const accountMappingFixtures = {
       fields: [{ name: "Website", value: "https://example.com" }],
     },
     post: {
-      id: "post-1",
-      uuid: "post-1",
-      iri: "https://hackers.pub/posts/post-1",
-      url: "https://hackers.pub/posts/post-1",
+      id: "Tm90ZTowMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDI=",
+      uuid: "00000000-0000-4000-8000-000000000002",
+      iri: "https://hackers.pub/posts/00000000-0000-4000-8000-000000000002",
+      url: "https://hackers.pub/posts/00000000-0000-4000-8000-000000000002",
       content: "<p>Post.</p>",
       published: "2024-01-02T00:00:00.000Z",
       visibility: "PUBLIC",
       actor: {
-        id: "actor-1",
-        uuid: "actor-1",
+        id: "QWN0b3I6MDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAx",
+        uuid: "00000000-0000-4000-8000-000000000001",
         iri: "https://hackers.pub/@alice",
         username: "alice",
         handle: "alice@hackers.pub",

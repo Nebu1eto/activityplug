@@ -9,11 +9,14 @@ import { describe, expect, it } from "vitest";
 
 import { createHackersPubAdapter } from "./index.js";
 
+const actorUuid = "00000000-0000-4000-8000-000000000001";
+const postUuid = "00000000-0000-4000-8000-000000000002";
+
 describe("HackersPub adapter", () => {
   const fixture = accountMappingFixtures.hackerspub;
 
   it("normalizes actor fixtures", async () => {
-    const client = createClientWithGraphQLResponse({ node: fixture.account });
+    const client = createClientWithGraphQLResponse({ actorByUuid: fixture.account });
 
     await expect(client.accounts.getById({ id: accountId() })).resolves.toEqual({
       ref: {
@@ -21,7 +24,7 @@ describe("HackersPub adapter", () => {
         type: "account",
         adapter: "hackerspub",
         origin: "https://hackerspub.example",
-        rawId: "actor-1",
+        rawId: actorUuid,
         rawUrl: "https://hackers.pub/@alice",
       },
       username: "alice",
@@ -54,7 +57,7 @@ describe("HackersPub adapter", () => {
           seenVariables.push(body.variables);
           return Response.json({
             data: {
-              node: {
+              actorByUuid: {
                 posts: {
                   edges: [{ node: fixture.post }],
                   pageInfo: {
@@ -89,8 +92,8 @@ describe("HackersPub adapter", () => {
         type: "post",
         adapter: "hackerspub",
         origin: "https://hackerspub.example",
-        rawId: "post-1",
-        rawUrl: "https://hackers.pub/posts/post-1",
+        rawId: postUuid,
+        rawUrl: `https://hackers.pub/posts/${postUuid}`,
       },
       author: {
         ref: {
@@ -98,11 +101,11 @@ describe("HackersPub adapter", () => {
           type: "account",
           adapter: "hackerspub",
           origin: "https://hackerspub.example",
-          rawId: "actor-1",
+          rawId: actorUuid,
           rawUrl: "https://hackers.pub/@alice",
         },
       },
-      url: "https://hackers.pub/posts/post-1",
+      url: `https://hackers.pub/posts/${postUuid}`,
       contentHtml: "<p>Post.</p>",
       createdAt: "2024-01-02T00:00:00.000Z",
       visibility: "public",
@@ -158,7 +161,7 @@ describe("HackersPub adapter", () => {
 
   it("keeps account post operation context for malformed nested actors", async () => {
     const client = createClientWithGraphQLResponse({
-      node: {
+      actorByUuid: {
         posts: {
           edges: [{ node: { ...fixture.post, actor: {} } }],
           pageInfo: { hasNextPage: false, hasPreviousPage: false },
@@ -222,21 +225,26 @@ describe("HackersPub adapter", () => {
       }),
       origin: "https://hackerspub.example",
     });
+    const session = await client.auth.injectToken({ accessToken: "token" });
 
     const [post, timeline, accountSearch, postSearch] = await Promise.all([
       client.posts.get({ id: postId() }),
       client.timelines.public({}),
-      client.search.search({ query: "alice", type: "accounts" }),
+      client.search.search({ query: "alice", type: "accounts", session }),
       client.search.search({ query: "ActivityPlug", type: "posts" }),
     ]);
 
-    expect(post.ref.rawId).toBe("post-1");
-    expect(timeline.nodes[0]?.ref.rawId).toBe("post-1");
-    expect(accountSearch.accounts[0]?.ref.rawId).toBe("actor-1");
-    expect(postSearch.posts[0]?.ref.rawId).toBe("post-1");
+    expect(post.ref.rawId).toBe(postUuid);
+    expect(timeline.nodes[0]?.ref.rawId).toBe(postUuid);
+    expect(accountSearch.accounts[0]?.ref.rawId).toBe(actorUuid);
+    expect(postSearch.posts[0]?.ref.rawId).toBe(postUuid);
     await expect(
       client.search.search({ query: "activityplug", type: "hashtags" }),
     ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "search.hashtags", operation: "search.hashtags" },
+    });
+    await expect(client.search.search({ query: "activityplug" })).rejects.toMatchObject({
       code: "UNSUPPORTED_OPERATION",
       context: { capability: "search.hashtags" },
     });
@@ -244,9 +252,204 @@ describe("HackersPub adapter", () => {
       client.search.search({ query: "activityplug", type: "posts", resolve: true }),
     ).rejects.toMatchObject({
       code: "UNSUPPORTED_OPERATION",
-      context: { capability: "search.posts" },
+      context: { capability: "search.posts", operation: "search.posts" },
     });
-    expect(seenOperations).toEqual(["publicTimeline", "searchActorsByHandle", "searchPost"]);
+    await expect(
+      client.search.search({ query: "activityplug", type: "accounts", resolve: true, session }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "search.accounts", operation: "search.accounts" },
+    });
+    expect(seenOperations).toEqual(
+      expect.arrayContaining(["publicTimeline", "searchActorsByHandle", "searchPost"]),
+    );
+  });
+
+  it("maps GraphQL social actions, deletion, and HTTP poll voting", async () => {
+    const seenRequests: Array<{ readonly path: string; readonly body: unknown }> = [];
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async (input, init) => {
+          const request = new Request(input, init);
+          const path = new URL(request.url).pathname;
+          const body = request.method === "GET" ? undefined : await request.json();
+          seenRequests.push({ path, body });
+          if (path.endsWith(`/api/posts/${postUuid}/poll`)) return Response.json(pollResponse());
+          if (path.endsWith(`/api/posts/${postUuid}/vote`))
+            return Response.json(pollResponse(true));
+          const query = isRecord(body) && typeof body.query === "string" ? body.query : "";
+          if (query.includes("followActor")) {
+            return Response.json({
+              data: {
+                followActor: { __typename: "FollowActorPayload", followee: relationshipActor() },
+              },
+            });
+          }
+          if (query.includes("bookmarkPost")) {
+            return Response.json({
+              data: { bookmarkPost: { __typename: "BookmarkPostPayload", post: fixture.post } },
+            });
+          }
+          if (query.includes("unsharePost")) {
+            return Response.json({
+              data: {
+                unsharePost: { __typename: "UnsharePostPayload", originalPost: fixture.post },
+              },
+            });
+          }
+          if (query.includes("sharePost")) {
+            return Response.json({
+              data: { sharePost: { __typename: "SharePostPayload", share: fixture.post } },
+            });
+          }
+          if (query.includes("addReactionToPost")) {
+            return Response.json({
+              data: {
+                addReactionToPost: {
+                  __typename: "AddReactionToPostPayload",
+                  clientMutationId: null,
+                },
+              },
+            });
+          }
+          if (query.includes("removeReactionFromPost")) {
+            return Response.json({
+              data: {
+                removeReactionFromPost: {
+                  __typename: "RemoveReactionFromPostPayload",
+                  clientMutationId: null,
+                },
+              },
+            });
+          }
+          if (query.includes("deletePost")) {
+            return Response.json({
+              data: { deletePost: { __typename: "DeletePostPayload", deletedPostId: postUuid } },
+            });
+          }
+          return Response.json({ data: { node: fixture.post } });
+        },
+      }),
+      origin: "https://hackerspub.example",
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    await expect(client.social.follow({ session, accountId: accountId() })).resolves.toMatchObject({
+      following: true,
+      blocking: false,
+    });
+    await expect(client.social.bookmark({ session, postId: postId() })).resolves.toMatchObject({
+      ref: { rawId: postUuid },
+    });
+    await expect(client.social.boost({ session, postId: postId() })).resolves.toMatchObject({
+      ref: { rawId: postUuid },
+    });
+    await expect(client.social.unboost({ session, postId: postId() })).resolves.toMatchObject({
+      ref: { rawId: postUuid },
+    });
+    await expect(
+      client.social.react({ session, postId: postId(), emoji: "👍" }),
+    ).resolves.toMatchObject({
+      ref: { rawId: postUuid },
+    });
+    await expect(
+      client.social.unreact({ session, postId: postId(), emoji: "👍" }),
+    ).resolves.toMatchObject({
+      ref: { rawId: postUuid },
+    });
+    await expect(client.posts.delete({ session, id: postId() })).resolves.toMatchObject({
+      deleted: true,
+      ref: { rawId: postUuid },
+    });
+    const pollId = createEntityRef({
+      adapter: "hackerspub",
+      origin: "https://hackerspub.example",
+      type: "poll",
+      id: postUuid,
+    }).id;
+    await expect(client.polls.get({ id: pollId })).resolves.toMatchObject({
+      ref: { rawId: postUuid },
+      options: [{ title: "Yes" }, { title: "No" }],
+    });
+    await expect(client.polls.vote({ session, pollId, choices: [1] })).resolves.toMatchObject({
+      votersCount: 1,
+    });
+    expect(seenRequests.map((request) => request.path)).toContain(`/api/posts/${postUuid}/vote`);
+  });
+
+  it("creates notes, replies, quotes, and fails closed for unattached media uploads", async () => {
+    const seenQueries: string[] = [];
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async (input, init) => {
+          const request = new Request(input, init);
+          const path = new URL(request.url).pathname;
+          if (path === "/api/media") {
+            const form = await request.formData();
+            expect(form.get("file")).toBeInstanceOf(Blob);
+            return Response.json({
+              url: "https://hackerspub.example/media/upload.webp",
+              width: 32,
+              height: 16,
+            });
+          }
+          const body = (await request.json()) as { readonly query?: string };
+          const query = body.query ?? "";
+          seenQueries.push(query);
+          if (query.includes("createNote")) {
+            return Response.json({
+              data: { createNote: { __typename: "CreateNotePayload", note: fixture.post } },
+            });
+          }
+          return Response.json({ data: { node: fixture.post } });
+        },
+      }),
+      origin: "https://hackerspub.example",
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    await expect(
+      client.posts.create({ session, content: "Hello", visibility: "public" }),
+    ).resolves.toMatchObject({ ref: { rawId: postUuid } });
+    await expect(
+      client.posts.create({ session, content: "Reply", replyToId: postId() }),
+    ).resolves.toMatchObject({ ref: { rawId: postUuid } });
+    await expect(
+      client.posts.create({ session, content: "Quote", quoteOfId: postId() }),
+    ).resolves.toMatchObject({ ref: { rawId: postUuid } });
+    expect(client.capabilities["media.upload"]).toMatchObject({ status: "unsupported" });
+    expect(createHackersPubAdapter().media).toBeUndefined();
+    await expect(
+      client.media.upload({
+        session,
+        file: new Blob(["png"], { type: "image/png" }),
+        filename: "image.png",
+      }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "media.upload", operation: "media.upload" },
+    });
+    expect(seenQueries.filter((query) => query.includes("createNote"))).toHaveLength(3);
+  });
+
+  it("rejects poll responses with non-UUID post identifiers", async () => {
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async () => Response.json({ ...pollResponse(), postId: "relay-poll-id" }),
+      }),
+      origin: "https://hackerspub.example",
+    });
+    const pollId = createEntityRef({
+      adapter: "hackerspub",
+      origin: "https://hackerspub.example",
+      type: "poll",
+      id: postUuid,
+    }).id;
+
+    await expect(client.polls.get({ id: pollId })).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { operation: "poll.get" },
+    });
   });
 
   it("rejects expired injected tokens before GraphQL requests", async () => {
@@ -291,6 +494,30 @@ describe("HackersPub adapter", () => {
     });
   });
 
+  it("rejects viewer responses with non-UUID account identifiers", async () => {
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async () =>
+          Response.json({
+            data: {
+              viewer: {
+                username: "alice",
+                handle: "@alice@hackers.pub",
+                uuid: "relay-account-id",
+              },
+            },
+          }),
+      }),
+      origin: "https://hackerspub.example",
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    await expect(client.auth.verifyCredentials(session)).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { operation: "auth.verifyCredentials" },
+    });
+  });
+
   it("classifies malformed NodeInfo hrefs as remote response errors", async () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter({
@@ -330,7 +557,7 @@ function accountId(): string {
     adapter: "hackerspub",
     origin: "https://hackerspub.example",
     type: "account",
-    id: "actor-1",
+    id: actorUuid,
   }).id;
 }
 
@@ -339,6 +566,33 @@ function postId(): string {
     adapter: "hackerspub",
     origin: "https://hackerspub.example",
     type: "post",
-    id: "post-1",
+    id: postUuid,
   }).id;
+}
+
+function relationshipActor() {
+  return {
+    ...accountMappingFixtures.hackerspub.account,
+    viewerFollows: true,
+    followsViewer: true,
+    viewerBlocks: false,
+  };
+}
+
+function pollResponse(voted = false) {
+  return {
+    postId: postUuid,
+    ends: "2999-01-01T00:00:00.000Z",
+    multiple: false,
+    votesCount: voted ? 1 : 0,
+    votersCount: voted ? 1 : 0,
+    options: [
+      { title: "Yes", votesCount: 0 },
+      { title: "No", votesCount: voted ? 1 : 0 },
+    ],
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

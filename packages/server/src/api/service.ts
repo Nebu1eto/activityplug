@@ -19,6 +19,7 @@ import {
   type OAuthCodeExchangeInput,
   type OAuthRefreshInput,
   type OAuthRevokeInput,
+  type Poll,
   type PostVisibility,
   type Post,
   type Relationship,
@@ -49,6 +50,7 @@ export interface ActivityPlugApiService {
   readonly timelines: ActivityPlugTimelineApiService;
   readonly search: ActivityPlugSearchApiService;
   readonly media: ActivityPlugMediaApiService;
+  readonly polls: ActivityPlugPollApiService;
   readonly social: ActivityPlugSocialApiService;
   readonly auth: ActivityPlugAuthApiService;
   readonly viewer: (input: ViewerInput) => Promise<VerifyCredentialsResult>;
@@ -84,6 +86,11 @@ export interface ActivityPlugSearchApiService {
 
 export interface ActivityPlugMediaApiService {
   readonly upload: (input: UploadMediaRequest) => Promise<MediaAttachment>;
+}
+
+export interface ActivityPlugPollApiService {
+  readonly get: (input: PollIdRequest) => Promise<Poll>;
+  readonly vote: (input: VotePollRequest) => Promise<Poll>;
 }
 
 export interface ActivityPlugSocialApiService {
@@ -223,6 +230,7 @@ export interface PublicPoll {
   readonly voted?: boolean;
   readonly ownVotes?: readonly number[];
   readonly options: readonly PublicPollOption[];
+  readonly extensions?: Readonly<Record<string, unknown>>;
   readonly raw: unknown;
 }
 
@@ -251,6 +259,7 @@ export interface PublicPost {
     readonly reblogs?: number;
     readonly favourites?: number;
   };
+  readonly extensions?: Readonly<Record<string, unknown>>;
   readonly raw: unknown;
 }
 
@@ -453,6 +462,16 @@ export interface UploadMediaRequest extends InstanceSelector {
   readonly sensitive?: boolean;
 }
 
+export interface PollIdRequest {
+  readonly id: string;
+  readonly sessionId?: string;
+}
+
+export interface VotePollRequest extends PollIdRequest {
+  readonly sessionId: string;
+  readonly choices: readonly number[];
+}
+
 export interface RelationshipRequest {
   readonly sessionId: string;
   readonly accountId: string;
@@ -515,6 +534,10 @@ export function createDefaultApiService(capabilities: CapabilitySet): ActivityPl
     },
     media: {
       upload: unsupportedApiOperation("media.upload"),
+    },
+    polls: {
+      get: unsupportedApiOperation("poll.get"),
+      vote: unsupportedApiOperation("poll.vote"),
     },
     social: {
       relationship: unsupportedApiOperation("account.relationships"),
@@ -603,7 +626,7 @@ export function serializeAccount(account: Account): PublicAccount {
       ? {}
       : { followingCount: account.counts.following }),
     ...(account.counts?.posts === undefined ? {} : { postsCount: account.counts.posts }),
-    extensions: {},
+    extensions: account.extensions ?? {},
     raw: account.raw,
   };
 }
@@ -621,6 +644,22 @@ export function serializeInstanceProfile(profile: InstanceProfile): PublicInstan
   };
 }
 
+export function serializePoll(poll: Poll): PublicPoll {
+  return {
+    ref: serializeEntityRef(poll.ref),
+    ...(poll.expiresAt === undefined ? {} : { expiresAt: poll.expiresAt }),
+    expired: poll.expired,
+    multiple: poll.multiple,
+    ...(poll.votesCount === undefined ? {} : { votesCount: poll.votesCount }),
+    ...(poll.votersCount === undefined ? {} : { votersCount: poll.votersCount }),
+    ...(poll.voted === undefined ? {} : { voted: poll.voted }),
+    ...(poll.ownVotes === undefined ? {} : { ownVotes: poll.ownVotes }),
+    options: poll.options,
+    ...(poll.extensions === undefined ? {} : { extensions: poll.extensions }),
+    raw: poll.raw,
+  };
+}
+
 export function serializePost(post: Post): PublicPost {
   return {
     ref: serializeEntityRef(post.ref),
@@ -633,26 +672,12 @@ export function serializePost(post: Post): PublicPost {
     sensitive: post.sensitive,
     ...(post.summary === undefined ? {} : { summary: post.summary }),
     media: post.media.map((attachment) => serializeMediaAttachment(attachment)),
-    ...(post.poll === undefined
-      ? {}
-      : {
-          poll: {
-            ref: serializeEntityRef(post.poll.ref),
-            ...(post.poll.expiresAt === undefined ? {} : { expiresAt: post.poll.expiresAt }),
-            expired: post.poll.expired,
-            multiple: post.poll.multiple,
-            ...(post.poll.votesCount === undefined ? {} : { votesCount: post.poll.votesCount }),
-            ...(post.poll.votersCount === undefined ? {} : { votersCount: post.poll.votersCount }),
-            ...(post.poll.voted === undefined ? {} : { voted: post.poll.voted }),
-            ...(post.poll.ownVotes === undefined ? {} : { ownVotes: post.poll.ownVotes }),
-            options: post.poll.options,
-            raw: post.poll.raw,
-          },
-        }),
+    ...(post.poll === undefined ? {} : { poll: serializePoll(post.poll) }),
     ...(post.replyTo === undefined ? {} : { replyTo: serializeEntityRef(post.replyTo) }),
     ...(post.quoteOf === undefined ? {} : { quoteOf: serializeEntityRef(post.quoteOf) }),
     ...(post.boostOf === undefined ? {} : { boostOf: serializeEntityRef(post.boostOf) }),
     ...(post.counts === undefined ? {} : { counts: post.counts }),
+    ...(post.extensions === undefined ? {} : { extensions: post.extensions }),
     raw: post.raw,
   };
 }

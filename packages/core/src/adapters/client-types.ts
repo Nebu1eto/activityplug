@@ -1,0 +1,341 @@
+import { type AuthAdapter, type AuthService, type AuthSessionStore } from "../auth/service.js";
+import { type AuthSession } from "../auth/types.js";
+import { type CapabilitySet } from "../capabilities/capability.js";
+import {
+  type Account,
+  type Connection,
+  type DeletedEntity,
+  type InstanceProfile,
+  type MediaAttachment,
+  type Poll,
+  type Post,
+  type PostVisibility,
+  type Relationship,
+  type SearchResult,
+} from "../types/entities.js";
+import { type AdapterMetadata } from "./metadata.js";
+
+export interface ActivityPlugAdapter {
+  readonly metadata: AdapterMetadata;
+  readonly auth?: AuthAdapter;
+  readonly instances?: InstanceAdapterOperations;
+  readonly accounts?: AccountAdapterOperations;
+  readonly posts?: PostAdapterOperations;
+  readonly timelines?: TimelineAdapterOperations;
+  readonly search?: SearchAdapterOperations;
+  readonly media?: MediaAdapterOperations;
+  readonly polls?: PollAdapterOperations;
+  readonly social?: SocialAdapterOperations;
+}
+
+export interface AdapterOperationContext {
+  readonly origin: string;
+  readonly adapterId: string;
+  readonly capabilities: CapabilitySet;
+  readonly sessionStore?: AuthSessionStore;
+}
+
+export interface InstanceAdapterOperations {
+  readonly detect?: (
+    input: DetectInstanceInput,
+    context: AdapterOperationContext,
+  ) => Promise<InstanceProfile>;
+  readonly getProfile?: (
+    input: GetInstanceProfileInput,
+    context: AdapterOperationContext,
+  ) => Promise<InstanceProfile>;
+}
+
+export interface AccountAdapterOperations {
+  readonly getById?: (input: GetAccountInput, context: AdapterOperationContext) => Promise<Account>;
+  readonly getByHandle?: (
+    input: LookupAccountInput,
+    context: AdapterOperationContext,
+  ) => Promise<Account | null>;
+  readonly listPosts?: (
+    input: ListAccountPostsInput,
+    context: AdapterOperationContext,
+  ) => Promise<Connection<Post>>;
+}
+
+export interface PostAdapterOperations {
+  readonly get?: (input: GetPostInput, context: AdapterOperationContext) => Promise<Post>;
+  readonly create?: (input: CreatePostInput, context: AdapterOperationContext) => Promise<Post>;
+  readonly delete?: (
+    input: DeletePostInput,
+    context: AdapterOperationContext,
+  ) => Promise<DeletedEntity>;
+}
+
+export interface TimelineAdapterOperations {
+  readonly home?: (
+    input: SessionPageInput,
+    context: AdapterOperationContext,
+  ) => Promise<Connection<Post>>;
+  readonly public?: (
+    input: PublicTimelineInput,
+    context: AdapterOperationContext,
+  ) => Promise<Connection<Post>>;
+  readonly hashtag?: (
+    input: HashtagTimelineInput,
+    context: AdapterOperationContext,
+  ) => Promise<Connection<Post>>;
+}
+
+export interface SearchAdapterOperations {
+  readonly search?: (input: SearchInput, context: AdapterOperationContext) => Promise<SearchResult>;
+}
+
+export interface MediaAdapterOperations {
+  readonly upload?: (
+    input: UploadMediaInput,
+    context: AdapterOperationContext,
+  ) => Promise<MediaAttachment>;
+}
+
+export interface PollAdapterOperations {
+  readonly get?: (input: GetPollInput, context: AdapterOperationContext) => Promise<Poll>;
+  readonly vote?: (input: VotePollInput, context: AdapterOperationContext) => Promise<Poll>;
+}
+
+export interface SocialAdapterOperations {
+  readonly relationship?: (
+    input: RelationshipInput,
+    context: AdapterOperationContext,
+  ) => Promise<Relationship>;
+  readonly follow?: (
+    input: RelationshipInput,
+    context: AdapterOperationContext,
+  ) => Promise<Relationship>;
+  readonly unfollow?: (
+    input: RelationshipInput,
+    context: AdapterOperationContext,
+  ) => Promise<Relationship>;
+  readonly block?: (
+    input: RelationshipInput,
+    context: AdapterOperationContext,
+  ) => Promise<Relationship>;
+  readonly unblock?: (
+    input: RelationshipInput,
+    context: AdapterOperationContext,
+  ) => Promise<Relationship>;
+  readonly mute?: (
+    input: MuteAccountInput,
+    context: AdapterOperationContext,
+  ) => Promise<Relationship>;
+  readonly unmute?: (
+    input: RelationshipInput,
+    context: AdapterOperationContext,
+  ) => Promise<Relationship>;
+  readonly favourite?: (input: PostActionInput, context: AdapterOperationContext) => Promise<Post>;
+  readonly unfavourite?: (
+    input: PostActionInput,
+    context: AdapterOperationContext,
+  ) => Promise<Post>;
+  readonly bookmark?: (input: PostActionInput, context: AdapterOperationContext) => Promise<Post>;
+  readonly unbookmark?: (input: PostActionInput, context: AdapterOperationContext) => Promise<Post>;
+  readonly boost?: (input: BoostPostInput, context: AdapterOperationContext) => Promise<Post>;
+  readonly unboost?: (input: PostActionInput, context: AdapterOperationContext) => Promise<Post>;
+  readonly react?: (input: ReactPostInput, context: AdapterOperationContext) => Promise<Post>;
+  readonly unreact?: (input: ReactPostInput, context: AdapterOperationContext) => Promise<Post>;
+}
+
+export interface ActivityPlugClientOptions {
+  readonly adapter: ActivityPlugAdapter;
+  readonly origin: string;
+  readonly capabilities?: CapabilitySet;
+  readonly sessionStore?: AuthSessionStore;
+}
+
+export interface ActivityPlugClient {
+  readonly adapter: ActivityPlugAdapter;
+  readonly origin: string;
+  readonly capabilities: CapabilitySet;
+  readonly auth: AuthService;
+  readonly instances: InstanceService;
+  readonly accounts: AccountService;
+  readonly posts: PostService;
+  readonly timelines: TimelineService;
+  readonly search: SearchService;
+  readonly media: MediaService;
+  readonly polls: PollService;
+  readonly social: SocialService;
+}
+
+export interface DetectInstanceInput {
+  readonly origin?: string;
+}
+
+export interface GetInstanceProfileInput {
+  readonly origin?: string;
+}
+
+export interface GetAccountInput {
+  readonly id: string;
+}
+
+export interface LookupAccountInput {
+  readonly handle: string;
+}
+
+export interface PageInput {
+  readonly after?: string;
+  readonly before?: string;
+  readonly limit?: number;
+}
+
+export interface SearchPageInput {
+  readonly limit?: number;
+}
+
+export interface ListAccountPostsInput {
+  readonly accountId: string;
+  readonly page?: PageInput;
+  readonly session?: AuthSession;
+}
+
+export interface SessionPageInput {
+  readonly session: AuthSession;
+  readonly page?: PageInput;
+}
+
+export interface GetPostInput {
+  readonly id: string;
+}
+
+export interface CreatePostInput {
+  readonly session: AuthSession;
+  readonly content: string;
+  readonly visibility?: PostVisibility;
+  readonly sensitive?: boolean;
+  readonly summary?: string;
+  readonly replyToId?: string;
+  readonly quoteOfId?: string;
+  readonly mediaIds?: readonly string[];
+  readonly poll?: {
+    readonly options: readonly string[];
+    readonly multiple?: boolean;
+    readonly expiresInSeconds?: number;
+  };
+}
+
+export interface DeletePostInput {
+  readonly session: AuthSession;
+  readonly id: string;
+}
+
+export interface PublicTimelineInput {
+  readonly local?: boolean;
+  readonly page?: PageInput;
+  readonly session?: AuthSession;
+}
+
+export interface HashtagTimelineInput {
+  readonly tag: string;
+  readonly page?: PageInput;
+}
+
+export interface SearchInput {
+  readonly query: string;
+  readonly type?: "accounts" | "posts" | "hashtags";
+  readonly resolve?: boolean;
+  readonly page?: SearchPageInput;
+  readonly session?: AuthSession;
+}
+
+export interface UploadMediaInput {
+  readonly session: AuthSession;
+  readonly file: Blob;
+  readonly filename?: string;
+  readonly description?: string;
+  readonly sensitive?: boolean;
+}
+
+export interface GetPollInput {
+  readonly id: string;
+  readonly session?: AuthSession;
+}
+
+export interface VotePollInput {
+  readonly session: AuthSession;
+  readonly pollId: string;
+  readonly choices: readonly number[];
+}
+
+export interface RelationshipInput {
+  readonly session: AuthSession;
+  readonly accountId: string;
+}
+
+export interface MuteAccountInput extends RelationshipInput {
+  readonly notifications?: boolean;
+  readonly durationSeconds?: number;
+}
+
+export interface PostActionInput {
+  readonly session: AuthSession;
+  readonly postId: string;
+}
+
+export interface BoostPostInput extends PostActionInput {
+  readonly visibility?: PostVisibility;
+}
+
+export interface ReactPostInput extends PostActionInput {
+  readonly emoji: string;
+}
+
+export interface InstanceService {
+  readonly detect: (input?: DetectInstanceInput) => Promise<InstanceProfile>;
+  readonly getProfile: (input?: GetInstanceProfileInput) => Promise<InstanceProfile>;
+}
+
+export interface AccountService {
+  readonly getById: (input: GetAccountInput) => Promise<Account>;
+  readonly getByHandle: (input: LookupAccountInput) => Promise<Account | null>;
+  readonly listPosts: (input: ListAccountPostsInput) => Promise<Connection<Post>>;
+}
+
+export interface PostService {
+  readonly get: (input: GetPostInput) => Promise<Post>;
+  readonly create: (input: CreatePostInput) => Promise<Post>;
+  readonly delete: (input: DeletePostInput) => Promise<DeletedEntity>;
+}
+
+export interface TimelineService {
+  readonly home: (input: SessionPageInput) => Promise<Connection<Post>>;
+  readonly public: (input: PublicTimelineInput) => Promise<Connection<Post>>;
+  readonly local: (input: Omit<PublicTimelineInput, "local">) => Promise<Connection<Post>>;
+  readonly hashtag: (input: HashtagTimelineInput) => Promise<Connection<Post>>;
+}
+
+export interface SearchService {
+  readonly search: (input: SearchInput) => Promise<SearchResult>;
+}
+
+export interface MediaService {
+  readonly upload: (input: UploadMediaInput) => Promise<MediaAttachment>;
+}
+
+export interface PollService {
+  readonly get: (input: GetPollInput) => Promise<Poll>;
+  readonly vote: (input: VotePollInput) => Promise<Poll>;
+}
+
+export interface SocialService {
+  readonly relationship: (input: RelationshipInput) => Promise<Relationship>;
+  readonly follow: (input: RelationshipInput) => Promise<Relationship>;
+  readonly unfollow: (input: RelationshipInput) => Promise<Relationship>;
+  readonly block: (input: RelationshipInput) => Promise<Relationship>;
+  readonly unblock: (input: RelationshipInput) => Promise<Relationship>;
+  readonly mute: (input: MuteAccountInput) => Promise<Relationship>;
+  readonly unmute: (input: RelationshipInput) => Promise<Relationship>;
+  readonly favourite: (input: PostActionInput) => Promise<Post>;
+  readonly unfavourite: (input: PostActionInput) => Promise<Post>;
+  readonly bookmark: (input: PostActionInput) => Promise<Post>;
+  readonly unbookmark: (input: PostActionInput) => Promise<Post>;
+  readonly boost: (input: BoostPostInput) => Promise<Post>;
+  readonly unboost: (input: PostActionInput) => Promise<Post>;
+  readonly react: (input: ReactPostInput) => Promise<Post>;
+  readonly unreact: (input: ReactPostInput) => Promise<Post>;
+}

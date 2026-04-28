@@ -2,6 +2,7 @@ import {
   type ActivityPlugAdapter,
   type CapabilityName,
   createActivityPlug,
+  createEntityRef,
   type CapabilitySet,
 } from "@activityplug/core";
 import {
@@ -16,6 +17,17 @@ import { createMisskeyAdapter } from "@activityplug/misskey";
 import { createPleromaAdapter } from "@activityplug/pleroma";
 import { describe, expect, it } from "vitest";
 
+import { expectCapabilitySurfaces } from "./e2e-capabilities.js";
+import { expectMediaSurfaces } from "./e2e-media.js";
+import { expectPollSurfaces } from "./e2e-polls.js";
+import {
+  expectSupportedAccountSocialActions,
+  expectSupportedPostSocialActions,
+  expectSupportedPostSocialActionsGraphQL,
+  hasSupportedAccountSocialAction,
+  hasSupportedPostSocialAction,
+} from "./e2e-social.js";
+import { type E2EFetch, isRecord, postGraphQL, readJsonData } from "./e2e-utils.js";
 import { createActivityPlugServer } from "./runtime/server.js";
 
 const targets = [
@@ -68,7 +80,12 @@ async function expectServerBaseline(
     target.token === undefined ? undefined : await importTokenOverHttp(server.app.fetch, target);
   const graphqlSession =
     target.token === undefined ? undefined : await importTokenOverGraphQL(server.app.fetch, target);
-  const capabilities = client.capabilities;
+  const capabilities = await expectCapabilitySurfaces(
+    server.app.fetch,
+    target,
+    client.capabilities,
+  );
+  requireSessionsForAuthenticatedCapabilities(target, capabilities, session, graphqlSession);
   const encodedOrigin = encodeURIComponent(target.origin);
   const instanceResponse = await server.app.fetch(
     new Request(`http://activityplug.test/api/v1/instances/${encodedOrigin}`),
@@ -190,18 +207,17 @@ async function expectServerBaseline(
     expect(graphqlViewer["data"]).toMatchObject({ viewer: { ref: { origin: target.origin } } });
   }
 
-  if (session !== undefined && isSupported(capabilities, "media.upload")) {
-    await uploadMediaOverHttp(server.app.fetch, target, session.id);
+  await expectPollSurfaces(server.app.fetch, target, capabilities, session?.id, graphqlSession?.id);
 
-    if (graphqlSession !== undefined) {
-      await uploadMediaOverGraphQL(server.app.fetch, target, graphqlSession.id);
-    }
-  }
+  const mediaIds =
+    session !== undefined && isSupported(capabilities, "media.upload")
+      ? await expectMediaSurfaces(server.app.fetch, target, session.id, graphqlSession?.id)
+      : undefined;
 
   const checksPostSocialActions =
     session !== undefined &&
     graphqlSession !== undefined &&
-    hasSupportedPostSocialAction(capabilities);
+    hasSupportedPostSocialAction((name) => isSupported(capabilities, name as CapabilityName));
   let checkedPostSocialActions = false;
 
   if (
@@ -209,35 +225,79 @@ async function expectServerBaseline(
     isSupported(capabilities, "posts.create") &&
     isSupported(capabilities, "posts.delete")
   ) {
-    const httpCreated = await createPostOverHttp(server.app.fetch, target, session.id);
-    if (target.adapter === "misskey") await delay(10_000);
+    const httpCreated = await createPostOverHttp(
+      server.app.fetch,
+      target,
+      session.id,
+      mediaIds?.httpMediaId,
+    );
+    if (target.adapter === "misskey") await waitForPostOverHttp(server.app.fetch, httpCreated);
     await expectSupportedPostSocialActions(
       server.app.fetch,
       target,
-      capabilities,
+      (name) => isSupported(capabilities, name as CapabilityName),
       httpCreated,
       session.id,
+      waitForPostOverHttp,
     );
     await deletePostOverHttp(server.app.fetch, httpCreated, session.id);
 
     if (graphqlSession !== undefined) {
-      if (target.adapter === "misskey") await delay(10_000);
       const graphqlCreated = await createPostOverGraphQL(
         server.app.fetch,
         target,
         graphqlSession.id,
+        mediaIds?.graphqlMediaId,
       );
-      if (target.adapter === "misskey") await delay(10_000);
+      if (target.adapter === "misskey") await waitForPostOverHttp(server.app.fetch, graphqlCreated);
       await expectSupportedPostSocialActionsGraphQL(
         server.app.fetch,
         target,
-        capabilities,
+        (name) => isSupported(capabilities, name as CapabilityName),
         graphqlCreated,
         graphqlSession.id,
+        postGraphQL,
+        waitForPostOverHttp,
       );
       await deletePostOverGraphQL(server.app.fetch, graphqlCreated, graphqlSession.id);
     }
     checkedPostSocialActions = true;
+  } else if (session !== undefined && isSupported(capabilities, "posts.delete")) {
+    if (target.httpDeletePostId === undefined || target.graphqlDeletePostId === undefined) {
+      throw new TypeError("Fediverse server E2E target must provide delete post ids.");
+    }
+    if (target.httpDeletePostId !== undefined) {
+      await deletePostOverHttp(
+        server.app.fetch,
+        publicPostId(target, target.httpDeletePostId),
+        session.id,
+      );
+    }
+    if (graphqlSession !== undefined && target.graphqlDeletePostId !== undefined) {
+      await deletePostOverGraphQL(
+        server.app.fetch,
+        publicPostId(target, target.graphqlDeletePostId),
+        graphqlSession.id,
+      );
+    }
+  }
+
+  if (
+    session !== undefined &&
+    isSupported(capabilities, "posts.create") &&
+    isSupported(capabilities, "posts.delete") &&
+    isSupported(capabilities, "polls.create")
+  ) {
+    const httpPollPost = await createPollPostOverHttp(server.app.fetch, target, session.id);
+    await deletePostOverHttp(server.app.fetch, httpPollPost, session.id);
+    if (graphqlSession !== undefined) {
+      const graphqlPollPost = await createPollPostOverGraphQL(
+        server.app.fetch,
+        target,
+        graphqlSession.id,
+      );
+      await deletePostOverGraphQL(server.app.fetch, graphqlPollPost, graphqlSession.id);
+    }
   }
 
   if (
@@ -258,20 +318,28 @@ async function expectServerBaseline(
     await expectSupportedPostSocialActions(
       server.app.fetch,
       target,
-      capabilities,
+      (name) => isSupported(capabilities, name as CapabilityName),
       seededPostId,
       session.id,
+      waitForPostOverHttp,
     );
     await expectSupportedPostSocialActionsGraphQL(
       server.app.fetch,
       target,
-      capabilities,
+      (name) => isSupported(capabilities, name as CapabilityName),
       seededPostId,
       graphqlSession.id,
+      postGraphQL,
+      waitForPostOverHttp,
     );
   }
 
   if (target.accountHandle !== undefined && isSupported(capabilities, "search.accounts")) {
+    const expectedAccountId = await accountIdByHandleOverHttp(
+      server.app.fetch,
+      target,
+      target.accountHandle,
+    );
     const searchResponse = await server.app.fetch(
       new Request(
         `http://activityplug.test/api/v1/search?origin=${encodeURIComponent(
@@ -282,13 +350,12 @@ async function expectServerBaseline(
       ),
     );
     expect(searchResponse.status).toBe(200);
-    expect(await readJsonData(searchResponse)).toMatchObject({
-      accounts: expect.any(Array),
-    });
+    const search = await readJsonData(searchResponse);
+    expect(accountRefIds(search)).toContain(expectedAccountId);
 
     const graphqlSearch = await postGraphQL(server.app.fetch, {
       query:
-        "query($input: SearchInput!) { search(input: $input) { accounts { ref { origin rawId } } } }",
+        "query($input: SearchInput!) { search(input: $input) { accounts { ref { id origin rawId } } } }",
       variables: {
         input: {
           origin: target.origin,
@@ -299,9 +366,7 @@ async function expectServerBaseline(
         },
       },
     });
-    expect(graphqlSearch["data"]).toMatchObject({
-      search: { accounts: expect.any(Array) },
-    });
+    expect(graphqlAccountRefIds(graphqlSearch)).toContain(expectedAccountId);
   }
 
   if (isSupported(capabilities, "search.hashtags")) {
@@ -319,9 +384,7 @@ async function expectServerBaseline(
     );
     expect(hashtagSearchResponse.status).toBe(200);
     const hashtagSearch = await readJsonData(hashtagSearchResponse);
-    expect(
-      (hashtagSearch as { readonly hashtags?: readonly unknown[] }).hashtags?.length,
-    ).toBeGreaterThan(0);
+    expect(hashtagNames(hashtagSearch)).toContain(normalizedHashtag(target.hashtag));
 
     const graphqlHashtagSearch = await postGraphQL(server.app.fetch, {
       query: "query($input: SearchInput!) { search(input: $input) { hashtags { name } } }",
@@ -338,7 +401,114 @@ async function expectServerBaseline(
     const hashtags = (
       graphqlHashtagSearch["data"] as { readonly search?: { readonly hashtags?: unknown[] } }
     ).search?.hashtags;
-    expect(hashtags?.length).toBeGreaterThan(0);
+    expect(hashtagNames({ hashtags })).toContain(normalizedHashtag(target.hashtag));
+  }
+  if (
+    isSupported(capabilities, "search.accounts") &&
+    isSupported(capabilities, "search.posts") &&
+    isSupported(capabilities, "search.hashtags")
+  ) {
+    if (target.hashtag === undefined) {
+      throw new TypeError("Fediverse server E2E target must provide hashtag for broad search.");
+    }
+    if (target.accountHandle === undefined) {
+      throw new TypeError(
+        "Fediverse server E2E target must provide accountHandle for broad search.",
+      );
+    }
+    if (target.postSearchQuery === undefined || target.postSearchRawId === undefined) {
+      throw new TypeError(
+        "Fediverse server E2E target must provide post search data for broad search.",
+      );
+    }
+    const expectedBroadAccountId = await accountIdByHandleOverHttp(
+      server.app.fetch,
+      target,
+      target.accountHandle,
+    );
+    const broadAccountSearchResponse = await server.app.fetch(
+      new Request(
+        `http://activityplug.test/api/v1/search?origin=${encodeURIComponent(
+          target.origin,
+        )}&q=${encodeURIComponent(target.accountHandle)}&limit=5${
+          session === undefined ? "" : `&sessionId=${encodeURIComponent(session.id)}`
+        }`,
+      ),
+    );
+    expect(broadAccountSearchResponse.status).toBe(200);
+    expect(accountRefIds(await readJsonData(broadAccountSearchResponse))).toContain(
+      expectedBroadAccountId,
+    );
+    const broadPostSearchResponse = await server.app.fetch(
+      new Request(
+        `http://activityplug.test/api/v1/search?origin=${encodeURIComponent(
+          target.origin,
+        )}&q=${encodeURIComponent(target.postSearchQuery)}&limit=5${
+          session === undefined ? "" : `&sessionId=${encodeURIComponent(session.id)}`
+        }`,
+      ),
+    );
+    expect(broadPostSearchResponse.status).toBe(200);
+    expect(postRawIds(await readJsonData(broadPostSearchResponse))).toContain(
+      target.postSearchRawId,
+    );
+    const broadHashtagSearchResponse = await server.app.fetch(
+      new Request(
+        `http://activityplug.test/api/v1/search?origin=${encodeURIComponent(
+          target.origin,
+        )}&q=${encodeURIComponent(target.hashtag)}&limit=5${
+          session === undefined ? "" : `&sessionId=${encodeURIComponent(session.id)}`
+        }`,
+      ),
+    );
+    expect(broadHashtagSearchResponse.status).toBe(200);
+    const broadSearchResult = await readJsonData(broadHashtagSearchResponse);
+    expect(hashtagNames(broadSearchResult)).toContain(normalizedHashtag(target.hashtag));
+
+    const broadAccountSearch = await postGraphQL(server.app.fetch, {
+      query: "query($input: SearchInput!) { search(input: $input) { accounts { ref { id } } } }",
+      variables: {
+        input: {
+          origin: target.origin,
+          query: target.accountHandle,
+          ...(session === undefined ? {} : { sessionId: session.id }),
+          page: { limit: 5 },
+        },
+      },
+    });
+    expect(graphqlAccountRefIds(broadAccountSearch)).toContain(expectedBroadAccountId);
+
+    const broadPostSearch = await postGraphQL(server.app.fetch, {
+      query: "query($input: SearchInput!) { search(input: $input) { posts { ref { rawId } } } }",
+      variables: {
+        input: {
+          origin: target.origin,
+          query: target.postSearchQuery,
+          ...(session === undefined ? {} : { sessionId: session.id }),
+          page: { limit: 5 },
+        },
+      },
+    });
+    const broadPosts = (
+      broadPostSearch["data"] as { readonly search?: { readonly posts?: unknown[] } }
+    ).search?.posts;
+    expect(postRawIds({ posts: broadPosts })).toContain(target.postSearchRawId);
+
+    const broadHashtagSearch = await postGraphQL(server.app.fetch, {
+      query: "query($input: SearchInput!) { search(input: $input) { hashtags { name } } }",
+      variables: {
+        input: {
+          origin: target.origin,
+          query: target.hashtag,
+          ...(session === undefined ? {} : { sessionId: session.id }),
+          page: { limit: 5 },
+        },
+      },
+    });
+    const broadHashtags = (
+      broadHashtagSearch["data"] as { readonly search?: { readonly hashtags?: unknown[] } }
+    ).search?.hashtags;
+    expect(hashtagNames({ hashtags: broadHashtags })).toContain(normalizedHashtag(target.hashtag));
   }
 
   if (
@@ -346,7 +516,10 @@ async function expectServerBaseline(
     graphqlSession !== undefined &&
     isSupported(capabilities, "accounts.lookupByHandle")
   ) {
-    if (target.socialActionHandle === undefined && hasSupportedAccountSocialAction(capabilities)) {
+    if (
+      target.socialActionHandle === undefined &&
+      hasSupportedAccountSocialAction((name) => isSupported(capabilities, name as CapabilityName))
+    ) {
       throw new TypeError("Fediverse server E2E target must provide socialActionHandle.");
     }
     if (target.socialActionHandle !== undefined) {
@@ -357,10 +530,11 @@ async function expectServerBaseline(
       );
       await expectSupportedAccountSocialActions(
         server.app.fetch,
-        capabilities,
+        (name) => isSupported(capabilities, name as CapabilityName),
         accountId,
         session.id,
         graphqlSession.id,
+        postGraphQL,
       );
     }
   }
@@ -368,6 +542,9 @@ async function expectServerBaseline(
   if (!isSupported(capabilities, "search.posts")) return;
   if (target.postSearchQuery === undefined) {
     throw new TypeError("Fediverse server E2E target must provide postSearchQuery.");
+  }
+  if (target.postSearchRawId === undefined) {
+    throw new TypeError("Fediverse server E2E target must provide postSearchRawId.");
   }
 
   const postSearchResponse = await server.app.fetch(
@@ -382,10 +559,11 @@ async function expectServerBaseline(
   expect(postSearchResponse.status).toBe(200);
   const postSearch = await readJsonData(postSearchResponse);
   expect(postSearch).toMatchObject({ posts: expect.any(Array) });
-  expect((postSearch as { readonly posts?: readonly unknown[] }).posts?.length).toBeGreaterThan(0);
+  expect(postRawIds(postSearch)).toContain(target.postSearchRawId);
 
   const graphqlPostSearch = await postGraphQL(server.app.fetch, {
-    query: "query($input: SearchInput!) { search(input: $input) { posts { ref { rawId } } } }",
+    query:
+      "query($input: SearchInput!) { search(input: $input) { posts { ref { rawId } url contentText contentHtml } } }",
     variables: {
       input: {
         origin: target.origin,
@@ -401,56 +579,44 @@ async function expectServerBaseline(
   });
   const posts = (graphqlPostSearch["data"] as { readonly search?: { readonly posts?: unknown[] } })
     .search?.posts;
-  expect(posts?.length).toBeGreaterThan(0);
+  expect(postRawIds({ posts })).toContain(target.postSearchRawId);
 }
 
 function isSupported(capabilities: CapabilitySet, name: CapabilityName): boolean {
   return capabilities[name]?.status === "supported";
 }
 
-function hasSupportedPostSocialAction(capabilities: CapabilitySet): boolean {
-  return (
-    isSupported(capabilities, "social.favourite") ||
-    isSupported(capabilities, "social.bookmark") ||
-    isSupported(capabilities, "social.boost") ||
-    isSupported(capabilities, "social.reaction")
-  );
-}
-
-function hasSupportedAccountSocialAction(capabilities: CapabilitySet): boolean {
-  return (
-    isSupported(capabilities, "social.follow") ||
-    isSupported(capabilities, "social.block") ||
-    isSupported(capabilities, "social.mute")
-  );
-}
-
-async function readJsonData(response: Response): Promise<unknown> {
-  const json = (await response.json()) as unknown;
-  if (!isRecord(json)) throw new TypeError("ActivityPlug server E2E response must be an object.");
-  return json["data"];
-}
-
-async function postGraphQL(
-  fetch: (request: Request) => Response | Promise<Response>,
-  body: { readonly query: string; readonly variables?: Record<string, unknown> },
-): Promise<Record<string, unknown>> {
-  const response = await fetch(
-    new Request("http://activityplug.test/graphql", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    }),
-  );
-  expect(response.status).toBe(200);
-  const json = (await response.json()) as unknown;
-  if (!isRecord(json)) throw new TypeError("GraphQL response must be an object.");
-  expect(json["errors"]).toBeUndefined();
-  return json;
+function requireSessionsForAuthenticatedCapabilities(
+  target: AdapterE2ETarget,
+  capabilities: CapabilitySet,
+  session: { readonly id: string } | undefined,
+  graphqlSession: { readonly id: string } | undefined,
+): void {
+  const requiresSession = [
+    "auth.tokenInjection",
+    "timelines.home",
+    "media.upload",
+    "posts.create",
+    "posts.delete",
+    "polls.vote",
+    "accounts.relationships",
+    "social.follow",
+    "social.block",
+    "social.mute",
+    "social.favourite",
+    "social.bookmark",
+    "social.boost",
+    "social.reaction",
+  ].some((capability) => isSupported(capabilities, capability as CapabilityName));
+  if (requiresSession && (session === undefined || graphqlSession === undefined)) {
+    throw new TypeError(
+      `Fediverse server E2E target must provide token for authenticated capabilities: ${target.adapter}.`,
+    );
+  }
 }
 
 async function importTokenOverHttp(
-  fetch: (request: Request) => Response | Promise<Response>,
+  fetch: E2EFetch,
   target: AdapterE2ETarget,
 ): Promise<{ readonly id: string }> {
   if (target.token === undefined) throw new TypeError("Token import requires a target token.");
@@ -473,7 +639,7 @@ async function importTokenOverHttp(
 }
 
 async function importTokenOverGraphQL(
-  fetch: (request: Request) => Response | Promise<Response>,
+  fetch: E2EFetch,
   target: AdapterE2ETarget,
 ): Promise<{ readonly id: string }> {
   if (target.token === undefined) throw new TypeError("Token import requires a target token.");
@@ -503,57 +669,11 @@ function parseSessionId(value: unknown): { readonly id: string } {
   return { id: value["id"] };
 }
 
-async function uploadMediaOverHttp(
-  fetch: (request: Request) => Response | Promise<Response>,
-  target: AdapterE2ETarget,
-  authSessionId: string,
-): Promise<void> {
-  const form = new FormData();
-  form.set("origin", target.origin);
-  form.set("adapter", target.adapter);
-  form.set(
-    "file",
-    new File([onePixelPngBuffer()], "activityplug-server-e2e.png", { type: "image/png" }),
-  );
-  form.set("description", "ActivityPlug server E2E media upload");
-  const response = await fetch(
-    new Request("http://activityplug.test/api/v1/media", {
-      method: "POST",
-      headers: { authorization: `Bearer ${authSessionId}` },
-      body: form,
-    }),
-  );
-  expect(response.status).toBe(200);
-  expect(await readJsonData(response)).toMatchObject({ ref: { origin: target.origin } });
-}
-
-async function uploadMediaOverGraphQL(
-  fetch: (request: Request) => Response | Promise<Response>,
-  target: AdapterE2ETarget,
-  authSessionId: string,
-): Promise<void> {
-  const result = await postGraphQL(fetch, {
-    query:
-      "mutation($input: UploadMediaInput!) { uploadMedia(input: $input) { ref { origin rawId } } }",
-    variables: {
-      input: {
-        origin: target.origin,
-        adapter: adapterKind(target.adapter),
-        sessionId: authSessionId,
-        fileBase64: Buffer.from(onePixelPngBuffer()).toString("base64"),
-        filename: "activityplug-server-e2e.png",
-        contentType: "image/png",
-        description: "ActivityPlug server GraphQL E2E media upload",
-      },
-    },
-  });
-  expect(result["data"]).toMatchObject({ uploadMedia: { ref: { origin: target.origin } } });
-}
-
 async function createPostOverHttp(
-  fetch: (request: Request) => Response | Promise<Response>,
+  fetch: E2EFetch,
   target: AdapterE2ETarget,
   authSessionId: string,
+  mediaId?: string,
 ): Promise<string> {
   const response = await fetch(
     new Request("http://activityplug.test/api/v1/posts", {
@@ -567,16 +687,20 @@ async function createPostOverHttp(
         adapter: target.adapter,
         content: `ActivityPlug server HTTP E2E ${Date.now()}`,
         visibility: "public",
+        ...(mediaId === undefined ? {} : { mediaIds: [mediaId] }),
       }),
     }),
   );
   expect(response.status).toBe(200);
   const post = await readJsonData(response);
+  if (mediaId !== undefined) {
+    expect(mediaRefIds(post)).toEqual([mediaId]);
+  }
   return refId(post);
 }
 
 async function deletePostOverHttp(
-  fetch: (request: Request) => Response | Promise<Response>,
+  fetch: E2EFetch,
   id: string,
   authSessionId: string,
 ): Promise<void> {
@@ -587,17 +711,20 @@ async function deletePostOverHttp(
     }),
   );
   expect(response.status).toBe(200);
-  expect(await readJsonData(response)).toMatchObject({ deleted: true });
+  const deleted = await readJsonData(response);
+  expect(deleted).toMatchObject({ deleted: true });
+  expect(refId(deleted)).toBe(id);
 }
 
 async function createPostOverGraphQL(
-  fetch: (request: Request) => Response | Promise<Response>,
+  fetch: E2EFetch,
   target: AdapterE2ETarget,
   authSessionId: string,
+  mediaId?: string,
 ): Promise<string> {
   const result = await postGraphQL(fetch, {
     query:
-      "mutation($input: CreatePostInput!) { createPost(input: $input) { ref { id origin rawId } } }",
+      "mutation($input: CreatePostInput!) { createPost(input: $input) { ref { id origin rawId } media { ref { id } } } }",
     variables: {
       input: {
         origin: target.origin,
@@ -605,30 +732,100 @@ async function createPostOverGraphQL(
         sessionId: authSessionId,
         content: `ActivityPlug server GraphQL E2E ${Date.now()}`,
         visibility: "PUBLIC",
+        ...(mediaId === undefined ? {} : { mediaIds: [mediaId] }),
       },
     },
   });
   const data = result["data"];
   if (!isRecord(data)) throw new TypeError("GraphQL createPost response must include data.");
   const created = data["createPost"];
+  if (mediaId !== undefined) {
+    expect(mediaRefIds(created)).toEqual([mediaId]);
+  }
+  return refId(created);
+}
+
+async function createPollPostOverHttp(
+  fetch: E2EFetch,
+  target: AdapterE2ETarget,
+  authSessionId: string,
+): Promise<string> {
+  const response = await fetch(
+    new Request("http://activityplug.test/api/v1/posts", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${authSessionId}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        origin: target.origin,
+        adapter: target.adapter,
+        content: `ActivityPlug server HTTP poll E2E ${Date.now()}`,
+        visibility: "public",
+        poll: {
+          options: ["TypeScript", "ActivityPub"],
+          multiple: false,
+          expiresInSeconds: 3600,
+        },
+      }),
+    }),
+  );
+  expect(response.status).toBe(200);
+  const post = await readJsonData(response);
+  expect(pollRefId(post)).toEqual(expect.any(String));
+  expectExpectedPostPollPayload(post);
+  return refId(post);
+}
+
+async function createPollPostOverGraphQL(
+  fetch: E2EFetch,
+  target: AdapterE2ETarget,
+  authSessionId: string,
+): Promise<string> {
+  const result = await postGraphQL(fetch, {
+    query:
+      "mutation($input: CreatePostInput!) { createPost(input: $input) { ref { id } poll { ref { id } multiple options { title } } } }",
+    variables: {
+      input: {
+        origin: target.origin,
+        adapter: adapterKind(target.adapter),
+        sessionId: authSessionId,
+        content: `ActivityPlug server GraphQL poll E2E ${Date.now()}`,
+        visibility: "PUBLIC",
+        poll: {
+          options: ["TypeScript", "ActivityPub"],
+          multiple: false,
+          expiresInSeconds: 3600,
+        },
+      },
+    },
+  });
+  const data = result["data"];
+  if (!isRecord(data)) throw new TypeError("GraphQL createPost response must include data.");
+  const created = data["createPost"];
+  expect(pollRefId(created)).toEqual(expect.any(String));
+  expectExpectedPostPollPayload(created);
   return refId(created);
 }
 
 async function deletePostOverGraphQL(
-  fetch: (request: Request) => Response | Promise<Response>,
+  fetch: E2EFetch,
   id: string,
   authSessionId: string,
 ): Promise<void> {
   const result = await postGraphQL(fetch, {
     query:
-      "mutation($id: ID!, $sessionId: ID!) { deletePost(id: $id, sessionId: $sessionId) { deleted } }",
+      "mutation($id: ID!, $sessionId: ID!) { deletePost(id: $id, sessionId: $sessionId) { ref { id } deleted } }",
     variables: { id, sessionId: authSessionId },
   });
   expect(result["data"]).toMatchObject({ deletePost: { deleted: true } });
+  const data = result["data"];
+  if (!isRecord(data)) throw new TypeError("GraphQL deletePost response must include data.");
+  expect(refId(data["deletePost"])).toBe(id);
 }
 
 async function ownedSeededPostId(
-  fetch: (request: Request) => Response | Promise<Response>,
+  fetch: E2EFetch,
   target: AdapterE2ETarget,
   capabilities: CapabilitySet,
   sessionId: string,
@@ -655,7 +852,7 @@ async function ownedSeededPostId(
 }
 
 async function accountIdByHandleOverHttp(
-  fetch: (request: Request) => Response | Promise<Response>,
+  fetch: E2EFetch,
   target: AdapterE2ETarget,
   handle: string,
 ): Promise<string> {
@@ -670,256 +867,6 @@ async function accountIdByHandleOverHttp(
   return refId(await readJsonData(response));
 }
 
-async function expectSupportedAccountSocialActions(
-  fetch: (request: Request) => Response | Promise<Response>,
-  capabilities: CapabilitySet,
-  accountId: string,
-  sessionId: string,
-  graphqlSessionId: string,
-): Promise<void> {
-  if (isSupported(capabilities, "accounts.relationships")) {
-    await accountRelationshipOverHttp(fetch, accountId, sessionId);
-    await accountRelationshipOverGraphQL(fetch, accountId, graphqlSessionId);
-  }
-  if (isSupported(capabilities, "social.follow")) {
-    await accountActionOverHttp(fetch, accountId, "follow", sessionId);
-    await accountActionOverHttp(fetch, accountId, "unfollow", sessionId);
-    await accountActionOverGraphQL(fetch, "followAccount", accountId, graphqlSessionId);
-    await accountActionOverGraphQL(fetch, "unfollowAccount", accountId, graphqlSessionId);
-  }
-  if (isSupported(capabilities, "social.block")) {
-    await accountActionOverHttp(fetch, accountId, "block", sessionId);
-    await accountActionOverHttp(fetch, accountId, "unblock", sessionId);
-    await accountActionOverGraphQL(fetch, "blockAccount", accountId, graphqlSessionId);
-    await accountActionOverGraphQL(fetch, "unblockAccount", accountId, graphqlSessionId);
-  }
-  if (isSupported(capabilities, "social.mute")) {
-    await accountActionOverHttp(fetch, accountId, "mute", sessionId);
-    await accountActionOverHttp(fetch, accountId, "unmute", sessionId);
-    await accountActionOverGraphQL(fetch, "muteAccount", accountId, graphqlSessionId);
-    await accountActionOverGraphQL(fetch, "unmuteAccount", accountId, graphqlSessionId);
-  }
-}
-
-async function accountRelationshipOverHttp(
-  fetch: (request: Request) => Response | Promise<Response>,
-  accountId: string,
-  sessionId: string,
-): Promise<void> {
-  const response = await fetch(
-    new Request(
-      `http://activityplug.test/api/v1/accounts/${encodeURIComponent(accountId)}/relationships`,
-      { headers: { authorization: `Bearer ${sessionId}` } },
-    ),
-  );
-  expect(response.status).toBe(200);
-  expect(await readJsonData(response)).toMatchObject({ account: { id: accountId } });
-}
-
-async function accountRelationshipOverGraphQL(
-  fetch: (request: Request) => Response | Promise<Response>,
-  accountId: string,
-  sessionId: string,
-): Promise<void> {
-  const result = await postGraphQL(fetch, {
-    query:
-      "query($id: ID!, $sessionId: ID!) { accountRelationship(id: $id, sessionId: $sessionId) { account { id } } }",
-    variables: { id: accountId, sessionId },
-  });
-  expect(result["data"]).toMatchObject({
-    accountRelationship: { account: { id: accountId } },
-  });
-}
-
-async function accountActionOverHttp(
-  fetch: (request: Request) => Response | Promise<Response>,
-  accountId: string,
-  action: "follow" | "unfollow" | "block" | "unblock" | "mute" | "unmute",
-  sessionId: string,
-): Promise<void> {
-  const response = await fetch(
-    new Request(
-      `http://activityplug.test/api/v1/accounts/${encodeURIComponent(accountId)}/${action}`,
-      {
-        method: "POST",
-        headers: { authorization: `Bearer ${sessionId}` },
-      },
-    ),
-  );
-  expect(response.status).toBe(200);
-  expect(await readJsonData(response)).toMatchObject({ account: { id: accountId } });
-}
-
-async function accountActionOverGraphQL(
-  fetch: (request: Request) => Response | Promise<Response>,
-  mutation:
-    | "followAccount"
-    | "unfollowAccount"
-    | "blockAccount"
-    | "unblockAccount"
-    | "muteAccount"
-    | "unmuteAccount",
-  accountId: string,
-  sessionId: string,
-): Promise<void> {
-  const result =
-    mutation === "muteAccount"
-      ? await postGraphQL(fetch, {
-          query: `mutation($input: MuteAccountInput!) { ${mutation}(input: $input) { account { id } } }`,
-          variables: { input: { accountId, sessionId } },
-        })
-      : await postGraphQL(fetch, {
-          query: `mutation($id: ID!, $sessionId: ID!) { ${mutation}(id: $id, sessionId: $sessionId) { account { id } } }`,
-          variables: { id: accountId, sessionId },
-        });
-  expect(result["data"]).toMatchObject({ [mutation]: { account: { id: accountId } } });
-}
-
-async function expectSupportedPostSocialActions(
-  fetch: (request: Request) => Response | Promise<Response>,
-  target: AdapterE2ETarget,
-  capabilities: CapabilitySet,
-  postId: string,
-  sessionId: string,
-): Promise<void> {
-  if (isSupported(capabilities, "social.favourite")) {
-    await postActionOverHttp(fetch, target, postId, "favourite", sessionId);
-    await postActionOverHttp(fetch, target, postId, "unfavourite", sessionId);
-  }
-  if (isSupported(capabilities, "social.bookmark")) {
-    await postActionOverHttp(fetch, target, postId, "bookmark", sessionId);
-    await postActionOverHttp(fetch, target, postId, "unbookmark", sessionId);
-  }
-  if (isSupported(capabilities, "social.boost")) {
-    await postActionOverHttp(fetch, target, postId, "boost", sessionId, { visibility: "public" });
-    if (target.adapter === "misskey") await delay(10_000);
-    await postActionOverHttp(fetch, target, postId, "unboost", sessionId);
-  }
-  if (isSupported(capabilities, "social.reaction")) {
-    await postActionOverHttp(fetch, target, postId, "reactions", sessionId, { emoji: "👍" });
-    await deleteReactionOverHttp(fetch, target, postId, sessionId, "👍");
-  }
-}
-
-async function expectSupportedPostSocialActionsGraphQL(
-  fetch: (request: Request) => Response | Promise<Response>,
-  target: AdapterE2ETarget,
-  capabilities: CapabilitySet,
-  postId: string,
-  sessionId: string,
-): Promise<void> {
-  if (isSupported(capabilities, "social.favourite")) {
-    await postActionOverGraphQL(fetch, target, "favouritePost", postId, sessionId);
-    await postActionOverGraphQL(fetch, target, "unfavouritePost", postId, sessionId);
-  }
-  if (isSupported(capabilities, "social.bookmark")) {
-    await postActionOverGraphQL(fetch, target, "bookmarkPost", postId, sessionId);
-    await postActionOverGraphQL(fetch, target, "unbookmarkPost", postId, sessionId);
-  }
-  if (isSupported(capabilities, "social.boost")) {
-    await postActionOverGraphQL(fetch, target, "boostPost", postId, sessionId, {
-      visibility: "PUBLIC",
-    });
-    if (target.adapter === "misskey") await delay(10_000);
-    await postActionOverGraphQL(fetch, target, "unboostPost", postId, sessionId);
-  }
-  if (isSupported(capabilities, "social.reaction")) {
-    await postActionOverGraphQL(fetch, target, "reactToPost", postId, sessionId, { emoji: "👍" });
-    await postActionOverGraphQL(fetch, target, "unreactToPost", postId, sessionId, { emoji: "👍" });
-  }
-}
-
-async function postActionOverHttp(
-  fetch: (request: Request) => Response | Promise<Response>,
-  target: AdapterE2ETarget,
-  postId: string,
-  action:
-    | "favourite"
-    | "unfavourite"
-    | "bookmark"
-    | "unbookmark"
-    | "boost"
-    | "unboost"
-    | "reactions",
-  sessionId: string,
-  body?: Record<string, unknown>,
-): Promise<void> {
-  const response = await fetch(
-    new Request(`http://activityplug.test/api/v1/posts/${encodeURIComponent(postId)}/${action}`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${sessionId}`,
-        ...(body === undefined ? {} : { "content-type": "application/json" }),
-      },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    }),
-  );
-  expect(response.status).toBe(200);
-  expect(await readJsonData(response)).toMatchObject({ ref: { origin: target.origin } });
-}
-
-async function deleteReactionOverHttp(
-  fetch: (request: Request) => Response | Promise<Response>,
-  target: AdapterE2ETarget,
-  postId: string,
-  sessionId: string,
-  emoji: string,
-): Promise<void> {
-  const response = await fetch(
-    new Request(
-      `http://activityplug.test/api/v1/posts/${encodeURIComponent(postId)}/reactions/${encodeURIComponent(emoji)}`,
-      { method: "DELETE", headers: { authorization: `Bearer ${sessionId}` } },
-    ),
-  );
-  expect(response.status).toBe(200);
-  expect(await readJsonData(response)).toMatchObject({ ref: { origin: target.origin } });
-}
-
-async function postActionOverGraphQL(
-  fetch: (request: Request) => Response | Promise<Response>,
-  target: AdapterE2ETarget,
-  mutation:
-    | "favouritePost"
-    | "unfavouritePost"
-    | "bookmarkPost"
-    | "unbookmarkPost"
-    | "boostPost"
-    | "unboostPost"
-    | "reactToPost"
-    | "unreactToPost",
-  postId: string,
-  sessionId: string,
-  extraInput: Record<string, unknown> = {},
-): Promise<void> {
-  const result = await postGraphQL(fetch, {
-    query: postActionMutation(mutation),
-    variables: postActionVariables(mutation, postId, sessionId, extraInput),
-  });
-  expect(result["data"]).toMatchObject({ [mutation]: { ref: { origin: target.origin } } });
-}
-
-function postActionMutation(mutation: string): string {
-  if (mutation === "boostPost") {
-    return `mutation($input: BoostPostInput!) { ${mutation}(input: $input) { ref { origin } } }`;
-  }
-  if (mutation === "reactToPost" || mutation === "unreactToPost") {
-    return `mutation($input: ReactPostInput!) { ${mutation}(input: $input) { ref { origin } } }`;
-  }
-  return `mutation($id: ID!, $sessionId: ID!) { ${mutation}(id: $id, sessionId: $sessionId) { ref { origin } } }`;
-}
-
-function postActionVariables(
-  mutation: string,
-  postId: string,
-  sessionId: string,
-  extraInput: Record<string, unknown>,
-): Record<string, unknown> {
-  if (mutation === "boostPost" || mutation === "reactToPost" || mutation === "unreactToPost") {
-    return { input: { postId, sessionId, ...extraInput } };
-  }
-  return { id: postId, sessionId };
-}
-
 function refId(value: unknown): string {
   if (!isRecord(value) || !isRecord(value["ref"]) || typeof value["ref"]["id"] !== "string") {
     throw new TypeError("Expected a serialized entity ref with a public id.");
@@ -927,26 +874,122 @@ function refId(value: unknown): string {
   return value["ref"]["id"];
 }
 
+function mediaRefIds(value: unknown): readonly string[] {
+  if (!isRecord(value) || !Array.isArray(value["media"])) {
+    throw new TypeError("Expected post media.");
+  }
+  return value["media"].map((attachment) => refId(attachment));
+}
+
+function pollRefId(value: unknown): string {
+  if (!isRecord(value) || !isRecord(value["poll"])) {
+    throw new TypeError("Expected post poll.");
+  }
+  return refId(value["poll"]);
+}
+
+function expectExpectedPostPollPayload(value: unknown): void {
+  if (!isRecord(value) || !isRecord(value["poll"])) {
+    throw new TypeError("Expected post poll.");
+  }
+  const poll = value["poll"];
+  if (!Array.isArray(poll["options"])) {
+    throw new TypeError("Expected poll options.");
+  }
+  expect(poll["multiple"]).toBe(false);
+  expect(
+    poll["options"].map((option) => {
+      if (!isRecord(option) || typeof option["title"] !== "string") {
+        throw new TypeError("Expected poll option title.");
+      }
+      return option["title"];
+    }),
+  ).toEqual(["TypeScript", "ActivityPub"]);
+}
+
+function accountRefIds(value: unknown): readonly string[] {
+  if (!isRecord(value) || !Array.isArray(value["accounts"])) {
+    throw new TypeError("Expected search account results.");
+  }
+  return value["accounts"].map((account) => refId(account));
+}
+
+function graphqlAccountRefIds(value: unknown): readonly string[] {
+  if (!isRecord(value) || !isRecord(value["data"]) || !isRecord(value["data"]["search"])) {
+    throw new TypeError("Expected GraphQL search account results.");
+  }
+  return accountRefIds(value["data"]["search"]);
+}
+
+function hashtagNames(value: unknown): readonly string[] {
+  if (!isRecord(value) || !Array.isArray(value["hashtags"])) {
+    throw new TypeError("Expected search hashtag results.");
+  }
+  return value["hashtags"].map((hashtag) => {
+    if (!isRecord(hashtag) || typeof hashtag["name"] !== "string") {
+      throw new TypeError("Expected hashtag search result names.");
+    }
+    return normalizedHashtag(hashtag["name"]);
+  });
+}
+
+function normalizedHashtag(value: string): string {
+  return value.replace(/^#/, "").toLowerCase();
+}
+
+function postRawIds(value: unknown): readonly string[] {
+  if (!isRecord(value) || !Array.isArray(value["posts"])) {
+    throw new TypeError("Expected search post results.");
+  }
+  return value["posts"].map((post) => {
+    if (!isRecord(post) || !isRecord(post["ref"]) || typeof post["ref"]["rawId"] !== "string") {
+      throw new TypeError("Expected post search result raw IDs.");
+    }
+    return post["ref"]["rawId"];
+  });
+}
+
+function publicPostId(target: AdapterE2ETarget, rawId: string): string {
+  return createEntityRef({
+    adapter: target.adapter,
+    origin: target.origin,
+    type: "post",
+    id: rawId,
+  }).id;
+}
+
 function adapterKind(adapter: string): string {
   return adapter.toUpperCase();
 }
 
-function onePixelPngBuffer(): ArrayBuffer {
-  return Uint8Array.from([
-    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
-    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
-    0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
-    0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
-    0x42, 0x60, 0x82,
-  ]).buffer;
-}
-
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, milliseconds);
+async function waitForPostOverHttp(fetch: E2EFetch, postId: string): Promise<void> {
+  await pollUntil(async () => {
+    const response = await fetch(
+      new Request(`http://activityplug.test/api/v1/posts/${encodeURIComponent(postId)}`),
+    );
+    if (response.status !== 200) {
+      return { ok: false, detail: await response.text() };
+    }
+    const data = await readJsonData(response);
+    return {
+      ok: isRecord(data) && isRecord(data["ref"]) && data["ref"]["id"] === postId,
+      detail: data,
+    };
   });
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+async function pollUntil(
+  check: () => Promise<{ readonly ok: boolean; readonly detail?: unknown }>,
+): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  let lastDetail: unknown;
+  while (Date.now() <= deadline) {
+    const result = await check();
+    if (result.ok) return;
+    lastDetail = result.detail;
+    await new Promise((resolve) => {
+      setTimeout(resolve, 1_000);
+    });
+  }
+  throw new TypeError(`Timed out while polling E2E state: ${JSON.stringify(lastDetail)}`);
 }

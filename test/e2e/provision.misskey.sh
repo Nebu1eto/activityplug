@@ -23,7 +23,7 @@ docker compose -f "$COMPOSE_FILE" --profile misskey exec -T misskey-db \
 
 curl -sf -X POST "$BASE_URL/api/admin/roles/update-default-policies" \
   -H "Content-Type: application/json" \
-  -d "{\"i\":\"$TOKEN\",\"policies\":{\"canSearchNotes\":true}}" >/dev/null
+  -d "{\"i\":\"$TOKEN\",\"policies\":{\"canSearchNotes\":true,\"rateLimitFactor\":0}}" >/dev/null
 
 if ! curl -sf -X POST "$BASE_URL/api/users/show" \
   -H "Content-Type: application/json" \
@@ -47,7 +47,8 @@ for _ in $(seq 1 45); do
   if curl -sf -X POST "$BASE_URL/api/notes/search" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer $TOKEN" \
-    -d '{"query":"ActivityPlug","limit":5}' | jq -e 'length > 0' >/dev/null; then
+    -d "{\"query\":\"$SEED_TEXT\",\"limit\":20}" | jq -e --arg text "$SEED_TEXT" \
+    'any(.[]; .text == $text)' >/dev/null; then
     break
   fi
   sleep 2
@@ -56,8 +57,18 @@ done
 curl -sf -X POST "$BASE_URL/api/notes/search" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
-  -d '{"query":"ActivityPlug","limit":5}' | jq -e 'length > 0' >/dev/null
+  -d "{\"query\":\"$SEED_TEXT\",\"limit\":20}" | jq -e --arg text "$SEED_TEXT" \
+  'any(.[]; .text == $text)' >/dev/null
+POST_SEARCH_RAW_ID=$(curl -sf -X POST "$BASE_URL/api/notes/search" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d "{\"query\":\"$SEED_TEXT\",\"limit\":20}" | jq -r --arg text "$SEED_TEXT" \
+  'map(select(.text == $text))[0].id // empty')
+if [[ -z "$POST_SEARCH_RAW_ID" ]]; then
+  echo "Misskey seed post for exact search was not found." >&2
+  exit 1
+fi
 
 jq -nc --arg token "$TOKEN" --arg origin "$PUBLIC_ORIGIN" --arg social "$SOCIAL_USERNAME" \
-  --arg postSearchQuery "ActivityPlug" \
-  '{adapter:"misskey",origin:$origin,token:$token,accountHandle:"admin",socialActionHandle:$social,hashtag:"activityplug",postSearchQuery:$postSearchQuery}'
+  --arg postSearchQuery "$SEED_TEXT" --arg postSearchRawId "$POST_SEARCH_RAW_ID" \
+  '{adapter:"misskey",origin:$origin,token:$token,accountHandle:"admin",socialActionHandle:$social,hashtag:"activityplug",postSearchQuery:$postSearchQuery,postSearchRawId:$postSearchRawId}'

@@ -10,8 +10,6 @@ import {
   parseOAuthCallback,
   type ActivityPlugAdapter,
   type AuthSession,
-  type OAuthCallbackStateBinding,
-  type OAuthClientRegistration,
   type StoredAuthSession,
 } from "@activityplug/core";
 import { serve, type ServerType } from "@hono/node-server";
@@ -30,6 +28,16 @@ import { createAuthEndpointHandlers } from "../auth/endpoints.js";
 import { InMemoryAuthSessionStore, type AuthSessionStore } from "../auth/session-store.js";
 import { createActivityPlugApp } from "../http/app.js";
 import { type TokenImportOptions } from "../http/app.js";
+import {
+  assertExchangeTarget,
+  consumeOAuthCallbackState,
+  InMemoryOAuthClientSecretStore,
+  isInMemoryOAuthClientSecretStore,
+  type OAuthClientSecretStore,
+  requireOAuthCallbackStateBinding,
+  sameBinding,
+  storeOAuthCallbackState,
+} from "./oauth-state.js";
 
 export interface ActivityPlugServerOptions {
   readonly adapters: readonly ActivityPlugAdapter[];
@@ -72,13 +80,6 @@ export interface OriginFetchPolicyContext {
 }
 
 export type OriginFetchPolicy = (context: OriginFetchPolicyContext) => Promise<void> | void;
-
-export interface OAuthClientSecretStore {
-  readonly put: (id: string, secret: string, expiresAt: string) => Promise<void> | void;
-  readonly take: (id: string) => Promise<string | null>;
-}
-
-const inMemorySecretStoreBrand = Symbol("activityplug.inMemorySecretStore");
 
 export function createActivityPlugServer(options: ActivityPlugServerOptions): ActivityPlugServer {
   const service = createAdapterBackedApiService(options);
@@ -171,7 +172,7 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
     },
     accounts: {
       get: async (input) => {
-        const ref = decodeOpaqueId(input.id);
+        const ref = decodeOpaqueIdForOperation(input.id, "account.get");
         await originPolicy({ origin: ref.origin, operation: "account.get" });
         return resolveClient(
           { adapter: ref.adapter, origin: ref.origin },
@@ -187,7 +188,7 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
         });
       },
       posts: async (input) => {
-        const ref = decodeOpaqueId(input.id);
+        const ref = decodeOpaqueIdForOperation(input.id, "account.posts");
         await originPolicy({ origin: ref.origin, operation: "account.posts" });
         const session =
           input.sessionId === undefined
@@ -206,7 +207,7 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
     },
     posts: {
       get: async (input) => {
-        const ref = decodeOpaqueId(input.id);
+        const ref = decodeOpaqueIdForOperation(input.id, "post.get");
         await originPolicy({ origin: ref.origin, operation: "post.get" });
         return resolveClient(
           { adapter: ref.adapter, origin: ref.origin },
@@ -227,7 +228,7 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
       },
       delete: async (input) => {
         const session = await requireSession(input.sessionId, sessions, "post.delete");
-        const ref = decodeOpaqueId(input.id);
+        const ref = decodeOpaqueIdForOperation(input.id, "post.delete");
         await originPolicy({ origin: ref.origin, operation: "post.delete" });
         assertSessionTarget(session, { adapter: ref.adapter, origin: ref.origin }, "post.delete");
         return resolveClient(
@@ -324,6 +325,42 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
         return resolveClient(selector, options.adapters, sessions).media.upload({
           ...upload,
           session: toPublicSession(session),
+        });
+      },
+    },
+    polls: {
+      get: async (input) => {
+        const ref = decodeOpaqueIdForOperation(input.id, "poll.get");
+        await originPolicy({ origin: ref.origin, operation: "poll.get" });
+        const session =
+          input.sessionId === undefined
+            ? undefined
+            : await requireSession(input.sessionId, sessions, "poll.get");
+        if (session !== undefined) {
+          assertSessionTarget(session, { adapter: ref.adapter, origin: ref.origin }, "poll.get");
+        }
+        return resolveClient(
+          { adapter: ref.adapter, origin: ref.origin },
+          options.adapters,
+          sessions,
+        ).polls.get({
+          id: input.id,
+          ...(session === undefined ? {} : { session: toPublicSession(session) }),
+        });
+      },
+      vote: async (input) => {
+        const session = await requireSession(input.sessionId, sessions, "poll.vote");
+        const ref = decodeOpaqueIdForOperation(input.id, "poll.vote");
+        await originPolicy({ origin: ref.origin, operation: "poll.vote" });
+        assertSessionTarget(session, { adapter: ref.adapter, origin: ref.origin }, "poll.vote");
+        return resolveClient(
+          { adapter: ref.adapter, origin: ref.origin },
+          options.adapters,
+          sessions,
+        ).polls.vote({
+          session: toPublicSession(session),
+          pollId: input.id,
+          choices: input.choices,
         });
       },
     },
@@ -698,6 +735,25 @@ function handlersClientForSession(
   return resolveClient({ adapter: session.adapter, origin: session.origin }, adapters, sessions);
 }
 
+function decodeOpaqueIdForOperation(
+  id: string,
+  operation: string,
+): ReturnType<typeof decodeOpaqueId> {
+  try {
+    return decodeOpaqueId(id);
+  } catch (error) {
+    if (error instanceof ActivityPlugError && error.code === "VALIDATION_FAILED") {
+      throw new ActivityPlugError(
+        "VALIDATION_FAILED",
+        error.message,
+        { ...error.context, operation },
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+}
+
 async function socialAccountAction<Output>(
   input: RelationshipRequest,
   operation: string,
@@ -710,7 +766,7 @@ async function socialAccountAction<Output>(
   ) => Promise<Output>,
 ): Promise<Output> {
   const session = await requireSession(input.sessionId, sessions, operation);
-  const ref = decodeOpaqueId(input.accountId);
+  const ref = decodeOpaqueIdForOperation(input.accountId, operation);
   await (options.originPolicy ?? defaultOriginFetchPolicy)({ origin: ref.origin, operation });
   assertSessionTarget(session, { adapter: ref.adapter, origin: ref.origin }, operation);
   return action(
@@ -732,7 +788,7 @@ async function socialPostAction<Output>(
   ) => Promise<Output>,
 ): Promise<Output> {
   const session = await requireSession(input.sessionId, sessions, operation);
-  const ref = decodeOpaqueId(input.postId);
+  const ref = decodeOpaqueIdForOperation(input.postId, operation);
   await (options.originPolicy ?? defaultOriginFetchPolicy)({ origin: ref.origin, operation });
   assertSessionTarget(session, { adapter: ref.adapter, origin: ref.origin }, operation);
   return action(
@@ -809,211 +865,6 @@ function toPublicSession(session: AuthSession): AuthSession {
     capabilities: session.capabilities,
     ...(session.expiresAt === undefined ? {} : { expiresAt: session.expiresAt }),
   };
-}
-
-interface StoredOAuthCallbackState {
-  readonly state: string;
-  readonly binding: OAuthCallbackStateBinding;
-  readonly client: OAuthClientRegistration;
-  readonly redirectUri: string;
-  readonly codeVerifier?: string;
-}
-
-async function storeOAuthCallbackState(
-  sessions: AuthSessionStore,
-  state: StoredOAuthCallbackState,
-  secrets: OAuthClientSecretStore,
-): Promise<void> {
-  const now = new Date();
-  const expiresAt = new Date(now.getTime() + 10 * 60 * 1000).toISOString();
-  const { clientSecret, ...storedClient } = state.client;
-  const clientSecretRef =
-    clientSecret === undefined ? undefined : `oauth-client-secret:${state.state}:${randomUUID()}`;
-  if (clientSecret !== undefined && clientSecretRef !== undefined) {
-    await secrets.put(clientSecretRef, clientSecret, expiresAt);
-  }
-  await sessions.create({
-    id: oauthStateSessionId(state.state),
-    adapter: state.binding.adapter,
-    origin: state.binding.origin,
-    scopes: [],
-    capabilities: {},
-    tokenSet: {
-      accessToken: `oauth-state:${state.state}`,
-    },
-    createdAt: now.toISOString(),
-    updatedAt: now.toISOString(),
-    storageExpiresAt: expiresAt,
-    metadata: {
-      activityplugKind: "oauth-callback-state",
-      state: state.state,
-      binding: state.binding,
-      client: storedClient,
-      ...(clientSecretRef === undefined ? {} : { clientSecretRef }),
-      redirectUri: state.redirectUri,
-      ...(state.codeVerifier === undefined ? {} : { codeVerifier: state.codeVerifier }),
-    },
-  });
-}
-
-async function consumeOAuthCallbackState(
-  sessions: AuthSessionStore,
-  state: string,
-  secrets: OAuthClientSecretStore,
-): Promise<StoredOAuthCallbackState> {
-  const session = await consumeSession(sessions, oauthStateSessionId(state));
-  const decoded = await decodeOAuthCallbackState(session, secrets);
-  if (decoded === null) {
-    throw new ActivityPlugError(
-      "VALIDATION_FAILED",
-      "OAuth callback state is not registered or has expired.",
-      {
-        operation: "auth.oauth.callback",
-      },
-    );
-  }
-  return decoded;
-}
-
-async function requireOAuthCallbackStateBinding(
-  sessions: AuthSessionStore,
-  state: string,
-): Promise<OAuthCallbackStateBinding> {
-  const session = await sessions.get(oauthStateSessionId(state));
-  const binding = oauthCallbackStateBinding(session);
-  if (binding === null) {
-    throw new ActivityPlugError(
-      "VALIDATION_FAILED",
-      "OAuth callback state is not registered or has expired.",
-      {
-        operation: "auth.oauth.callback",
-      },
-    );
-  }
-  return binding;
-}
-
-function oauthCallbackStateBinding(
-  session: StoredAuthSession | null,
-): OAuthCallbackStateBinding | null {
-  const metadata = session?.metadata;
-  if (metadata?.activityplugKind !== "oauth-callback-state") return null;
-  return isOAuthCallbackStateBinding(metadata.binding) ? metadata.binding : null;
-}
-
-async function consumeSession(
-  sessions: AuthSessionStore,
-  sessionId: string,
-): Promise<StoredAuthSession | null> {
-  if (sessions.consume !== undefined) return sessions.consume(sessionId);
-  const session = await sessions.get(sessionId);
-  if (session !== null) await sessions.delete(sessionId);
-  return session;
-}
-
-async function decodeOAuthCallbackState(
-  session: StoredAuthSession | null,
-  secrets: OAuthClientSecretStore,
-): Promise<StoredOAuthCallbackState | null> {
-  const metadata = session?.metadata;
-  if (metadata?.activityplugKind !== "oauth-callback-state") return null;
-  if (
-    typeof metadata.state !== "string" ||
-    !isOAuthCallbackStateBinding(metadata.binding) ||
-    !isOAuthClientRegistration(metadata.client) ||
-    typeof metadata.redirectUri !== "string"
-  ) {
-    return null;
-  }
-  const clientSecret =
-    typeof metadata.clientSecretRef === "string"
-      ? await secrets.take(metadata.clientSecretRef)
-      : null;
-  if (typeof metadata.clientSecretRef === "string" && clientSecret === null) return null;
-  const client = {
-    ...metadata.client,
-    ...(clientSecret === null ? {} : { clientSecret }),
-  };
-  return {
-    state: metadata.state,
-    binding: metadata.binding,
-    client,
-    redirectUri: metadata.redirectUri,
-    ...(typeof metadata.codeVerifier === "string" ? { codeVerifier: metadata.codeVerifier } : {}),
-  };
-}
-
-function oauthStateSessionId(state: string): string {
-  return `oauth-state:${state}`;
-}
-
-function sameBinding(
-  actual: OAuthCallbackStateBinding,
-  expected: OAuthCallbackStateBinding,
-): boolean {
-  return (
-    actual.adapter === expected.adapter &&
-    actual.origin === expected.origin &&
-    actual.clientRequestId === expected.clientRequestId
-  );
-}
-
-function assertExchangeTarget(
-  input: InstanceSelector,
-  adapterId: string,
-  binding: OAuthCallbackStateBinding,
-): void {
-  if (adapterId !== binding.adapter || input.origin !== binding.origin) {
-    throw new ActivityPlugError(
-      "VALIDATION_FAILED",
-      "OAuth callback state does not belong to the requested adapter and origin.",
-      {
-        adapter: input.adapter,
-        origin: input.origin,
-        operation: "auth.oauth.callback",
-      },
-    );
-  }
-}
-
-function isOAuthCallbackStateBinding(value: unknown): value is OAuthCallbackStateBinding {
-  if (typeof value !== "object" || value === null) return false;
-  const record = value as Record<string, unknown>;
-  return (
-    typeof record.adapter === "string" &&
-    typeof record.origin === "string" &&
-    typeof record.clientRequestId === "string"
-  );
-}
-
-function isOAuthClientRegistration(value: unknown): value is OAuthClientRegistration {
-  if (typeof value !== "object" || value === null) return false;
-  const record = value as Record<string, unknown>;
-  return (
-    typeof record.clientId === "string" &&
-    (record.clientSecret === undefined || typeof record.clientSecret === "string") &&
-    Array.isArray(record.redirectUris) &&
-    record.redirectUris.every((item) => typeof item === "string") &&
-    (record.scopes === undefined ||
-      (Array.isArray(record.scopes) && record.scopes.every((item) => typeof item === "string")))
-  );
-}
-
-class InMemoryOAuthClientSecretStore implements OAuthClientSecretStore {
-  public readonly [inMemorySecretStoreBrand] = true;
-  readonly #secrets = new Map<string, { readonly secret: string; readonly expiresAt: string }>();
-
-  public async put(id: string, secret: string, expiresAt: string): Promise<void> {
-    this.#secrets.set(id, { secret, expiresAt });
-  }
-
-  public async take(id: string): Promise<string | null> {
-    const entry = this.#secrets.get(id);
-    this.#secrets.delete(id);
-    if (entry === undefined) return null;
-    if (Date.parse(entry.expiresAt) <= Date.now()) return null;
-    return entry.secret;
-  }
 }
 
 async function defaultOriginFetchPolicy(context: OriginFetchPolicyContext): Promise<void> {
@@ -1108,12 +959,4 @@ function blockedOrigin(context: OriginFetchPolicyContext, message: string): Acti
 
 function hasDurableStorage(sessions: AuthSessionStore): boolean {
   return !(sessions instanceof InMemoryAuthSessionStore);
-}
-
-function isInMemoryOAuthClientSecretStore(
-  store: OAuthClientSecretStore,
-): store is InMemoryOAuthClientSecretStore {
-  return (
-    (store as { readonly [inMemorySecretStoreBrand]?: true })[inMemorySecretStoreBrand] === true
-  );
 }

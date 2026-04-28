@@ -176,6 +176,60 @@ describe("library-mode clients", () => {
     expect(limits).toEqual([200]);
   });
 
+  it("preserves operation context for malformed public IDs", async () => {
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet({
+          "auth.tokenInjection": capability("supported"),
+          "accounts.lookupById": capability("supported"),
+          "posts.read": capability("supported"),
+          "posts.delete": capability("supported"),
+        }),
+      },
+      accounts: {
+        getById: async () => {
+          throw new Error("adapter should not be called");
+        },
+        listPosts: async () => {
+          throw new Error("adapter should not be called");
+        },
+      },
+      posts: {
+        get: async () => {
+          throw new Error("adapter should not be called");
+        },
+        delete: async () => {
+          throw new Error("adapter should not be called");
+        },
+      },
+    };
+    const client = createActivityPlugClient({ adapter, origin: "https://social.example" });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    await expect(client.accounts.getById({ id: "not-an-opaque-id" })).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+      context: { operation: "account.get" },
+    });
+    await expect(
+      client.accounts.listPosts({ accountId: "not-an-opaque-id" }),
+    ).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+      context: { operation: "account.posts" },
+    });
+    await expect(client.posts.get({ id: "not-an-opaque-id" })).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+      context: { operation: "post.get" },
+    });
+    await expect(client.posts.delete({ session, id: "not-an-opaque-id" })).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+      context: { operation: "post.delete" },
+    });
+  });
+
   it("rejects search cursors before adapter calls", async () => {
     const adapter: ActivityPlugAdapter = {
       metadata: {
@@ -365,6 +419,12 @@ describe("library-mode clients", () => {
       type: "post",
       id: "post",
     }).id;
+    const mediaId = createEntityRef({
+      adapter: "fake",
+      origin: "https://social.example",
+      type: "media",
+      id: "media",
+    }).id;
 
     await expect(
       client.posts.create({ session, content: "quote", quoteOfId: postId }),
@@ -389,6 +449,12 @@ describe("library-mode clients", () => {
       code: "UNSUPPORTED_OPERATION",
       context: { capability: "polls.create" },
     });
+    await expect(
+      client.posts.create({ session, content: "media", mediaIds: [mediaId] }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "media.upload", operation: "post.create" },
+    });
     await expect(client.timelines.local({})).rejects.toMatchObject({
       code: "UNSUPPORTED_OPERATION",
       context: { capability: "timelines.local" },
@@ -396,6 +462,48 @@ describe("library-mode clients", () => {
     await expect(client.media.upload({ session, file: new Blob(["x"]) })).rejects.toMatchObject({
       code: "UNSUPPORTED_OPERATION",
       context: { capability: "media.upload" },
+    });
+  });
+
+  it("rejects invalid and foreign compose media IDs before adapter calls", async () => {
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet({
+          "auth.tokenInjection": capability("supported"),
+          "posts.create": capability("supported"),
+          "media.upload": capability("supported"),
+        }),
+      },
+      posts: {
+        create: async () => {
+          throw new Error("adapter should not be called");
+        },
+      },
+    };
+    const client = createActivityPlugClient({ adapter, origin: "https://social.example" });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+    const foreignMediaId = createEntityRef({
+      adapter: "other",
+      origin: "https://social.example",
+      type: "media",
+      id: "media",
+    }).id;
+
+    await expect(
+      client.posts.create({ session, content: "media", mediaIds: ["not-opaque"] }),
+    ).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+      context: { operation: "post.create" },
+    });
+    await expect(
+      client.posts.create({ session, content: "media", mediaIds: [foreignMediaId] }),
+    ).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+      context: { operation: "post.create" },
     });
   });
 

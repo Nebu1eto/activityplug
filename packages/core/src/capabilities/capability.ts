@@ -54,8 +54,11 @@ export type CapabilityName =
   | "social.mute"
   | "social.favourite"
   | "social.bookmark"
+  | "social.bookmarkFolders"
   | "social.boost"
   | "social.reaction"
+  | "notifications.pleromaEmojiReaction"
+  | "notifications.pleromaChatMention"
   | "streaming.timeline"
   | "streaming.notifications"
   | "streaming.conversations";
@@ -143,8 +146,11 @@ export const capabilityNames = [
   "social.mute",
   "social.favourite",
   "social.bookmark",
+  "social.bookmarkFolders",
   "social.boost",
   "social.reaction",
+  "notifications.pleromaEmojiReaction",
+  "notifications.pleromaChatMention",
   "streaming.timeline",
   "streaming.notifications",
   "streaming.conversations",

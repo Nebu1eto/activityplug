@@ -1,11 +1,4 @@
-import {
-  createAuthService,
-  type AuthAdapter,
-  type AuthService,
-  type AuthSessionStore,
-  InMemoryAuthSessionStore,
-} from "../auth/service.js";
-import { type AuthSession } from "../auth/types.js";
+import { createAuthService, InMemoryAuthSessionStore } from "../auth/service.js";
 import {
   mergeCapabilityLayers,
   type CapabilityName,
@@ -14,320 +7,30 @@ import {
 import { ActivityPlugError, unsupportedOperation } from "../errors/error.js";
 import { decodeOpaqueId } from "../ids/opaque-id.js";
 import {
-  type Account,
-  type Connection,
-  type DeletedEntity,
-  type InstanceProfile,
-  type MediaAttachment,
-  type Post,
-  type PostVisibility,
-  type Relationship,
-  type SearchResult,
-} from "../types/entities.js";
-import { type AdapterMetadata } from "./metadata.js";
+  type ActivityPlugClient,
+  type ActivityPlugClientOptions,
+  type AdapterOperationContext,
+  type AccountService,
+  type BoostPostInput,
+  type CreatePostInput,
+  type InstanceService,
+  type MediaService,
+  type MuteAccountInput,
+  type PageInput,
+  type PollService,
+  type PostActionInput,
+  type PostService,
+  type ReactPostInput,
+  type RelationshipInput,
+  type SearchInput,
+  type SearchPageInput,
+  type SearchService,
+  type SocialService,
+  type TimelineService,
+} from "./client-types.js";
 import { maxPageLimit } from "./page.js";
 
-export interface ActivityPlugAdapter {
-  readonly metadata: AdapterMetadata;
-  readonly auth?: AuthAdapter;
-  readonly instances?: InstanceAdapterOperations;
-  readonly accounts?: AccountAdapterOperations;
-  readonly posts?: PostAdapterOperations;
-  readonly timelines?: TimelineAdapterOperations;
-  readonly search?: SearchAdapterOperations;
-  readonly media?: MediaAdapterOperations;
-  readonly social?: SocialAdapterOperations;
-}
-
-export interface AdapterOperationContext {
-  readonly origin: string;
-  readonly adapterId: string;
-  readonly capabilities: CapabilitySet;
-  readonly sessionStore?: AuthSessionStore;
-}
-
-export interface InstanceAdapterOperations {
-  readonly detect?: (
-    input: DetectInstanceInput,
-    context: AdapterOperationContext,
-  ) => Promise<InstanceProfile>;
-  readonly getProfile?: (
-    input: GetInstanceProfileInput,
-    context: AdapterOperationContext,
-  ) => Promise<InstanceProfile>;
-}
-
-export interface AccountAdapterOperations {
-  readonly getById?: (input: GetAccountInput, context: AdapterOperationContext) => Promise<Account>;
-  readonly getByHandle?: (
-    input: LookupAccountInput,
-    context: AdapterOperationContext,
-  ) => Promise<Account | null>;
-  readonly listPosts?: (
-    input: ListAccountPostsInput,
-    context: AdapterOperationContext,
-  ) => Promise<Connection<Post>>;
-}
-
-export interface PostAdapterOperations {
-  readonly get?: (input: GetPostInput, context: AdapterOperationContext) => Promise<Post>;
-  readonly create?: (input: CreatePostInput, context: AdapterOperationContext) => Promise<Post>;
-  readonly delete?: (
-    input: DeletePostInput,
-    context: AdapterOperationContext,
-  ) => Promise<DeletedEntity>;
-}
-
-export interface TimelineAdapterOperations {
-  readonly home?: (
-    input: SessionPageInput,
-    context: AdapterOperationContext,
-  ) => Promise<Connection<Post>>;
-  readonly public?: (
-    input: PublicTimelineInput,
-    context: AdapterOperationContext,
-  ) => Promise<Connection<Post>>;
-  readonly hashtag?: (
-    input: HashtagTimelineInput,
-    context: AdapterOperationContext,
-  ) => Promise<Connection<Post>>;
-}
-
-export interface SearchAdapterOperations {
-  readonly search?: (input: SearchInput, context: AdapterOperationContext) => Promise<SearchResult>;
-}
-
-export interface MediaAdapterOperations {
-  readonly upload?: (
-    input: UploadMediaInput,
-    context: AdapterOperationContext,
-  ) => Promise<MediaAttachment>;
-}
-
-export interface SocialAdapterOperations {
-  readonly relationship?: (
-    input: RelationshipInput,
-    context: AdapterOperationContext,
-  ) => Promise<Relationship>;
-  readonly follow?: (
-    input: RelationshipInput,
-    context: AdapterOperationContext,
-  ) => Promise<Relationship>;
-  readonly unfollow?: (
-    input: RelationshipInput,
-    context: AdapterOperationContext,
-  ) => Promise<Relationship>;
-  readonly block?: (
-    input: RelationshipInput,
-    context: AdapterOperationContext,
-  ) => Promise<Relationship>;
-  readonly unblock?: (
-    input: RelationshipInput,
-    context: AdapterOperationContext,
-  ) => Promise<Relationship>;
-  readonly mute?: (
-    input: MuteAccountInput,
-    context: AdapterOperationContext,
-  ) => Promise<Relationship>;
-  readonly unmute?: (
-    input: RelationshipInput,
-    context: AdapterOperationContext,
-  ) => Promise<Relationship>;
-  readonly favourite?: (input: PostActionInput, context: AdapterOperationContext) => Promise<Post>;
-  readonly unfavourite?: (
-    input: PostActionInput,
-    context: AdapterOperationContext,
-  ) => Promise<Post>;
-  readonly bookmark?: (input: PostActionInput, context: AdapterOperationContext) => Promise<Post>;
-  readonly unbookmark?: (input: PostActionInput, context: AdapterOperationContext) => Promise<Post>;
-  readonly boost?: (input: BoostPostInput, context: AdapterOperationContext) => Promise<Post>;
-  readonly unboost?: (input: PostActionInput, context: AdapterOperationContext) => Promise<Post>;
-  readonly react?: (input: ReactPostInput, context: AdapterOperationContext) => Promise<Post>;
-  readonly unreact?: (input: ReactPostInput, context: AdapterOperationContext) => Promise<Post>;
-}
-
-export interface ActivityPlugClientOptions {
-  readonly adapter: ActivityPlugAdapter;
-  readonly origin: string;
-  readonly capabilities?: CapabilitySet;
-  readonly sessionStore?: AuthSessionStore;
-}
-
-export interface ActivityPlugClient {
-  readonly adapter: ActivityPlugAdapter;
-  readonly origin: string;
-  readonly capabilities: CapabilitySet;
-  readonly auth: AuthService;
-  readonly instances: InstanceService;
-  readonly accounts: AccountService;
-  readonly posts: PostService;
-  readonly timelines: TimelineService;
-  readonly search: SearchService;
-  readonly media: MediaService;
-  readonly social: SocialService;
-}
-
-export interface DetectInstanceInput {
-  readonly origin?: string;
-}
-
-export interface GetInstanceProfileInput {
-  readonly origin?: string;
-}
-
-export interface GetAccountInput {
-  readonly id: string;
-}
-
-export interface LookupAccountInput {
-  readonly handle: string;
-}
-
-export interface PageInput {
-  readonly after?: string;
-  readonly before?: string;
-  readonly limit?: number;
-}
-
-export interface SearchPageInput {
-  readonly limit?: number;
-}
-
-export interface ListAccountPostsInput {
-  readonly accountId: string;
-  readonly page?: PageInput;
-  readonly session?: AuthSession;
-}
-
-export interface SessionPageInput {
-  readonly session: AuthSession;
-  readonly page?: PageInput;
-}
-
-export interface GetPostInput {
-  readonly id: string;
-}
-
-export interface CreatePostInput {
-  readonly session: AuthSession;
-  readonly content: string;
-  readonly visibility?: PostVisibility;
-  readonly sensitive?: boolean;
-  readonly summary?: string;
-  readonly replyToId?: string;
-  readonly quoteOfId?: string;
-  readonly mediaIds?: readonly string[];
-  readonly poll?: {
-    readonly options: readonly string[];
-    readonly multiple?: boolean;
-    readonly expiresInSeconds?: number;
-  };
-}
-
-export interface DeletePostInput {
-  readonly session: AuthSession;
-  readonly id: string;
-}
-
-export interface PublicTimelineInput {
-  readonly local?: boolean;
-  readonly page?: PageInput;
-  readonly session?: AuthSession;
-}
-
-export interface HashtagTimelineInput {
-  readonly tag: string;
-  readonly page?: PageInput;
-}
-
-export interface SearchInput {
-  readonly query: string;
-  readonly type?: "accounts" | "posts" | "hashtags";
-  readonly resolve?: boolean;
-  readonly page?: SearchPageInput;
-  readonly session?: AuthSession;
-}
-
-export interface UploadMediaInput {
-  readonly session: AuthSession;
-  readonly file: Blob;
-  readonly filename?: string;
-  readonly description?: string;
-  readonly sensitive?: boolean;
-}
-
-export interface RelationshipInput {
-  readonly session: AuthSession;
-  readonly accountId: string;
-}
-
-export interface MuteAccountInput extends RelationshipInput {
-  readonly notifications?: boolean;
-  readonly durationSeconds?: number;
-}
-
-export interface PostActionInput {
-  readonly session: AuthSession;
-  readonly postId: string;
-}
-
-export interface BoostPostInput extends PostActionInput {
-  readonly visibility?: PostVisibility;
-}
-
-export interface ReactPostInput extends PostActionInput {
-  readonly emoji: string;
-}
-
-export interface InstanceService {
-  readonly detect: (input?: DetectInstanceInput) => Promise<InstanceProfile>;
-  readonly getProfile: (input?: GetInstanceProfileInput) => Promise<InstanceProfile>;
-}
-
-export interface AccountService {
-  readonly getById: (input: GetAccountInput) => Promise<Account>;
-  readonly getByHandle: (input: LookupAccountInput) => Promise<Account | null>;
-  readonly listPosts: (input: ListAccountPostsInput) => Promise<Connection<Post>>;
-}
-
-export interface PostService {
-  readonly get: (input: GetPostInput) => Promise<Post>;
-  readonly create: (input: CreatePostInput) => Promise<Post>;
-  readonly delete: (input: DeletePostInput) => Promise<DeletedEntity>;
-}
-
-export interface TimelineService {
-  readonly home: (input: SessionPageInput) => Promise<Connection<Post>>;
-  readonly public: (input: PublicTimelineInput) => Promise<Connection<Post>>;
-  readonly local: (input: Omit<PublicTimelineInput, "local">) => Promise<Connection<Post>>;
-  readonly hashtag: (input: HashtagTimelineInput) => Promise<Connection<Post>>;
-}
-
-export interface SearchService {
-  readonly search: (input: SearchInput) => Promise<SearchResult>;
-}
-
-export interface MediaService {
-  readonly upload: (input: UploadMediaInput) => Promise<MediaAttachment>;
-}
-
-export interface SocialService {
-  readonly relationship: (input: RelationshipInput) => Promise<Relationship>;
-  readonly follow: (input: RelationshipInput) => Promise<Relationship>;
-  readonly unfollow: (input: RelationshipInput) => Promise<Relationship>;
-  readonly block: (input: RelationshipInput) => Promise<Relationship>;
-  readonly unblock: (input: RelationshipInput) => Promise<Relationship>;
-  readonly mute: (input: MuteAccountInput) => Promise<Relationship>;
-  readonly unmute: (input: RelationshipInput) => Promise<Relationship>;
-  readonly favourite: (input: PostActionInput) => Promise<Post>;
-  readonly unfavourite: (input: PostActionInput) => Promise<Post>;
-  readonly bookmark: (input: PostActionInput) => Promise<Post>;
-  readonly unbookmark: (input: PostActionInput) => Promise<Post>;
-  readonly boost: (input: BoostPostInput) => Promise<Post>;
-  readonly unboost: (input: PostActionInput) => Promise<Post>;
-  readonly react: (input: ReactPostInput) => Promise<Post>;
-  readonly unreact: (input: ReactPostInput) => Promise<Post>;
-}
+export type * from "./client-types.js";
 
 export function createActivityPlugClient(options: ActivityPlugClientOptions): ActivityPlugClient {
   const origin = normalizeOrigin(options.origin, "client.create", options.adapter.metadata.id);
@@ -354,6 +57,7 @@ export function createActivityPlugClient(options: ActivityPlugClientOptions): Ac
     timelines: createTimelineService(client),
     search: createSearchService(client),
     media: createMediaService(client),
+    polls: createPollService(client),
     social: createSocialService(client),
   };
 }
@@ -404,9 +108,8 @@ function createAccountService(client: RequiredClientContext): AccountService {
     getById: async (input) => {
       const operation = client.adapter.accounts?.getById;
       if (operation === undefined) throw unsupportedOperation("account.get", context(client));
-      const raw = decodeOpaqueId(input.id);
-      assertRawRefTarget(raw, client, "account", "account.get");
-      return operation({ id: raw.id }, context(client));
+      const rawId = decodeRawRef(input.id, client, "account", "account.get");
+      return operation({ id: rawId }, context(client));
     },
     getByHandle: async (input) => {
       const operation = client.adapter.accounts?.getByHandle;
@@ -417,11 +120,10 @@ function createAccountService(client: RequiredClientContext): AccountService {
       const operation = client.adapter.accounts?.listPosts;
       if (operation === undefined) throw unsupportedOperation("account.posts", context(client));
       const page = normalizePageInput(input.page, "account.posts", client);
-      const raw = decodeOpaqueId(input.accountId);
-      assertRawRefTarget(raw, client, "account", "account.posts");
+      const rawId = decodeRawRef(input.accountId, client, "account", "account.posts");
       return operation(
         {
-          accountId: raw.id,
+          accountId: rawId,
           ...(page === undefined ? {} : { page }),
           ...(input.session === undefined ? {} : { session: input.session }),
         },
@@ -438,9 +140,8 @@ function createPostService(client: RequiredClientContext): PostService {
       if (operation === undefined)
         throw unsupportedOperation("post.get", capabilityContext(client, "posts.read"));
       requireClientCapability(client, "posts.read", "post.get");
-      const raw = decodeOpaqueId(input.id);
-      assertRawRefTarget(raw, client, "post", "post.get");
-      return operation({ id: raw.id }, context(client));
+      const rawId = decodeRawRef(input.id, client, "post", "post.get");
+      return operation({ id: rawId }, context(client));
     },
     create: async (input) => {
       const operation = client.adapter.posts?.create;
@@ -460,11 +161,14 @@ function createPostService(client: RequiredClientContext): PostService {
       if (input.poll !== undefined) {
         requireClientCapability(client, "polls.create", "post.create");
       }
+      if (input.mediaIds !== undefined && input.mediaIds.length > 0) {
+        requireClientCapability(client, "media.upload", "post.create");
+      }
       const normalized = {
         ...input,
         ...decodeOptionalPostRef(input.replyToId, client, "post.create", "replyToId"),
         ...decodeOptionalPostRef(input.quoteOfId, client, "post.create", "quoteOfId"),
-        mediaIds: input.mediaIds?.map((id) => decodeRawRef(id, client, "media", "media.attach")),
+        mediaIds: input.mediaIds?.map((id) => decodeRawRef(id, client, "media", "post.create")),
       };
       return operation(normalized, context(client));
     },
@@ -474,9 +178,8 @@ function createPostService(client: RequiredClientContext): PostService {
         throw unsupportedOperation("post.delete", capabilityContext(client, "posts.delete"));
       }
       requireClientCapability(client, "posts.delete", "post.delete");
-      const raw = decodeOpaqueId(input.id);
-      assertRawRefTarget(raw, client, "post", "post.delete");
-      return operation({ ...input, id: raw.id }, context(client));
+      const rawId = decodeRawRef(input.id, client, "post", "post.delete");
+      return operation({ ...input, id: rawId }, context(client));
     },
   };
 }
@@ -728,6 +431,40 @@ function createMediaService(client: RequiredClientContext): MediaService {
       assertOptionalString(input.description, "description", "media.upload", client);
       requireClientCapability(client, "media.upload", "media.upload");
       return operation(input, context(client));
+    },
+  };
+}
+
+function createPollService(client: RequiredClientContext): PollService {
+  return {
+    get: async (input) => {
+      const operation = client.adapter.polls?.get;
+      if (operation === undefined) {
+        throw unsupportedOperation("poll.get", capabilityContext(client, "polls.read"));
+      }
+      requireClientCapability(client, "polls.read", "poll.get");
+      const id = decodeRawRef(input.id, client, "poll", "poll.get");
+      return operation({ ...input, id }, context(client));
+    },
+    vote: async (input) => {
+      const operation = client.adapter.polls?.vote;
+      if (operation === undefined) {
+        throw unsupportedOperation("poll.vote", capabilityContext(client, "polls.vote"));
+      }
+      requireClientCapability(client, "polls.vote", "poll.vote");
+      if (
+        !Array.isArray(input.choices) ||
+        input.choices.length === 0 ||
+        input.choices.some((choice) => !Number.isInteger(choice) || choice < 0)
+      ) {
+        throwValidation(
+          "Poll vote choices must be non-empty zero-based option indexes.",
+          "poll.vote",
+          client,
+        );
+      }
+      const pollId = decodeRawRef(input.pollId, client, "poll", "poll.vote");
+      return operation({ ...input, pollId }, context(client));
     },
   };
 }
@@ -1010,7 +747,24 @@ function decodeRawRef(
   expectedType: string,
   operation: string,
 ): string {
-  const raw = decodeOpaqueId(id);
+  let raw: ReturnType<typeof decodeOpaqueId>;
+  try {
+    raw = decodeOpaqueId(id);
+  } catch (error) {
+    if (error instanceof ActivityPlugError && error.code === "VALIDATION_FAILED") {
+      throw new ActivityPlugError(
+        error.code,
+        error.message,
+        {
+          adapter: client.adapter.metadata.id,
+          origin: client.origin,
+          operation,
+        },
+        { cause: error },
+      );
+    }
+    throw error;
+  }
   assertRawRefTarget(raw, client, expectedType, operation);
   return raw.id;
 }

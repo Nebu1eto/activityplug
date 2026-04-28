@@ -116,7 +116,6 @@ function summarize(capabilities: CapabilitySet | undefined): Record<string, stri
   if (capabilities === undefined) return {};
   return Object.fromEntries(
     Object.values(capabilities)
-      .filter((decision) => decision.status !== "unknown")
       .map((decision) => [
         decision.name,
         decision.reason === undefined

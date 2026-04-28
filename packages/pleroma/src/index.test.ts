@@ -27,11 +27,6 @@ describe("Pleroma adapter", () => {
               visibility: "local",
               media_ids: ["media-1"],
               in_reply_to_id: "reply-1",
-              poll: {
-                options: ["Yes", "No"],
-                multiple: false,
-                expires_in: 3600,
-              },
             });
             return jsonResponse(accountMappingFixtures.pleroma.post);
           }
@@ -47,6 +42,16 @@ describe("Pleroma adapter", () => {
         }),
       }),
       origin: "https://pleroma.example",
+    });
+
+    expect(client.capabilities["social.bookmarkFolders"]).toMatchObject({
+      status: "unknown",
+    });
+    expect(client.capabilities["notifications.pleromaEmojiReaction"]).toMatchObject({
+      status: "unknown",
+    });
+    expect(client.capabilities["notifications.pleromaChatMention"]).toMatchObject({
+      status: "unknown",
     });
 
     const account = await client.accounts.getByHandle({ handle: "@alice@pleroma.example" });
@@ -75,7 +80,24 @@ describe("Pleroma adapter", () => {
           id: "media-1",
         }).id,
       ],
-      poll: { options: ["Yes", "No"], multiple: false, expiresInSeconds: 3600 },
+    });
+    await expect(
+      client.posts.create({
+        session,
+        content: "Invalid media poll",
+        mediaIds: [
+          createEntityRef({
+            adapter: "pleroma",
+            origin: "https://pleroma.example",
+            type: "media",
+            id: "media-1",
+          }).id,
+        ],
+        poll: { options: ["Yes", "No"], multiple: false, expiresInSeconds: 3600 },
+      }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "posts.create", operation: "post.create" },
     });
     const reacted = await client.social.react({
       session,
@@ -147,6 +169,42 @@ describe("Pleroma adapter", () => {
     ).rejects.toMatchObject({
       code: "AUTH_EXPIRED",
       context: { operation: "social.reaction" },
+    });
+  });
+
+  it("wraps Pleroma reaction failures as typed remote errors", async () => {
+    const client = createActivityPlugClient({
+      adapter: createPleromaAdapter({
+        fetch: mockFetch(async (request) => {
+          const url = new URL(request.url);
+          if (url.pathname === "/api/v1/pleroma/statuses/pleroma-post-1/reactions/%F0%9F%91%8D") {
+            return jsonResponse({ error: "upstream failed" }, 500);
+          }
+          return jsonResponse({ error: "unexpected request" }, 404);
+        }),
+      }),
+      origin: "https://pleroma.example",
+    });
+    const session = await client.auth.injectToken({ accessToken: "token-1" });
+
+    await expect(
+      client.social.react({
+        session,
+        postId: createEntityRef({
+          adapter: "pleroma",
+          origin: "https://pleroma.example",
+          type: "post",
+          id: "pleroma-post-1",
+        }).id,
+        emoji: "\u{1f44d}",
+      }),
+    ).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: {
+        adapter: "pleroma",
+        origin: "https://pleroma.example",
+        operation: "social.reaction",
+      },
     });
   });
 });

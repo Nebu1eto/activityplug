@@ -194,7 +194,7 @@ class DefaultAuthService implements AuthService {
   }
 
   public async refresh(input: OAuthRefreshInput): Promise<AuthSession> {
-    requireCapability(this.#client.capabilities, "auth.oauth.refreshToken");
+    this.#requireCapability("auth.oauth.refreshToken", "auth.oauth.refresh");
     const auth = this.#requireAdapterAuth("refreshToken");
     if (auth.refreshToken === undefined) {
       throw unsupportedOperation("auth.oauth.refresh", this.#context());
@@ -296,6 +296,16 @@ class DefaultAuthService implements AuthService {
       adapter: this.#client.adapter.metadata.id,
       origin: this.#client.origin,
     };
+  }
+
+  #requireCapability(capability: "auth.oauth.refreshToken", operation: string): void {
+    const decision = this.#client.capabilities[capability];
+    if (decision.status === "supported") return;
+    throw unsupportedOperation(operation, {
+      ...this.#context(),
+      capability,
+      raw: decision,
+    });
   }
 
   #adapterContext(): AuthAdapterContext {

@@ -51,6 +51,7 @@ export interface Account {
     readonly following?: number;
     readonly posts?: number;
   };
+  readonly extensions?: Readonly<Record<string, unknown>>;
   readonly raw: unknown;
 }
 
@@ -80,6 +81,7 @@ export interface Post {
     readonly reblogs?: number;
     readonly favourites?: number;
   };
+  readonly extensions?: Readonly<Record<string, unknown>>;
   readonly raw: unknown;
 }
 
@@ -121,6 +123,7 @@ export interface Poll {
   readonly voted?: boolean;
   readonly ownVotes?: readonly number[];
   readonly options: readonly PollOption[];
+  readonly extensions?: Readonly<Record<string, unknown>>;
   readonly raw: unknown;
 }
 
@@ -149,6 +152,8 @@ export type NotificationType =
   | "update"
   | "admin.sign_up"
   | "admin.report"
+  | "pleroma.emoji_reaction"
+  | "pleroma.chat_mention"
   | "unknown";
 
 export interface Relationship {

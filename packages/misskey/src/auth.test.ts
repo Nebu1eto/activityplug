@@ -307,12 +307,18 @@ describe("Misskey auth adapter", () => {
             return jsonResponse([misskeyNote()]);
           }
           if (url.pathname === "/api/users/search-by-username-and-host") {
-            expect(await request.clone().json()).toMatchObject({ limit: 100 });
+            const body = (await request.clone().json()) as Record<string, unknown>;
+            expect(body["limit"]).toBe(body["username"] === "activitypub" ? 20 : 100);
             return jsonResponse([misskeyAccountBody()]);
           }
           if (url.pathname === "/api/notes/search") {
-            expect(await request.json()).toMatchObject({ limit: 100 });
+            const body = (await request.json()) as Record<string, unknown>;
+            expect(body["limit"]).toBe(body["query"] === "activitypub" ? 20 : 100);
             return jsonResponse([misskeyNote()]);
+          }
+          if (url.pathname === "/api/hashtags/search") {
+            expect(await request.json()).toMatchObject({ query: "activitypub", limit: 20 });
+            return jsonResponse(["activitypub"]);
           }
           if (url.pathname === "/api/notes/create") {
             expect(request.headers.get("Authorization")).toBe("Bearer token-1");
@@ -365,6 +371,8 @@ describe("Misskey auth adapter", () => {
       hashtag,
       accountSearch,
       postSearch,
+      hashtagSearch,
+      broadSearch,
       created,
       favourite,
       boost,
@@ -376,6 +384,8 @@ describe("Misskey auth adapter", () => {
       client.timelines.hashtag({ tag: "activitypub" }),
       client.search.search({ query: "alice", type: "accounts", session, page: { limit: 200 } }),
       client.search.search({ query: "alice", type: "posts", session, page: { limit: 200 } }),
+      client.search.search({ query: "activitypub", type: "hashtags" }),
+      client.search.search({ query: "activitypub", session, page: { limit: 20 } }),
       client.posts.create({ session, content: "Hello", visibility: "public" }),
       client.social.favourite({ session, postId }),
       client.social.boost({ session, postId }),
@@ -388,6 +398,8 @@ describe("Misskey auth adapter", () => {
     expect(hashtag.nodes[0]?.ref.rawId).toBe("note-1");
     expect(accountSearch.accounts[0]?.ref.rawId).toBe("9s4u");
     expect(postSearch.posts[0]?.ref.rawId).toBe("note-1");
+    expect(hashtagSearch.hashtags[0]).toMatchObject({ name: "activitypub" });
+    expect(broadSearch.hashtags[0]).toMatchObject({ name: "activitypub" });
     expect(created.ref.rawId).toBe("created-1");
     expect(favourite.ref.rawId).toBe("note-1");
     expect(boost.ref.rawId).toBe("created-1");
@@ -396,23 +408,28 @@ describe("Misskey auth adapter", () => {
     expect(requests).toContain("POST /api/notes/timeline");
   });
 
-  it("rejects unsupported hashtag search explicitly", async () => {
+  it("maps hashtag search through Misskey hashtags/search", async () => {
     const client = createActivityPlugClient({
-      adapter: createMisskeyAdapter(),
+      adapter: createMisskeyAdapter({
+        fetch: mockFetch(async (request) => {
+          expect(new URL(request.url).pathname).toBe("/api/hashtags/search");
+          expect(await request.json()).toMatchObject({ query: "activitypub", limit: 20 });
+          return jsonResponse(["activitypub", "activityplug"]);
+        }),
+      }),
       origin: "https://misskey.example",
     });
 
     await expect(
       client.search.search({ query: "activitypub", type: "hashtags" }),
-    ).rejects.toMatchObject({
-      code: "UNSUPPORTED_OPERATION",
-      context: { capability: "search.hashtags" },
+    ).resolves.toMatchObject({
+      hashtags: [{ name: "activitypub" }, { name: "activityplug" }],
     });
     await expect(
       client.search.search({ query: "activitypub", type: "accounts", resolve: true }),
     ).rejects.toMatchObject({
       code: "UNSUPPORTED_OPERATION",
-      context: { capability: "search.accounts" },
+      context: { capability: "search.accounts", operation: "search.accounts" },
     });
   });
 

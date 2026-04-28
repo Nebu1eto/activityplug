@@ -1,4 +1,9 @@
-import { createActivityPlugClient, createEntityRef } from "@activityplug/core";
+import {
+  createActivityPlugClient,
+  createCapabilitySet,
+  createEntityRef,
+  type AdapterOperationContext,
+} from "@activityplug/core";
 import { describe, expect, it } from "vitest";
 
 import { createMastodonAdapter } from "./index.js";
@@ -410,7 +415,6 @@ describe("Mastodon auth adapter", () => {
             spoiler_text: "Summary",
             in_reply_to_id: "reply-1",
             media_ids: ["media-1"],
-            poll: { options: ["Yes", "No"], multiple: true, expires_in: 3600 },
           });
           return jsonResponse(mastodonStatus("created-1"));
         }),
@@ -433,10 +437,67 @@ describe("Mastodon auth adapter", () => {
           id: "media-1",
         }).id,
       ],
-      poll: { options: ["Yes", "No"], multiple: true, expiresInSeconds: 3600 },
     });
 
     expect(created.ref.rawId).toBe("created-1");
+    await expect(
+      client.posts.create({
+        session,
+        content: "Media poll",
+        mediaIds: [
+          createEntityRef({
+            adapter: "mastodon",
+            origin: "https://mastodon.example",
+            type: "media",
+            id: "media-1",
+          }).id,
+        ],
+        poll: { options: ["Yes", "No"], multiple: true, expiresInSeconds: 3600 },
+      }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "posts.create", operation: "post.create" },
+    });
+  });
+
+  it("fails closed for unsupported direct adapter search and refresh operations", async () => {
+    const adapter = createMastodonAdapter({
+      fetch: async () => {
+        throw new TypeError("Unsupported operations must fail before a remote request.");
+      },
+    });
+    const context: AdapterOperationContext = {
+      adapterId: "mastodon",
+      origin: "https://mastodon.example",
+      capabilities: createCapabilitySet(),
+    };
+    const session = {
+      id: "session-1",
+      adapter: "mastodon",
+      origin: "https://mastodon.example",
+      scopes: [],
+      capabilities: createCapabilitySet(),
+      tokenSet: { accessToken: "token-1" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+
+    await expect(
+      adapter.search?.search?.({ query: "activityplug" }, context),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "search.posts", operation: "search" },
+    });
+    await expect(
+      adapter.search?.search?.({ query: "activityplug", type: "posts" }, context),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "search.posts", operation: "search.posts" },
+    });
+    await expect(adapter.auth?.refreshToken?.({ session }, context)).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "auth.oauth.refreshToken", operation: "auth.oauth.refresh" },
+    });
   });
 });
 

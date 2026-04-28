@@ -209,6 +209,29 @@ describe("auth service", () => {
     });
   });
 
+  it("reports unsupported refresh tokens with auth operation context", async () => {
+    const client = createActivityPlugClient({
+      adapter: fakeSessionOnlyAdapter(),
+      origin: "https://hackers.pub",
+    });
+    const session = await client.auth.injectToken({
+      accessToken: "token",
+      refreshToken: "refresh-token",
+    });
+
+    await expect(client.auth.refresh({ session })).rejects.toThrowError(
+      expect.objectContaining({
+        code: "UNSUPPORTED_OPERATION",
+        context: expect.objectContaining({
+          adapter: "hackerspub",
+          origin: "https://hackers.pub",
+          capability: "auth.oauth.refreshToken",
+          operation: "auth.oauth.refresh",
+        }),
+      }),
+    );
+  });
+
   it("refreshes sessions after the access token expires", async () => {
     const sessionStore = new StorageExpiryAuthSessionStore(new Date("2026-04-26T00:00:00.000Z"));
     const client = createActivityPlugClient({
@@ -363,6 +386,10 @@ function fakeSessionOnlyAdapter(): ActivityPlugAdapter {
         "auth.oauth.authorizationCode": capability(
           "unsupported",
           "HackersPub uses session-based authentication.",
+        ),
+        "auth.oauth.refreshToken": capability(
+          "unsupported",
+          "HackersPub does not expose OAuth refresh tokens.",
         ),
       }),
     },

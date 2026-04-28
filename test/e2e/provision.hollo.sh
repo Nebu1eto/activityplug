@@ -124,6 +124,78 @@ select
 from seed
 on conflict (id) do nothing;
 
+with seed as (
+  select '00000000-0000-4000-8000-000000004411'::uuid as account_id,
+         '00000000-0000-4000-8000-000000004421'::uuid as poll_id,
+         '00000000-0000-4000-8000-000000004422'::uuid as poll_post_id,
+         'http://hollo.127.0.0.1.nip.io:44080'::text as origin,
+         'activityplug_target'::text as username
+)
+insert into polls (id, multiple, expires, voters_count)
+select poll_id, false, now() + interval '1 day', 0 from seed
+union all
+select '00000000-0000-4000-8000-000000004423'::uuid, false, now() + interval '1 day', 0
+union all
+select '00000000-0000-4000-8000-000000004425'::uuid, false, now() + interval '1 day', 0
+on conflict (id) do update set
+  multiple = excluded.multiple,
+  expires = excluded.expires,
+  voters_count = 0;
+
+delete from poll_votes where poll_id in (
+  '00000000-0000-4000-8000-000000004421',
+  '00000000-0000-4000-8000-000000004423',
+  '00000000-0000-4000-8000-000000004425'
+);
+
+with seed as (
+  select unnest(array[
+    '00000000-0000-4000-8000-000000004421'::uuid,
+    '00000000-0000-4000-8000-000000004423'::uuid,
+    '00000000-0000-4000-8000-000000004425'::uuid
+  ]) as poll_id
+)
+insert into poll_options (poll_id, index, title, votes_count)
+select poll_id, 0, 'TypeScript', 0 from seed
+union all
+select poll_id, 1, 'ActivityPub', 0 from seed
+on conflict (poll_id, index) do update set
+  title = excluded.title,
+  votes_count = 0;
+
+with seed as (
+  select '00000000-0000-4000-8000-000000004411'::uuid as account_id,
+         poll_id,
+         poll_post_id,
+         'http://hollo.127.0.0.1.nip.io:44080'::text as origin,
+         'activityplug_target'::text as username
+  from (values
+    ('00000000-0000-4000-8000-000000004421'::uuid, '00000000-0000-4000-8000-000000004422'::uuid),
+    ('00000000-0000-4000-8000-000000004423'::uuid, '00000000-0000-4000-8000-000000004424'::uuid),
+    ('00000000-0000-4000-8000-000000004425'::uuid, '00000000-0000-4000-8000-000000004426'::uuid)
+  ) as poll_targets(poll_id, poll_post_id)
+)
+insert into posts (
+  id, iri, type, actor_id, visibility, content_html, content,
+  language, url, poll_id, published
+)
+select
+  poll_post_id,
+  origin || '/@' || username || '/' || poll_post_id::text,
+  'Question',
+  account_id,
+  'public',
+  '<p>ActivityPlug Hollo E2E poll</p>',
+  'ActivityPlug Hollo E2E poll',
+  'en',
+  origin || '/@' || username || '/' || poll_post_id::text,
+  poll_id,
+  now()
+from seed
+on conflict (id) do update set
+  poll_id = excluded.poll_id,
+  published = excluded.published;
+
 insert into applications (
   id, name, redirect_uris, scopes, client_id, client_secret, confidential
 )
@@ -152,5 +224,8 @@ on conflict (code) do nothing;
 SQL
 
 jq -nc --arg origin "$BASE_URL" --arg token "$TOKEN" \
-  --arg postSearchQuery "ActivityPlug" \
-  '{adapter:"hollo",origin:$origin,token:$token,accountHandle:"activityplug",socialActionHandle:"activityplug_target",postSearchQuery:$postSearchQuery}'
+  --arg postSearchQuery "ActivityPlug" --arg pollId "00000000-0000-4000-8000-000000004421" \
+  --arg postSearchRawId "00000000-0000-4000-8000-000000004402" \
+  --arg httpPollId "00000000-0000-4000-8000-000000004423" \
+  --arg graphqlPollId "00000000-0000-4000-8000-000000004425" \
+  '{adapter:"hollo",origin:$origin,token:$token,accountHandle:"activityplug",socialActionHandle:"activityplug_target",pollId:$pollId,httpPollId:$httpPollId,graphqlPollId:$graphqlPollId,postSearchQuery:$postSearchQuery,postSearchRawId:$postSearchRawId}'

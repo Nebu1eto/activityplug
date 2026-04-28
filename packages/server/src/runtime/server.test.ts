@@ -465,6 +465,165 @@ describe("createActivityPlugServer", () => {
     );
   });
 
+  it("preserves operation context for malformed public IDs", async () => {
+    const sessionStore = new InMemoryAuthSessionStore();
+    await sessionStore.create({
+      id: "session-poll",
+      adapter: "mastodon",
+      origin: "https://example.test",
+      scopes: [],
+      capabilities: {},
+      tokenSet: { accessToken: "token" },
+      createdAt: "2026-04-27T00:00:00.000Z",
+      updatedAt: "2026-04-27T00:00:00.000Z",
+    });
+    const server = createActivityPlugServer({
+      adapters: [testAdapter],
+      sessions: sessionStore,
+      originPolicy: () => undefined,
+    });
+
+    await expect(server.service.accounts.get({ id: "not-an-opaque-id" })).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+      context: { operation: "account.get" },
+    });
+    const httpAccount = await jsonRequest(server.app.request("/api/v1/accounts/not-an-opaque-id"));
+    expect(httpAccount).toMatchObject({
+      error: { code: "VALIDATION_FAILED", operation: "account.get" },
+    });
+    const graphQLAccount = await jsonRequest(
+      server.app.request("/graphql", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: `query($id: ID!) { account(id: $id) { ref { id } } }`,
+          variables: { id: "not-an-opaque-id" },
+        }),
+      }),
+    );
+    expect(graphQLAccount).toMatchObject({
+      errors: [
+        {
+          extensions: {
+            activityplug: { code: "VALIDATION_FAILED", operation: "account.get" },
+          },
+        },
+      ],
+    });
+    const httpPost = await jsonRequest(server.app.request("/api/v1/posts/not-an-opaque-id"));
+    expect(httpPost).toMatchObject({
+      error: { code: "VALIDATION_FAILED", operation: "post.get" },
+    });
+    const graphQLDeletePost = await jsonRequest(
+      server.app.request("/graphql", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: `mutation($id: ID!, $sessionId: ID!) { deletePost(id: $id, sessionId: $sessionId) { ref { id } } }`,
+          variables: { id: "not-an-opaque-id", sessionId: "session-poll" },
+        }),
+      }),
+    );
+    expect(graphQLDeletePost).toMatchObject({
+      errors: [
+        {
+          extensions: {
+            activityplug: { code: "VALIDATION_FAILED", operation: "post.delete" },
+          },
+        },
+      ],
+    });
+    const httpBoost = await jsonRequest(
+      server.app.request("/api/v1/posts/not-an-opaque-id/boost", {
+        method: "POST",
+        headers: { authorization: "Bearer session-poll" },
+      }),
+    );
+    expect(httpBoost).toMatchObject({
+      error: { code: "VALIDATION_FAILED", operation: "social.boost" },
+    });
+    const graphQLBoost = await jsonRequest(
+      server.app.request("/graphql", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: `mutation($input: BoostPostInput!) { boostPost(input: $input) { ref { id } } }`,
+          variables: { input: { postId: "not-an-opaque-id", sessionId: "session-poll" } },
+        }),
+      }),
+    );
+    expect(graphQLBoost).toMatchObject({
+      errors: [
+        {
+          extensions: {
+            activityplug: { code: "VALIDATION_FAILED", operation: "social.boost" },
+          },
+        },
+      ],
+    });
+    await expect(server.service.polls.get({ id: "not-an-opaque-id" })).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+      context: { operation: "poll.get" },
+    });
+    const httpGet = await jsonRequest(server.app.request("/api/v1/polls/not-an-opaque-id"));
+    expect(httpGet).toMatchObject({
+      error: { code: "VALIDATION_FAILED", operation: "poll.get" },
+    });
+    const graphQLGet = await jsonRequest(
+      server.app.request("/graphql", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: `query($id: ID!) { poll(id: $id) { ref { id } } }`,
+          variables: { id: "not-an-opaque-id" },
+        }),
+      }),
+    );
+    expect(graphQLGet).toMatchObject({
+      errors: [
+        {
+          extensions: {
+            activityplug: { code: "VALIDATION_FAILED", operation: "poll.get" },
+          },
+        },
+      ],
+    });
+    const httpVote = await jsonRequest(
+      server.app.request("/api/v1/polls/not-an-opaque-id/votes", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer session-poll",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ choices: [0] }),
+      }),
+    );
+    expect(httpVote).toMatchObject({
+      error: { code: "VALIDATION_FAILED", operation: "poll.vote" },
+    });
+    const graphQLVote = await jsonRequest(
+      server.app.request("/graphql", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: `mutation($input: VotePollInput!) { votePoll(input: $input) { ref { id } } }`,
+          variables: {
+            input: { id: "not-an-opaque-id", sessionId: "session-poll", choices: [0] },
+          },
+        }),
+      }),
+    );
+    expect(graphQLVote).toMatchObject({
+      errors: [
+        {
+          extensions: {
+            activityplug: { code: "VALIDATION_FAILED", operation: "poll.vote" },
+          },
+        },
+      ],
+    });
+  });
+
   it("requires a durable OAuth client secret store with durable sessions", () => {
     expect(() =>
       createActivityPlugServer({

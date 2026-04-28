@@ -41,6 +41,7 @@ const child = spawn(
     "vitest",
     "run",
     "--passWithNoTests",
+    "--fileParallelism=false",
     "packages/mastodon/src/e2e.test.ts",
     "packages/misskey/src/e2e.test.ts",
     "packages/pleroma/src/e2e.test.ts",
