@@ -7,6 +7,8 @@
   "type": "module",
   "scripts": {
     "build": "tsdown",
+    "dev": "vite --host 127.0.0.1",
+    "start": "vite --host 127.0.0.1",
     "test": "node --experimental-strip-types ../../scripts/run-package-tests.ts"
   },
   "dependencies": {
@@ -14,5 +16,8 @@
     "@activityplug/mastodon": "workspace:*",
     "@activityplug/misskey": "workspace:*",
     "@activityplug/test-fixtures": "workspace:*"
+  },
+  "devDependencies": {
+    "vite": "^8.0.10"
   }
 }
