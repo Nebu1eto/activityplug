@@ -7,9 +7,11 @@ import {
   type AuthSession,
   type ActivityPlugClient,
   type Connection,
+  type InstanceProfile,
   type OAuthCallbackInput,
   type OAuthClientRegistration,
   type Post,
+  type Relationship,
   type SearchResult,
 } from "@activityplug/core";
 import { createMastodonAdapter } from "@activityplug/mastodon";
@@ -50,12 +52,21 @@ export interface ExchangeAuthInput {
   readonly codeVerifier?: string;
 }
 
+export interface DetectInstanceInput {
+  readonly adapter: WebClientAdapter;
+  readonly origin: string;
+  readonly fetch?: typeof globalThis.fetch;
+}
+
 export interface ExchangedAuth {
   readonly session: AuthSession;
+  readonly detectInstance: () => Promise<InstanceProfile>;
   readonly verifyViewer: () => Promise<Account>;
   readonly lookupAccountProfile: (handle: string) => Promise<Account | null>;
   readonly renderHomeTimeline: () => Promise<Connection<Post>>;
   readonly renderPublicTimeline: () => Promise<Connection<Post>>;
+  readonly renderLocalTimeline: () => Promise<Connection<Post>>;
+  readonly renderHashtagTimeline: (tag: string) => Promise<Connection<Post>>;
   readonly search: (
     query: string,
     type: "accounts" | "posts" | "hashtags",
@@ -66,6 +77,18 @@ export interface ExchangedAuth {
   readonly uploadMedia: (file: Blob, filename?: string) => Promise<string>;
   readonly composeWithMedia: (content: string, mediaIds: readonly string[]) => Promise<Post>;
   readonly deletePost: (id: string) => Promise<void>;
+  readonly follow: (accountId: string) => Promise<Relationship>;
+  readonly unfollow: (accountId: string) => Promise<Relationship>;
+  readonly block: (accountId: string) => Promise<Relationship>;
+  readonly mute: (accountId: string) => Promise<Relationship>;
+  readonly favourite: (postId: string) => Promise<Post>;
+  readonly bookmark: (postId: string) => Promise<Post>;
+  readonly boost: (postId: string) => Promise<Post>;
+  readonly react: (postId: string, emoji: string) => Promise<Post>;
+}
+
+export async function detectInstance(input: DetectInstanceInput): Promise<InstanceProfile> {
+  return createClient(input.adapter, input.origin, input.fetch).instances.detect();
 }
 
 export async function startAuth(input: StartAuthInput): Promise<StartedAuth> {
@@ -123,10 +146,13 @@ export async function exchangeAuth(input: ExchangeAuthInput): Promise<ExchangedA
   });
   return {
     session,
+    detectInstance: () => client.instances.detect(),
     verifyViewer: async () => (await client.auth.verifyCredentials(session)).account,
     lookupAccountProfile: (handle) => client.accounts.getByHandle({ handle }),
     renderHomeTimeline: () => client.timelines.home({ session }),
     renderPublicTimeline: () => client.timelines.public({}),
+    renderLocalTimeline: () => client.timelines.local({}),
+    renderHashtagTimeline: (tag) => client.timelines.hashtag({ tag }),
     search: (query, type) => client.search.search({ query, type, session }),
     compose: (content) => client.posts.create({ session, content, visibility: "public" }),
     reply: (postId, content) =>
@@ -146,6 +172,14 @@ export async function exchangeAuth(input: ExchangeAuthInput): Promise<ExchangedA
     deletePost: async (id) => {
       await client.posts.delete({ session, id });
     },
+    follow: (accountId) => client.social.follow({ session, accountId }),
+    unfollow: (accountId) => client.social.unfollow({ session, accountId }),
+    block: (accountId) => client.social.block({ session, accountId }),
+    mute: (accountId) => client.social.mute({ session, accountId }),
+    favourite: (postId) => client.social.favourite({ session, postId }),
+    bookmark: (postId) => client.social.bookmark({ session, postId }),
+    boost: (postId) => client.social.boost({ session, postId }),
+    react: (postId, emoji) => client.social.react({ session, postId, emoji }),
   };
 }
 

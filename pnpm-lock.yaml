@@ -54,6 +54,15 @@ importers:
         specifier: workspace:*
         version: link:../../packages/test-fixtures
 
+  examples/proxy-client:
+    dependencies:
+      '@activityplug/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@activityplug/server':
+        specifier: workspace:*
+        version: link:../../packages/server
+
   examples/web-client:
     dependencies:
       '@activityplug/core':

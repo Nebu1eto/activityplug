@@ -1,0 +1,16 @@
+{
+  "name": "@activityplug/example-proxy-client",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Sample HTTP and GraphQL client for an ActivityPlug proxy server.",
+  "license": "Apache-2.0 OR MIT",
+  "type": "module",
+  "scripts": {
+    "build": "tsdown",
+    "test": "node --experimental-strip-types ../../scripts/run-package-tests.ts"
+  },
+  "dependencies": {
+    "@activityplug/core": "workspace:*",
+    "@activityplug/server": "workspace:*"
+  }
+}
