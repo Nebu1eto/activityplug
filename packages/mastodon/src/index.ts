@@ -1,4 +1,4 @@
-import { ActivityPlugError, type ActivityPlugAdapter } from "@activityplug/core";
+import { type ActivityPlugAdapter } from "@activityplug/core";
 import {
   createMastodonBaseAdapter,
   type MastodonBaseAdapterOptions,
@@ -29,39 +29,6 @@ export function createMastodonAdapter(options: MastodonAdapterOptions = {}): Act
       ...adapter.metadata,
       staticCapabilities: {
         ...adapter.metadata.staticCapabilities,
-        "search.posts": {
-          name: "search.posts",
-          status: "unsupported",
-          source: "static",
-          reason:
-            "Mastodon status search depends on instance search indexing and is not assumed by this adapter.",
-        },
-      },
-    },
-    search: {
-      ...adapter.search,
-      search: async (input, context) => {
-        if (input.type === undefined || input.type === "posts") {
-          throw new ActivityPlugError(
-            "UNSUPPORTED_OPERATION",
-            "Mastodon status search is not assumed by this adapter.",
-            {
-              adapter: context.adapterId,
-              origin: context.origin,
-              operation: input.type === undefined ? "search" : "search.posts",
-              capability: "search.posts",
-            },
-          );
-        }
-        const search = adapter.search?.search;
-        if (search === undefined) {
-          throw new ActivityPlugError("UNSUPPORTED_OPERATION", "Mastodon search is not mapped.", {
-            adapter: context.adapterId,
-            origin: context.origin,
-            operation: "search",
-          });
-        }
-        return search(input, context);
       },
     },
   };

@@ -460,7 +460,38 @@ describe("Mastodon auth adapter", () => {
     });
   });
 
-  it("fails closed for unsupported direct adapter search and refresh operations", async () => {
+  it("searches Mastodon posts through the direct adapter", async () => {
+    const adapter = createMastodonAdapter({
+      fetch: async (input) => {
+        const request = new Request(input);
+        const url = new URL(request.url);
+        expect(request.method).toBe("GET");
+        expect(url.pathname).toBe("/api/v2/search");
+        expect(url.searchParams.get("q")).toBe("activityplug");
+        expect(url.searchParams.get("type")).toBe("statuses");
+        return jsonResponse({
+          accounts: [],
+          statuses: [mastodonStatus("900")],
+          hashtags: [],
+        });
+      },
+    });
+    const context: AdapterOperationContext = {
+      adapterId: "mastodon",
+      origin: "https://mastodon.example",
+      capabilities: createCapabilitySet(),
+    };
+
+    const result = await adapter.search?.search?.(
+      { query: "activityplug", type: "posts" },
+      context,
+    );
+
+    expect(result?.posts).toHaveLength(1);
+    expect(result?.posts[0]?.ref.rawId).toBe("900");
+  });
+
+  it("fails closed for unsupported direct adapter refresh operations", async () => {
     const adapter = createMastodonAdapter({
       fetch: async () => {
         throw new TypeError("Unsupported operations must fail before a remote request.");
@@ -482,18 +513,6 @@ describe("Mastodon auth adapter", () => {
       updatedAt: "2026-01-01T00:00:00.000Z",
     };
 
-    await expect(
-      adapter.search?.search?.({ query: "activityplug" }, context),
-    ).rejects.toMatchObject({
-      code: "UNSUPPORTED_OPERATION",
-      context: { capability: "search.posts", operation: "search" },
-    });
-    await expect(
-      adapter.search?.search?.({ query: "activityplug", type: "posts" }, context),
-    ).rejects.toMatchObject({
-      code: "UNSUPPORTED_OPERATION",
-      context: { capability: "search.posts", operation: "search.posts" },
-    });
     await expect(adapter.auth?.refreshToken?.({ session }, context)).rejects.toMatchObject({
       code: "UNSUPPORTED_OPERATION",
       context: { capability: "auth.oauth.refreshToken", operation: "auth.oauth.refresh" },
