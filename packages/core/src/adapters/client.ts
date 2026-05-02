@@ -382,10 +382,11 @@ function createSearchService(client: RequiredClientContext): SearchService {
     search: async (input) => {
       const operation = client.adapter.search?.search;
       if (operation === undefined) {
-        throw unsupportedOperation(
-          "search",
-          capabilityContext(client, searchCapability(input.type)),
-        );
+        const capability = searchCapability(input.type);
+        throw unsupportedOperation("search", {
+          ...context(client),
+          ...(capability === undefined ? {} : { capability }),
+        });
       }
       if (typeof input.query !== "string" || input.query.length === 0) {
         throw new ActivityPlugError("VALIDATION_FAILED", "Search query must not be empty.", {
@@ -710,11 +711,13 @@ function requireBroadSearchCapabilities(client: RequiredClientContext): void {
   }
 }
 
-function searchCapability(type: SearchInput["type"] | undefined): CapabilityName {
+function searchCapability(type: NonNullable<SearchInput["type"]>): CapabilityName;
+function searchCapability(type: SearchInput["type"] | undefined): CapabilityName | undefined;
+function searchCapability(type: SearchInput["type"] | undefined): CapabilityName | undefined {
   if (type === "accounts") return "search.accounts";
   if (type === "posts") return "search.posts";
   if (type === "hashtags") return "search.hashtags";
-  return "search.accounts";
+  return undefined;
 }
 
 function assertRawRefTarget(

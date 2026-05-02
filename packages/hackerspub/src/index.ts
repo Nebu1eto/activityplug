@@ -194,10 +194,8 @@ async function search(
     );
   }
   const [accounts, posts] = await Promise.all([
-    input.type === undefined || input.type === "accounts"
-      ? searchActors(input, context, options)
-      : [],
-    input.type === undefined || input.type === "posts" ? searchPosts(input, context, options) : [],
+    input.type === "accounts" ? searchActors(input, context, options) : [],
+    input.type === "posts" ? searchPosts(input, context, options) : [],
   ]);
   return {
     accounts,

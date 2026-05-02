@@ -6,13 +6,15 @@ import {
   type AdapterOperationContext,
   type Post,
   type ReactPostInput,
-  type TokenSet,
 } from "@activityplug/core";
 import {
+  clientFor,
   createMastodonBaseAdapter,
+  requestVoid,
+  tokenHeader,
   type MastodonBaseAdapterOptions,
+  type MastodonTransportOptions,
 } from "@activityplug/mastodon-base";
-import ky, { HTTPError, TimeoutError } from "ky";
 
 export type HolloAdapterOptions = Omit<
   MastodonBaseAdapterOptions,
@@ -182,7 +184,7 @@ async function holloReaction(
   action: "react" | "unreact",
   operation: string,
   context: AdapterOperationContext,
-  options: Pick<HolloAdapterOptions, "fetch" | "httpClient">,
+  options: MastodonTransportOptions,
   adapter: ActivityPlugAdapter,
 ): Promise<Post> {
   await requestVoid(
@@ -193,8 +195,8 @@ async function holloReaction(
         headers: await tokenHeader(input.session, context, operation),
       },
     ).then(() => undefined),
-    context,
     operation,
+    context,
   );
   const getPost = adapter.posts?.get;
   if (getPost === undefined) {
@@ -205,120 +207,4 @@ async function holloReaction(
     });
   }
   return getPost({ id: input.postId }, context);
-}
-
-async function tokenHeader(
-  session: ReactPostInput["session"],
-  context: AdapterOperationContext,
-  operation: string,
-): Promise<Record<string, string>> {
-  const stored = await context.sessionStore?.get(session.id);
-  if (stored === undefined || stored === null) {
-    throw new ActivityPlugError("AUTH_REQUIRED", "Auth session is not available.", {
-      adapter: context.adapterId,
-      origin: context.origin,
-      operation,
-    });
-  }
-  if (stored.adapter !== context.adapterId || stored.origin !== context.origin) {
-    throw new ActivityPlugError("AUTH_REQUIRED", "Auth session does not belong to this adapter.", {
-      adapter: context.adapterId,
-      origin: context.origin,
-      operation,
-    });
-  }
-  assertAccessTokenFresh(stored.tokenSet, context, operation);
-  return {
-    Authorization: `${stored.tokenSet.tokenType ?? "Bearer"} ${stored.tokenSet.accessToken}`,
-  };
-}
-
-function assertAccessTokenFresh(
-  tokenSet: TokenSet,
-  context: AdapterOperationContext,
-  operation: string,
-): void {
-  if (tokenSet.expiresAt === undefined) return;
-  const accessTokenExpiresAt = Date.parse(tokenSet.expiresAt);
-  if (!Number.isFinite(accessTokenExpiresAt) || accessTokenExpiresAt <= Date.now()) {
-    throw new ActivityPlugError("AUTH_EXPIRED", "Auth session access token has expired.", {
-      adapter: context.adapterId,
-      origin: context.origin,
-      operation,
-    });
-  }
-}
-
-function clientFor(
-  context: AdapterOperationContext,
-  options: Pick<HolloAdapterOptions, "fetch" | "httpClient">,
-) {
-  return (
-    options.httpClient ??
-    ky.create({ prefix: context.origin, fetch: options.fetch, redirect: "manual" })
-  );
-}
-
-async function requestVoid(
-  request: Promise<void>,
-  context: AdapterOperationContext,
-  operation: string,
-): Promise<void> {
-  try {
-    await request;
-  } catch (cause) {
-    throw await remoteError(cause, context, operation);
-  }
-}
-
-async function remoteError(
-  cause: unknown,
-  context: AdapterOperationContext,
-  operation: string,
-): Promise<ActivityPlugError> {
-  if (cause instanceof TimeoutError) {
-    return new ActivityPlugError("TIMEOUT", "Remote Hollo request timed out.", {
-      adapter: context.adapterId,
-      origin: context.origin,
-      operation,
-    });
-  }
-  if (cause instanceof HTTPError) {
-    return new ActivityPlugError(
-      errorCodeForStatus(cause.response.status),
-      `Remote Hollo request failed with HTTP ${cause.response.status}.`,
-      {
-        adapter: context.adapterId,
-        origin: context.origin,
-        operation,
-        raw: {
-          status: cause.response.status,
-          body: await safeResponseText(cause.response),
-        },
-      },
-    );
-  }
-  return new ActivityPlugError("NETWORK_ERROR", "Remote Hollo request failed.", {
-    adapter: context.adapterId,
-    origin: context.origin,
-    operation,
-  });
-}
-
-function errorCodeForStatus(
-  status: number,
-): "AUTH_REQUIRED" | "NOT_FOUND" | "CONFLICT" | "RATE_LIMITED" | "REMOTE_ERROR" {
-  if (status === 401 || status === 403) return "AUTH_REQUIRED";
-  if (status === 404) return "NOT_FOUND";
-  if (status === 409) return "CONFLICT";
-  if (status === 429) return "RATE_LIMITED";
-  return "REMOTE_ERROR";
-}
-
-async function safeResponseText(response: Response): Promise<string | undefined> {
-  try {
-    return await response.text();
-  } catch {
-    return undefined;
-  }
 }

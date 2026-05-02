@@ -287,6 +287,34 @@ describe("library-mode clients", () => {
     });
   });
 
+  it("does not attach a subtype capability when broad search is not mapped", async () => {
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet({
+          "search.accounts": capability("supported"),
+          "search.posts": capability("supported"),
+          "search.hashtags": capability("supported"),
+        }),
+      },
+    };
+    const client = createActivityPlugClient({
+      adapter,
+      origin: "https://social.example",
+    });
+
+    await expect(client.search.search({ query: "hello" })).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { operation: "search" },
+    });
+    await expect(client.search.search({ query: "hello" })).rejects.toMatchObject({
+      context: expect.not.objectContaining({ capability: expect.anything() }),
+    });
+  });
+
   it("rejects broad search when any search subtype is unsupported", async () => {
     const adapter: ActivityPlugAdapter = {
       metadata: {

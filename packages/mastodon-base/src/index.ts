@@ -79,6 +79,8 @@ import {
   type NodeInfoResponse,
 } from "./types.js";
 
+export { clientFor, requestVoid, tokenHeader, type MastodonTransportOptions } from "./internals.js";
+
 export { accountFromResponse, postFromResponse } from "./internals.js";
 export type * from "./types.js";
 

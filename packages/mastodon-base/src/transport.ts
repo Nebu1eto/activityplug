@@ -10,6 +10,8 @@ import ky, { HTTPError, TimeoutError, type KyInstance } from "ky";
 
 import { type MastodonBaseAdapterOptions, type MastodonTokenResponse } from "./types.js";
 
+export type MastodonTransportOptions = Pick<MastodonBaseAdapterOptions, "fetch" | "httpClient">;
+
 export async function tokenHeader(
   session: AuthSession,
   context: AdapterOperationContext,
@@ -46,7 +48,7 @@ export function assertAccessTokenFresh(
 
 export function clientFor(
   context: AuthAdapterContext | AdapterOperationContext,
-  options: MastodonBaseAdapterOptions,
+  options: MastodonTransportOptions,
 ): KyInstance {
   return (
     options.httpClient ??

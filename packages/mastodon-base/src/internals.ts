@@ -103,6 +103,7 @@ export {
   tokenRequestBody,
   tokenSetFromResponse,
   tokenType,
+  type MastodonTransportOptions,
 } from "./transport.js";
 export { relationshipFromResponse } from "./relationship.js";
 
