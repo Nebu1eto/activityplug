@@ -90,4 +90,10 @@ export interface HackersPubViewerAccount {
   readonly bio?: string | null;
   readonly avatarUrl?: string | URL | null;
   readonly created?: string;
+  readonly actor?: {
+    readonly id?: string;
+    readonly uuid?: string;
+    readonly iri?: string | null;
+    readonly url?: string | null;
+  } | null;
 }

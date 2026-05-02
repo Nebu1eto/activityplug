@@ -1,5 +1,3 @@
-import { Buffer } from "node:buffer";
-
 import {
   ActivityPlugError,
   type ActivityPlugErrorCode,
@@ -12,6 +10,7 @@ import { createClient, fetchExchange, type TypedDocumentNode } from "@urql/core"
 import { graphql as gqlTada, type TadaDocumentNode } from "gql.tada";
 import ky, { HTTPError, TimeoutError, type KyInstance } from "ky";
 
+import { encodeBase64Utf8 } from "./base64.js";
 import { actorFromResponse, pollFromResponse } from "./mapping.js";
 import {
   type HackersPubActor,
@@ -150,7 +149,7 @@ export function hackersPubGlobalId(
   type: "Actor" | "Article" | "Note" | "Question",
   id: string,
 ): string {
-  return Buffer.from(`${type}:${id}`, "utf8").toString("base64");
+  return encodeBase64Utf8(`${type}:${id}`);
 }
 
 export function hackersPubVisibility(value: string | undefined): Post["visibility"] {

@@ -1,5 +1,3 @@
-import { Buffer } from "node:buffer";
-
 import {
   ActivityPlugError,
   createEntityRef,
@@ -10,6 +8,7 @@ import {
   type UploadMediaInput,
 } from "@activityplug/core";
 
+import { encodeBase64Utf8 } from "./base64.js";
 import { postGlobalIdDocument } from "./graphql-documents.js";
 import { assertMutationSuccess, postFromMutationPayload } from "./mapping.js";
 import {
@@ -74,7 +73,7 @@ export async function createHackersPubPost(
     {
       input: {
         content: input.content,
-        visibility: hackersPubVisibilityInput(input.visibility),
+        visibility: hackersPubVisibilityInput(input.visibility, context),
         language: "en",
         ...(input.replyToId === undefined
           ? {}
@@ -142,12 +141,25 @@ export async function uploadHackersPubMedia(
   };
 }
 
-function hackersPubVisibilityInput(visibility: CreatePostInput["visibility"]): string {
+function hackersPubVisibilityInput(
+  visibility: CreatePostInput["visibility"],
+  context: AdapterOperationContext,
+): string {
+  if (visibility === undefined || visibility === "public") return "PUBLIC";
   if (visibility === "unlisted") return "UNLISTED";
   if (visibility === "followers") return "FOLLOWERS";
   if (visibility === "direct") return "DIRECT";
   if (visibility === "none") return "NONE";
-  return "PUBLIC";
+  throw new ActivityPlugError(
+    "VALIDATION_FAILED",
+    "The requested visibility cannot be represented by this adapter.",
+    {
+      adapter: context.adapterId,
+      origin: context.origin,
+      operation: "post.create",
+      raw: { visibility },
+    },
+  );
 }
 
 function notePostSelection(): string {
@@ -181,7 +193,7 @@ async function firstPostGlobalId(
 ): Promise<string> {
   let lastError: unknown;
   for (const type of ["Note", "Article", "Question"] as const) {
-    const globalId = Buffer.from(`${type}:${id}`, "utf8").toString("base64");
+    const globalId = encodeBase64Utf8(`${type}:${id}`);
     try {
       await assertPostGlobalId(globalId, context, options);
       return globalId;

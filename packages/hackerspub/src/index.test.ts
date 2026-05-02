@@ -763,6 +763,24 @@ describe("HackersPub adapter", () => {
     await expect(
       client.posts.create({ session, content: "Quote", quoteOfId: postId() }),
     ).resolves.toMatchObject({ ref: { rawId: postUuid } });
+    await expect(
+      client.posts.create({ session, content: "Local", visibility: "local" }),
+    ).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+      context: { operation: "post.create" },
+    });
+    await expect(
+      client.posts.create({ session, content: "List", visibility: "list" }),
+    ).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+      context: { operation: "post.create" },
+    });
+    await expect(
+      client.posts.create({ session, content: "Unknown", visibility: "unknown" }),
+    ).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+      context: { operation: "post.create" },
+    });
     expect(client.capabilities["media.upload"]).toMatchObject({ status: "unsupported" });
     expect(createHackersPubAdapter().media).toBeUndefined();
     await expect(
@@ -840,6 +858,56 @@ describe("HackersPub adapter", () => {
     });
   });
 
+  it("uses the viewer actor UUID as the public account raw ID", async () => {
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async (input, init) => {
+          const request = new Request(input, init);
+          const body = (await request.json()) as { readonly query?: string };
+          if (body.query?.includes("viewer") === true) {
+            return Response.json({
+              data: {
+                viewer: {
+                  uuid: "00000000-0000-4000-8000-000000000010",
+                  username: "alice",
+                  name: "Alice",
+                  handle: "@alice@hackerspub.example",
+                  actor: {
+                    id: "QWN0b3I6MDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAx",
+                    uuid: actorUuid,
+                    iri: "https://hackerspub.example/@alice",
+                    url: "https://hackerspub.example/@alice",
+                  },
+                },
+              },
+            });
+          }
+          return Response.json({
+            data: {
+              actorByUuid: {
+                posts: {
+                  edges: [{ node: fixture.post }],
+                  pageInfo: { hasNextPage: false, hasPreviousPage: false },
+                },
+              },
+            },
+          });
+        },
+      }),
+      origin: "https://hackerspub.example",
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+    const verified = await client.auth.verifyCredentials(session);
+    const posts = await client.accounts.listPosts({
+      accountId: verified.account.ref.id,
+      session,
+    });
+
+    expect(verified.account.ref.rawId).toBe(actorUuid);
+    expect(verified.account.url).toBe("https://hackerspub.example/@alice");
+    expect(posts.nodes[0]?.ref.rawId).toBe(postUuid);
+  });
+
   it("rejects viewer responses with non-UUID account identifiers", async () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter({
@@ -849,7 +917,10 @@ describe("HackersPub adapter", () => {
               viewer: {
                 username: "alice",
                 handle: "@alice@hackers.pub",
-                uuid: "relay-account-id",
+                uuid: "00000000-0000-4000-8000-000000000010",
+                actor: {
+                  uuid: "relay-actor-id",
+                },
               },
             },
           }),

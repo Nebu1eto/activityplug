@@ -566,9 +566,18 @@ export function viewerAccountFromResponse(
   response: HackersPubViewerAccount,
   context: AdapterOperationContext,
 ): Account {
+  if (!isRecord(response.actor)) {
+    throw activityPlugError(
+      "REMOTE_ERROR",
+      "HackersPub viewer response is missing actor data.",
+      context,
+      "auth.verifyCredentials",
+      response,
+    );
+  }
   const rawId = validatedRemoteId(
-    undefined,
-    requiredViewerString(response.uuid, "uuid", response, context),
+    response.actor.id,
+    requiredViewerString(response.actor.uuid, "actor.uuid", response, context),
     response,
     context,
     "auth.verifyCredentials",
@@ -598,19 +607,34 @@ export function viewerAccountFromResponse(
     response.avatarUrl === null || response.avatarUrl === undefined
       ? undefined
       : String(response.avatarUrl);
+  const actorIri = optionalString(
+    response.actor.iri,
+    "actor.iri",
+    response,
+    context,
+    "auth.verifyCredentials",
+  );
+  const actorUrl = optionalString(
+    response.actor.url,
+    "actor.url",
+    response,
+    context,
+    "auth.verifyCredentials",
+  );
   return {
     ref: createEntityRef({
       adapter: context.adapterId,
       origin: context.origin,
       type: "account",
       id: rawId,
-      rawUrl: `${context.origin}/${handle}`,
+      rawUrl: actorIri ?? actorUrl,
     }),
     username,
     acct,
     displayName:
       optionalString(response.name, "name", response, context, "auth.verifyCredentials") ??
       username,
+    ...(actorUrl === undefined ? {} : { url: actorUrl }),
     ...(avatarUrl === undefined ? {} : { avatarUrl }),
     bot: false,
     locked: false,

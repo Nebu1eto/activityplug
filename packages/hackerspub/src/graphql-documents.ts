@@ -46,6 +46,12 @@ export const viewerDocument = hackersPubGraphQL<
       bio
       avatarUrl
       created
+      actor {
+        id
+        uuid
+        iri
+        url
+      }
     }
   }
 `);
