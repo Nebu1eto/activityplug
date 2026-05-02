@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 import { type ActivityPlugAdapter } from "../adapters/client.js";
 import { requireCapability } from "../capabilities/capability.js";
 import {
@@ -8,6 +6,7 @@ import {
   unsupportedOperation,
 } from "../errors/error.js";
 import { type Account } from "../types/entities.js";
+import { createUuid } from "../utils/uuid.js";
 import {
   type AuthSession,
   type InjectTokenInput,
@@ -113,7 +112,7 @@ class DefaultAuthService implements AuthService {
     }
     const now = new Date().toISOString();
     const session: StoredAuthSession = {
-      id: randomUUID(),
+      id: createUuid(),
       adapter: this.#client.adapter.metadata.id,
       origin: this.#client.origin,
       scopes: input.scopes ?? [],
@@ -236,7 +235,7 @@ class DefaultAuthService implements AuthService {
   #sessionFromTokenSet(tokenSet: TokenSet): StoredAuthSession {
     const now = new Date().toISOString();
     return {
-      id: randomUUID(),
+      id: createUuid(),
       adapter: this.#client.adapter.metadata.id,
       origin: this.#client.origin,
       scopes: tokenSet.scopes ?? [],

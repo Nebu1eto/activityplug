@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createActivityPlugClient, type ActivityPlugAdapter } from "../adapters/client.js";
 import { capability, createCapabilitySet } from "../capabilities/capability.js";
@@ -8,6 +8,10 @@ import { type AuthSessionStore } from "./service.js";
 import { type StoredAuthSession, type TokenSet } from "./types.js";
 
 describe("auth service", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("creates a library-mode bot session from an injected token and verifies credentials", async () => {
     const account = fakeAccount();
     const client = createActivityPlugClient({
@@ -29,6 +33,28 @@ describe("auth service", () => {
     expect("tokenSet" in session).toBe(false);
     expect(verified.account.ref.rawId).toBe("account-1");
     expect(verified.session.account?.rawId).toBe("account-1");
+  });
+
+  it("creates session IDs with Web Crypto when randomUUID is unavailable", async () => {
+    vi.stubGlobal("crypto", {
+      getRandomValues: <T extends Exclude<BufferSource, ArrayBuffer>>(array: T): T => {
+        if (!(array instanceof Uint8Array)) {
+          throw new TypeError("Expected a Uint8Array.");
+        }
+        for (const [index] of array.entries()) {
+          array[index] = index;
+        }
+        return array;
+      },
+    } satisfies Partial<Crypto>);
+    const client = createActivityPlugClient({
+      adapter: fakeAuthAdapter(fakeAccount()),
+      origin: "https://social.example",
+    });
+
+    const session = await client.auth.injectToken({ accessToken: "token-1" });
+
+    expect(session.id).toBe("00010203-0405-4607-8809-0a0b0c0d0e0f");
   });
 
   it("fails predictably when OAuth is unsupported", async () => {

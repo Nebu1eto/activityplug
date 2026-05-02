@@ -1,4 +1,5 @@
 import { ActivityPlugError } from "../errors/error.js";
+import { decodeBase64UrlUtf8, encodeBase64UrlUtf8 } from "../utils/base64url.js";
 
 export const maxPageLimit = 200;
 
@@ -17,10 +18,9 @@ export function encodePageCursor(raw: RawPageCursor): string {
   assertCursorPart("origin", raw.origin);
   assertCursorPart("operation", raw.operation);
   assertCursorPart("cursor", raw.cursor);
-  return `${CURSOR_PREFIX}_${CURSOR_VERSION}_${Buffer.from(
+  return `${CURSOR_PREFIX}_${CURSOR_VERSION}_${encodeBase64UrlUtf8(
     JSON.stringify([raw.adapter, raw.origin, raw.operation, raw.cursor]),
-    "utf8",
-  ).toString("base64url")}`;
+  )}`;
 }
 
 export function decodePageCursor(cursor: string, expected: Omit<RawPageCursor, "cursor">): string {
@@ -33,7 +33,7 @@ export function decodePageCursor(cursor: string, expected: Omit<RawPageCursor, "
     throw invalidPageCursor(expected, "Page cursor has an invalid envelope.");
   let parsed: unknown;
   try {
-    parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    parsed = JSON.parse(decodeBase64UrlUtf8(payload));
   } catch (cause) {
     throw invalidPageCursor(expected, "Page cursor payload is not valid JSON.", cause);
   }

@@ -184,7 +184,7 @@ exports[`server capability snapshots > mastodon > capabilities 1`] = `
   "posts.update": "unknown:static",
   "search.accounts": "supported:static",
   "search.hashtags": "supported:static",
-  "search.posts": "unsupported:static:Mastodon status search depends on instance search indexing and is not assumed by this adapter.",
+  "search.posts": "supported:static",
   "social.block": "supported:static",
   "social.bookmark": "supported:static",
   "social.bookmarkFolders": "unknown:static",

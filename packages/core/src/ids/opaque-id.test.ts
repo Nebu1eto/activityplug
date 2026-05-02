@@ -65,9 +65,7 @@ describe("opaque IDs", () => {
   });
 
   it("rejects decoded payloads with empty raw ID parts", () => {
-    const crafted = `ap_1_${Buffer.from(JSON.stringify(["", "", "", ""]), "utf8").toString(
-      "base64url",
-    )}`;
+    const crafted = "ap_1_WyIiLCIiLCIiLCIiXQ";
 
     expect(() => decodeOpaqueId(crafted)).toThrow(
       expect.objectContaining({ code: "VALIDATION_FAILED" }),

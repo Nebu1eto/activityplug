@@ -1,4 +1,5 @@
 import { invalidOpaqueId } from "../errors/error.js";
+import { decodeBase64UrlUtf8, encodeBase64UrlUtf8 } from "../utils/base64url.js";
 
 export type OpaqueId = string & { readonly __activityPlugOpaqueId: unique symbol };
 
@@ -78,9 +79,9 @@ function assertIdPart(name: string, value: string): void {
 }
 
 function toBase64Url(value: string): string {
-  return Buffer.from(value, "utf8").toString("base64url");
+  return encodeBase64UrlUtf8(value);
 }
 
 function fromBase64Url(value: string): string {
-  return Buffer.from(value, "base64url").toString("utf8");
+  return decodeBase64UrlUtf8(value);
 }
