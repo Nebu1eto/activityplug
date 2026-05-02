@@ -26,6 +26,10 @@ p {
   color: #4b5563;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 form {
   display: grid;
   gap: 14px;
@@ -41,6 +45,7 @@ label {
 }
 
 input,
+textarea,
 select,
 button {
   min-height: 38px;
@@ -48,6 +53,15 @@ button {
   border-radius: 6px;
   padding: 8px 10px;
   font: inherit;
+}
+
+textarea {
+  resize: vertical;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 button {
@@ -68,11 +82,33 @@ button + button {
   flex-wrap: wrap;
 }
 
-#output {
+#output,
+.result-panel {
   min-height: 120px;
   white-space: pre-wrap;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   padding: 14px;
   background: #f8fafc;
+}
+
+.result-panel:empty {
+  display: none;
+}
+
+#workspace {
+  display: grid;
+  gap: 18px;
+  margin-top: 20px;
+}
+
+#workspace[hidden] {
+  display: none;
+}
+
+#workspace form {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 14px;
+  background: white;
 }

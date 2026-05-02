@@ -10,6 +10,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@activityplug/core": workspacePath("packages/core/src/index.ts"),
+      "@activityplug/hackerspub": workspacePath("packages/hackerspub/src/index.ts"),
       "@activityplug/mastodon-base": workspacePath("packages/mastodon-base/src/index.ts"),
       "@activityplug/mastodon": workspacePath("packages/mastodon/src/index.ts"),
       "@activityplug/misskey": workspacePath("packages/misskey/src/index.ts"),

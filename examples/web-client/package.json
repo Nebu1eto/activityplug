@@ -7,15 +7,17 @@
   "type": "module",
   "scripts": {
     "build": "tsdown",
-    "dev": "vite --host 127.0.0.1",
-    "start": "vite --host 127.0.0.1",
+    "dev": "vite --host localhost",
+    "start": "vite --host localhost",
     "test": "node --experimental-strip-types ../../scripts/run-package-tests.ts"
   },
   "dependencies": {
     "@activityplug/core": "workspace:*",
+    "@activityplug/hackerspub": "workspace:*",
     "@activityplug/mastodon": "workspace:*",
     "@activityplug/misskey": "workspace:*",
-    "@activityplug/test-fixtures": "workspace:*"
+    "@activityplug/test-fixtures": "workspace:*",
+    "@simplewebauthn/browser": "^13.3.0"
   },
   "devDependencies": {
     "vite": "^8.0.10"

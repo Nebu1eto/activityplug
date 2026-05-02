@@ -68,6 +68,9 @@ importers:
       '@activityplug/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@activityplug/hackerspub':
+        specifier: workspace:*
+        version: link:../../packages/hackerspub
       '@activityplug/mastodon':
         specifier: workspace:*
         version: link:../../packages/mastodon
@@ -77,6 +80,9 @@ importers:
       '@activityplug/test-fixtures':
         specifier: workspace:*
         version: link:../../packages/test-fixtures
+      '@simplewebauthn/browser':
+        specifier: ^13.3.0
+        version: 13.3.0
     devDependencies:
       vite:
         specifier: ^8.0.10
@@ -869,6 +875,9 @@ packages:
 
   '@rolldown/pluginutils@1.0.0-rc.17':
     resolution: {integrity: sha512-n8iosDOt6Ig1UhJ2AYqoIhHWh/isz0xpicHTzpKBeotdVsTEcxsSA/i3EVM7gQAj0rU27OLAxCjzlj15IWY7bg==}
+
+  '@simplewebauthn/browser@13.3.0':
+    resolution: {integrity: sha512-BE/UWv6FOToAdVk0EokzkqQQDOWtNydYlY6+OrmiZ5SCNmb41VehttboTetUM3T/fr6EAFYVXjz4My2wg230rQ==}
 
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
@@ -2007,6 +2016,8 @@ snapshots:
     optional: true
 
   '@rolldown/pluginutils@1.0.0-rc.17': {}
+
+  '@simplewebauthn/browser@13.3.0': {}
 
   '@standard-schema/spec@1.1.0': {}
 
