@@ -246,7 +246,7 @@ describe("ActivityPlug HTTP and GraphQL contract edges", () => {
     expect(untrackedGraphQLOperations(introspection)).toEqual([]);
   });
 
-  it("types M10 finite GraphQL and OpenAPI values", async () => {
+  it("types finite GraphQL and OpenAPI auxiliary values", async () => {
     const app = createActivityPlugApp({
       service: createTestService(),
     });

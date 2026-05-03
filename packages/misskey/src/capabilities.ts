@@ -36,7 +36,10 @@ export function createMisskeyStaticCapabilities() {
       "unsupported",
       "Misskey does not expose a verified single-notification dismiss endpoint.",
     ),
-    "notifications.clear": capability("supported"),
+    "notifications.clear": capability(
+      "unsupported",
+      "Misskey exposes mark-all-as-read, not a portable notification clear operation.",
+    ),
     "notifications.unreadCount": capability(
       "unsupported",
       "Misskey does not expose a portable notification unread count endpoint.",
@@ -79,9 +82,21 @@ export function createMisskeyStaticCapabilities() {
     "social.favourite": capability("supported"),
     "social.bookmark": capability(
       "unsupported",
-      "Misskey bookmark and clip semantics are not mapped by this adapter yet.",
+      "Misskey favorites are exposed through favourite operations; clip-based bookmarks are not mapped.",
     ),
     "social.boost": capability("supported"),
     "social.reaction": capability("supported"),
+    "streaming.timeline": capability(
+      "unsupported",
+      "Streaming is not implemented by this adapter yet.",
+    ),
+    "streaming.notifications": capability(
+      "unsupported",
+      "Streaming is not implemented by this adapter yet.",
+    ),
+    "streaming.conversations": capability(
+      "unsupported",
+      "Streaming is not implemented by this adapter yet.",
+    ),
   });
 }

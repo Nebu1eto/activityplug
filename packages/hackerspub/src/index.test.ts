@@ -380,7 +380,10 @@ describe("HackersPub adapter", () => {
       adapter: createHackersPubAdapter({
         fetch: async (input, init) => {
           const request = new Request(input, init);
-          const body = (await request.json()) as { readonly query?: string };
+          const body = (await request.json()) as {
+            readonly query?: string;
+            readonly variables?: { readonly input?: { readonly quotedPostId?: string } };
+          };
           seenRequests.push({
             accept: request.headers.get("accept"),
             hasInit: init !== undefined,
@@ -504,7 +507,49 @@ describe("HackersPub adapter", () => {
       }),
     ).rejects.toMatchObject({
       code: "UNSUPPORTED_OPERATION",
-      context: { capability: "media.upload", operation: "post.update" },
+      context: { capability: "posts.update", operation: "post.update" },
+    });
+  });
+
+  it("rejects HackersPub create inputs that createNote cannot preserve", async () => {
+    const client = createClientWithGraphQLResponse({});
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    await expect(
+      client.posts.create({
+        session,
+        content: "ActivityPlug content warning",
+        summary: "content warning",
+      }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "posts.create", operation: "post.create" },
+    });
+    await expect(
+      client.posts.create({
+        session,
+        content: "ActivityPlug sensitive post",
+        sensitive: true,
+      }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "posts.create", operation: "post.create" },
+    });
+  });
+
+  it("rejects HackersPub boost visibility inputs that sharePost cannot preserve", async () => {
+    const client = createClientWithGraphQLResponse({});
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    await expect(
+      client.social.boost({
+        session,
+        postId: postId(),
+        visibility: "followers",
+      }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "social.boost", operation: "social.boost" },
     });
   });
 
@@ -514,7 +559,10 @@ describe("HackersPub adapter", () => {
       adapter: createHackersPubAdapter({
         fetch: async (input, init) => {
           const request = new Request(input, init);
-          const body = (await request.json()) as { readonly query?: string };
+          const body = (await request.json()) as {
+            readonly query?: string;
+            readonly variables?: { readonly input?: { readonly quotedPostId?: string } };
+          };
           const query = body.query ?? "";
           if (query.includes("publicTimeline")) {
             seenOperations.push("publicTimeline");
@@ -634,6 +682,7 @@ describe("HackersPub adapter", () => {
 
   it("maps GraphQL social actions, deletion, and HTTP poll voting", async () => {
     const seenRequests: Array<{ readonly path: string; readonly body: unknown }> = [];
+    const reactionInputs: unknown[] = [];
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter({
         fetch: async (input, init) => {
@@ -670,6 +719,7 @@ describe("HackersPub adapter", () => {
             });
           }
           if (query.includes("addReactionToPost")) {
+            reactionInputs.push(isRecord(body) ? body.variables : undefined);
             return Response.json({
               data: {
                 addReactionToPost: {
@@ -680,6 +730,7 @@ describe("HackersPub adapter", () => {
             });
           }
           if (query.includes("removeReactionFromPost")) {
+            reactionInputs.push(isRecord(body) ? body.variables : undefined);
             return Response.json({
               data: {
                 removeReactionFromPost: {
@@ -724,6 +775,10 @@ describe("HackersPub adapter", () => {
     ).resolves.toMatchObject({
       ref: { rawId: postUuid },
     });
+    expect(reactionInputs).toEqual([
+      { input: { postId: expect.any(String), emoji: "👍" } },
+      { input: { postId: expect.any(String), emoji: "👍" } },
+    ]);
     await expect(client.posts.delete({ session, id: postId() })).resolves.toMatchObject({
       deleted: true,
       ref: { rawId: postUuid },
@@ -744,6 +799,271 @@ describe("HackersPub adapter", () => {
     expect(seenRequests.map((request) => request.path)).toContain(`/api/posts/${postUuid}/vote`);
   });
 
+  it("maps HackersPub notifications and keeps mark-read unsupported", async () => {
+    const seenQueries: string[] = [];
+    const notificationCalls: unknown[] = [];
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async (input, init) => {
+          const request = new Request(input, init);
+          const body = (await request.json()) as {
+            readonly query?: string;
+            readonly variables?: Record<string, unknown>;
+          };
+          const query = body.query ?? "";
+          seenQueries.push(query);
+          notificationCalls.push(body.variables);
+          const firstPage = notificationCalls.length === 1;
+          return Response.json({
+            data: {
+              viewer: {
+                notifications: {
+                  edges: [
+                    ...(firstPage
+                      ? [
+                          {
+                            cursor: "page-1-follow",
+                            node: {
+                              __typename: "FollowNotification",
+                              uuid: "00000000-0000-4000-8000-000000000009",
+                              created: "2026-05-03T00:00:00.000Z",
+                              actors: { edges: [{ node: fixture.account }] },
+                            },
+                          },
+                        ]
+                      : []),
+                    ...(firstPage
+                      ? []
+                      : [
+                          {
+                            cursor: "page-2-react",
+                            node: {
+                              __typename: "ReactNotification",
+                              uuid: "00000000-0000-4000-8000-000000000010",
+                              created: "2026-05-03T00:00:00.000Z",
+                              emoji: "👍",
+                              actors: { edges: [{ node: fixture.account }] },
+                              post: fixture.post,
+                            },
+                          },
+                        ]),
+                  ],
+                  pageInfo: {
+                    hasNextPage: firstPage,
+                    hasPreviousPage: false,
+                    startCursor: firstPage ? "page-1-start" : "",
+                    endCursor: firstPage ? "page-1-end" : "",
+                  },
+                },
+              },
+            },
+          });
+        },
+      }),
+      origin: "https://hackerspub.example",
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    const notifications = await client.notifications.list({
+      session,
+      types: ["emoji_reaction"],
+      page: { limit: 2 },
+    });
+
+    expect(client.capabilities["notifications.list"]).toMatchObject({ status: "supported" });
+    expect(client.capabilities["notifications.clear"]).toMatchObject({ status: "unsupported" });
+    expect(notifications.nodes[0]).toMatchObject({
+      type: "emoji_reaction",
+      account: { rawId: actorUuid },
+      post: { rawId: postUuid },
+    });
+    expect(notificationCalls).toHaveLength(2);
+    expect(notificationCalls[1]).toMatchObject({ first: 2, after: "page-1-end" });
+    expect(
+      decodePageCursor(notifications.pageInfo.startCursor ?? "", {
+        adapter: "hackerspub",
+        origin: "https://hackerspub.example",
+        operation: "notification.list",
+      }),
+    ).toBe("page-2-react");
+    expect(
+      decodePageCursor(notifications.pageInfo.endCursor ?? "", {
+        adapter: "hackerspub",
+        origin: "https://hackerspub.example",
+        operation: "notification.list",
+      }),
+    ).toBe("page-2-react");
+    await expect(client.notifications.clear({ session })).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "notifications.clear", operation: "notification.clear" },
+    });
+    expect(seenQueries.some((query) => query.includes("markNotificationsAsRead"))).toBe(false);
+  });
+
+  it("keeps filtered HackersPub notification cursors stable for backward scans", async () => {
+    const notificationCalls: unknown[] = [];
+    const before = encodePageCursor({
+      adapter: "hackerspub",
+      origin: "https://hackerspub.example",
+      operation: "notification.list",
+      cursor: "initial-before",
+    });
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async (input, init) => {
+          const request = new Request(input, init);
+          const body = (await request.json()) as { readonly variables?: Record<string, unknown> };
+          notificationCalls.push(body.variables);
+          const firstPage = notificationCalls.length === 1;
+          return Response.json({
+            data: {
+              viewer: {
+                notifications: {
+                  edges: [
+                    {
+                      cursor: firstPage ? "page-2-follow" : "page-1-react",
+                      node: firstPage
+                        ? {
+                            __typename: "FollowNotification",
+                            uuid: "00000000-0000-4000-8000-000000000012",
+                            created: "2026-05-03T00:01:00.000Z",
+                            actors: { edges: [{ node: fixture.account }] },
+                          }
+                        : {
+                            __typename: "ReactNotification",
+                            uuid: "00000000-0000-4000-8000-000000000011",
+                            created: "2026-05-03T00:00:00.000Z",
+                            emoji: "👍",
+                            actors: { edges: [{ node: fixture.account }] },
+                            post: fixture.post,
+                          },
+                    },
+                  ],
+                  pageInfo: {
+                    hasNextPage: false,
+                    hasPreviousPage: firstPage,
+                    startCursor: firstPage ? "page-2-start" : "page-1-start",
+                    endCursor: firstPage ? "page-2-end" : "page-1-end",
+                  },
+                },
+              },
+            },
+          });
+        },
+      }),
+      origin: "https://hackerspub.example",
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    const notifications = await client.notifications.list({
+      session,
+      types: ["emoji_reaction"],
+      page: { before, limit: 2 },
+    });
+
+    expect(notificationCalls).toHaveLength(2);
+    expect(notificationCalls[0]).toMatchObject({ last: 2, before: "initial-before" });
+    expect(notificationCalls[1]).toMatchObject({ last: 2, before: "page-2-start" });
+    expect(notifications.nodes.map((notification) => notification.ref.rawId)).toEqual([
+      "00000000-0000-4000-8000-000000000011",
+    ]);
+    expect(
+      decodePageCursor(notifications.pageInfo.startCursor ?? "", {
+        adapter: "hackerspub",
+        origin: "https://hackerspub.example",
+        operation: "notification.list",
+      }),
+    ).toBe("page-1-react");
+    expect(
+      decodePageCursor(notifications.pageInfo.endCursor ?? "", {
+        adapter: "hackerspub",
+        origin: "https://hackerspub.example",
+        operation: "notification.list",
+      }),
+    ).toBe("page-1-react");
+  });
+
+  it("rejects malformed HackersPub notification edges and IDs", async () => {
+    const malformedEdgeClient = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async () =>
+          Response.json({
+            data: {
+              viewer: {
+                notifications: {
+                  edges: [null],
+                  pageInfo: { hasNextPage: false, hasPreviousPage: false },
+                },
+              },
+            },
+          }),
+      }),
+      origin: "https://hackerspub.example",
+    });
+    const malformedNodeClient = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async () =>
+          Response.json({
+            data: {
+              viewer: {
+                notifications: {
+                  edges: [{ cursor: "notification-1", node: null }],
+                  pageInfo: { hasNextPage: false, hasPreviousPage: false },
+                },
+              },
+            },
+          }),
+      }),
+      origin: "https://hackerspub.example",
+    });
+    const malformedIdClient = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async () =>
+          Response.json({
+            data: {
+              viewer: {
+                notifications: {
+                  edges: [
+                    {
+                      cursor: "notification-1",
+                      node: {
+                        __typename: "FollowNotification",
+                        uuid: "not-a-uuid",
+                        created: "2026-05-03T00:00:00.000Z",
+                        actors: { edges: [{ node: fixture.account }] },
+                      },
+                    },
+                  ],
+                  pageInfo: { hasNextPage: false, hasPreviousPage: false },
+                },
+              },
+            },
+          }),
+      }),
+      origin: "https://hackerspub.example",
+    });
+    const session = await malformedEdgeClient.auth.injectToken({ accessToken: "token" });
+    const nodeSession = await malformedNodeClient.auth.injectToken({ accessToken: "token" });
+    const idSession = await malformedIdClient.auth.injectToken({ accessToken: "token" });
+
+    await expect(malformedEdgeClient.notifications.list({ session })).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { operation: "notification.list" },
+    });
+    await expect(
+      malformedNodeClient.notifications.list({ session: nodeSession }),
+    ).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { operation: "notification.list" },
+    });
+    await expect(
+      malformedIdClient.notifications.list({ session: idSession }),
+    ).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { operation: "notification.list" },
+    });
+  });
+
   it("creates notes, replies, quotes, and fails closed for unattached media uploads", async () => {
     const seenQueries: string[] = [];
     const client = createActivityPlugClient({
@@ -760,12 +1080,27 @@ describe("HackersPub adapter", () => {
               height: 16,
             });
           }
-          const body = (await request.json()) as { readonly query?: string };
+          const body = (await request.json()) as {
+            readonly query?: string;
+            readonly variables?: { readonly input?: { readonly quotedPostId?: string } };
+          };
           const query = body.query ?? "";
           seenQueries.push(query);
           if (query.includes("createNote")) {
+            const quotePost =
+              body.variables?.input?.quotedPostId === undefined
+                ? fixture.post
+                : {
+                    ...fixture.post,
+                    quotedPost: {
+                      id: fixture.post.id,
+                      uuid: fixture.post.uuid,
+                      iri: fixture.post.iri,
+                      url: fixture.post.url,
+                    },
+                  };
             return Response.json({
-              data: { createNote: { __typename: "CreateNotePayload", note: fixture.post } },
+              data: { createNote: { __typename: "CreateNotePayload", note: quotePost } },
             });
           }
           return Response.json({ data: { node: fixture.post } });
@@ -783,7 +1118,7 @@ describe("HackersPub adapter", () => {
     ).resolves.toMatchObject({ ref: { rawId: postUuid } });
     await expect(
       client.posts.create({ session, content: "Quote", quoteOfId: postId() }),
-    ).resolves.toMatchObject({ ref: { rawId: postUuid } });
+    ).resolves.toMatchObject({ ref: { rawId: postUuid }, quoteOf: { rawId: postUuid } });
     await expect(
       client.posts.create({ session, content: "Local", visibility: "local" }),
     ).rejects.toMatchObject({
@@ -815,6 +1150,46 @@ describe("HackersPub adapter", () => {
       context: { capability: "media.upload", operation: "media.upload" },
     });
     expect(seenQueries.filter((query) => query.includes("createNote"))).toHaveLength(3);
+  });
+
+  it("rejects HackersPub quote creation with a mismatched returned target", async () => {
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async (input, init) => {
+          const request = new Request(input, init);
+          const body = (await request.json()) as { readonly query?: string };
+          const query = body.query ?? "";
+          if (query.includes("createNote")) {
+            return Response.json({
+              data: {
+                createNote: {
+                  __typename: "CreateNotePayload",
+                  note: {
+                    ...fixture.post,
+                    quotedPost: {
+                      id: fixture.post.id,
+                      uuid: "00000000-0000-4000-8000-000000000099",
+                      iri: "https://hackers.pub/posts/00000000-0000-4000-8000-000000000099",
+                      url: "https://hackers.pub/posts/00000000-0000-4000-8000-000000000099",
+                    },
+                  },
+                },
+              },
+            });
+          }
+          return Response.json({ data: { node: fixture.post } });
+        },
+      }),
+      origin: "https://hackerspub.example",
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    await expect(
+      client.posts.create({ session, content: "Quote", quoteOfId: postId() }),
+    ).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { operation: "post.create" },
+    });
   });
 
   it("rejects poll responses with non-UUID post identifiers", async () => {

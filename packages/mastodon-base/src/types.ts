@@ -11,6 +11,7 @@ export interface MastodonBaseAdapterOptions {
   readonly supportsRefreshToken?: boolean;
   readonly instanceEndpointRequired?: boolean;
   readonly supportsLocalVisibility?: boolean;
+  readonly quoteStatusParameter?: "quoted_status_id" | "quote_id";
 }
 
 export interface MastodonApplicationResponse {
@@ -102,6 +103,11 @@ export interface MastodonStatusResponse {
   readonly poll?: MastodonPollResponse | null;
   readonly in_reply_to_id?: string | null;
   readonly reblog?: MastodonStatusResponse | null;
+  readonly quote_id?: string | null;
+  readonly quote?: {
+    readonly state?: string;
+    readonly quoted_status?: MastodonStatusResponse | null;
+  } | null;
   readonly replies_count?: number;
   readonly reblogs_count?: number;
   readonly favourites_count?: number;

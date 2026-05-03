@@ -22,38 +22,42 @@ export function createHackersPubStaticCapabilities() {
     "posts.read": capability("supported"),
     "posts.create": capability("supported"),
     "posts.delete": capability("supported"),
-    "posts.update": capability("supported", "HackersPub article editing is supported."),
+    "posts.update": capability(
+      "unsupported",
+      "HackersPub note editing is not exposed through the mapped GraphQL API.",
+    ),
     "posts.reply": capability("supported"),
     "posts.quote": capability("supported"),
     "posts.history": capability("unsupported", "HackersPub does not expose edit history."),
     "polls.create": capability("unsupported", "HackersPub poll creation is not mapped yet."),
     "polls.read": capability("supported"),
     "polls.vote": capability("supported"),
-    "notifications.list": capability(
-      "unsupported",
-      "HackersPub notifications are not mapped by this adapter yet.",
-    ),
+    "notifications.list": capability("supported"),
     "notifications.grouped": capability(
       "unsupported",
-      "HackersPub notifications are not mapped by this adapter yet.",
+      "HackersPub does not expose grouped notifications in the mapped GraphQL API.",
     ),
     "notifications.dismiss": capability(
       "unsupported",
-      "HackersPub notifications are not mapped by this adapter yet.",
+      "HackersPub exposes a bulk mark-read mutation but no mapped single-notification dismiss operation.",
     ),
     "notifications.clear": capability(
       "unsupported",
-      "HackersPub notifications are not mapped by this adapter yet.",
+      "HackersPub can mark notifications as read, but that mutation does not remove them from notification listing.",
     ),
     "notifications.unreadCount": capability(
       "unsupported",
-      "HackersPub notifications are not mapped by this adapter yet.",
+      "HackersPub unread notification counts are not exposed by the mapped GraphQL API.",
     ),
     "lists.read": capability("unsupported", "HackersPub lists are not mapped by this adapter."),
     "lists.create": capability("unsupported", "HackersPub lists are not mapped by this adapter."),
     "lists.update": capability("unsupported", "HackersPub lists are not mapped by this adapter."),
     "lists.delete": capability("unsupported", "HackersPub lists are not mapped by this adapter."),
     "lists.members": capability("unsupported", "HackersPub lists are not mapped by this adapter."),
+    "timelines.list": capability(
+      "unsupported",
+      "HackersPub list timelines are not mapped by this adapter.",
+    ),
     "followRequests.list": capability(
       "unsupported",
       "HackersPub follow requests are not mapped by this adapter.",
@@ -101,6 +105,18 @@ export function createHackersPubStaticCapabilities() {
     "timelines.hashtag": capability(
       "unsupported",
       "HackersPub hashtag timelines are not mapped yet.",
+    ),
+    "streaming.timeline": capability(
+      "unsupported",
+      "HackersPub streaming APIs are not mapped by this adapter.",
+    ),
+    "streaming.notifications": capability(
+      "unsupported",
+      "HackersPub streaming APIs are not mapped by this adapter.",
+    ),
+    "streaming.conversations": capability(
+      "unsupported",
+      "HackersPub streaming APIs are not mapped by this adapter.",
     ),
     "search.accounts": capability("supported"),
     "search.posts": capability("supported"),

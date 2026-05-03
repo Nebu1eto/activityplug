@@ -4,12 +4,15 @@ import {
   createCapabilitySet,
   type ActivityPlugAdapter,
   type AdapterOperationContext,
+  type CapabilityName,
+  type NotificationUnreadCountInput,
   type Post,
   type ReactPostInput,
 } from "@activityplug/core";
 import {
   clientFor,
   createMastodonBaseAdapter,
+  requestJson,
   requestVoid,
   tokenHeader,
   type MastodonBaseAdapterOptions,
@@ -24,6 +27,7 @@ export type HolloAdapterOptions = Omit<
   | "supportedSoftware"
   | "supportsRefreshToken"
   | "supportsLocalVisibility"
+  | "quoteStatusParameter"
 >;
 
 export function createHolloAdapter(options: HolloAdapterOptions = {}): ActivityPlugAdapter {
@@ -35,6 +39,7 @@ export function createHolloAdapter(options: HolloAdapterOptions = {}): ActivityP
     supportedSoftware: ["hollo"],
     supportsRefreshToken: false,
     instanceEndpointRequired: false,
+    quoteStatusParameter: "quoted_status_id",
   });
   return {
     ...adapter,
@@ -42,18 +47,12 @@ export function createHolloAdapter(options: HolloAdapterOptions = {}): ActivityP
       ...adapter.metadata,
       staticCapabilities: createCapabilitySet({
         ...adapter.metadata.staticCapabilities,
-        "polls.create": capability(
-          "unsupported",
-          "Hollo poll creation is not mapped by this adapter yet.",
-        ),
+        "polls.create": capability("supported"),
         "accounts.relationships": capability(
           "unsupported",
           "Hollo relationship reads are not compatible with the Mastodon relationship API.",
         ),
-        "posts.quote": capability(
-          "unsupported",
-          "Hollo quote creation is not mapped by this adapter yet.",
-        ),
+        "posts.quote": capability("supported"),
         "posts.update": capability(
           "supported",
           "Hollo exposes Mastodon-compatible status editing.",
@@ -68,8 +67,8 @@ export function createHolloAdapter(options: HolloAdapterOptions = {}): ActivityP
           "Hollo does not expose Mastodon v1 notification clearing.",
         ),
         "notifications.unreadCount": capability(
-          "unsupported",
-          "Hollo grouped notification unread counts are not mapped by this adapter yet.",
+          "supported",
+          "Hollo exposes notification unread counts through its v2 API.",
         ),
         "filters.read": capability("unsupported", "Hollo does not expose filters."),
         "filters.create": capability("unsupported", "Hollo does not expose filters."),
@@ -111,30 +110,6 @@ export function createHolloAdapter(options: HolloAdapterOptions = {}): ActivityP
     posts: {
       ...adapter.posts,
       create: async (input, context) => {
-        if (input.poll !== undefined) {
-          throw new ActivityPlugError(
-            "UNSUPPORTED_OPERATION",
-            "Hollo poll creation is not mapped.",
-            {
-              adapter: context.adapterId,
-              origin: context.origin,
-              operation: "post.create",
-              capability: "polls.create",
-            },
-          );
-        }
-        if (input.quoteOfId !== undefined) {
-          throw new ActivityPlugError(
-            "UNSUPPORTED_OPERATION",
-            "Hollo quote creation is not mapped.",
-            {
-              adapter: context.adapterId,
-              origin: context.origin,
-              operation: "post.create",
-              capability: "posts.quote",
-            },
-          );
-        }
         const create = adapter.posts?.create;
         if (create === undefined) {
           throw new ActivityPlugError("UNSUPPORTED_OPERATION", "Hollo compose is not mapped.", {
@@ -143,8 +118,26 @@ export function createHolloAdapter(options: HolloAdapterOptions = {}): ActivityP
             operation: "post.create",
           });
         }
-        return create(input, context);
+        return create(
+          input.poll === undefined || input.poll.expiresInSeconds !== undefined
+            ? input
+            : {
+                ...input,
+                poll: {
+                  ...input.poll,
+                  expiresInSeconds: 3600,
+                },
+              },
+          context,
+        );
       },
+      history: async (_input, context) =>
+        unsupportedHolloOperation(
+          context,
+          "post.history",
+          "posts.history",
+          "Hollo does not expose status edit history.",
+        ),
     },
     search: {
       ...adapter.search,
@@ -192,6 +185,100 @@ export function createHolloAdapter(options: HolloAdapterOptions = {}): ActivityP
       unreact: async (input, context) =>
         holloReaction(input, "unreact", "social.unreaction", context, options, adapter),
     },
+    notifications: {
+      ...adapter.notifications,
+      dismiss: async (_input, context) =>
+        unsupportedHolloOperation(
+          context,
+          "notification.dismiss",
+          "notifications.dismiss",
+          "Hollo does not expose Mastodon v1 notification dismiss.",
+        ),
+      clear: async (_input, context) =>
+        unsupportedHolloOperation(
+          context,
+          "notification.clear",
+          "notifications.clear",
+          "Hollo does not expose Mastodon v1 notification clearing.",
+        ),
+      unreadCount: async (input, context) => holloUnreadCount(input, context, options),
+    },
+    filters: {
+      ...adapter.filters,
+      list: async (_input, context) =>
+        unsupportedHolloOperation(
+          context,
+          "filter.list",
+          "filters.read",
+          "Hollo does not expose filters.",
+        ),
+      get: async (_input, context) =>
+        unsupportedHolloOperation(
+          context,
+          "filter.get",
+          "filters.read",
+          "Hollo does not expose filters.",
+        ),
+      create: async (_input, context) =>
+        unsupportedHolloOperation(
+          context,
+          "filter.create",
+          "filters.create",
+          "Hollo does not expose filters.",
+        ),
+      update: async (_input, context) =>
+        unsupportedHolloOperation(
+          context,
+          "filter.update",
+          "filters.update",
+          "Hollo does not expose filters.",
+        ),
+      delete: async (_input, context) =>
+        unsupportedHolloOperation(
+          context,
+          "filter.delete",
+          "filters.delete",
+          "Hollo does not expose filters.",
+        ),
+    },
+    scheduledPosts: {
+      ...adapter.scheduledPosts,
+      list: async (_input, context) =>
+        unsupportedHolloOperation(
+          context,
+          "scheduledPost.list",
+          "scheduledPosts.read",
+          "Hollo does not expose scheduled posts.",
+        ),
+      get: async (_input, context) =>
+        unsupportedHolloOperation(
+          context,
+          "scheduledPost.get",
+          "scheduledPosts.read",
+          "Hollo does not expose scheduled posts.",
+        ),
+      create: async (_input, context) =>
+        unsupportedHolloOperation(
+          context,
+          "scheduledPost.create",
+          "scheduledPosts.create",
+          "Hollo does not expose scheduled posts.",
+        ),
+      update: async (_input, context) =>
+        unsupportedHolloOperation(
+          context,
+          "scheduledPost.update",
+          "scheduledPosts.update",
+          "Hollo does not expose scheduled posts.",
+        ),
+      delete: async (_input, context) =>
+        unsupportedHolloOperation(
+          context,
+          "scheduledPost.delete",
+          "scheduledPosts.delete",
+          "Hollo does not expose scheduled posts.",
+        ),
+    },
     timelines: {
       ...adapter.timelines,
       hashtag: async (_input, context) =>
@@ -212,6 +299,53 @@ export function createHolloAdapter(options: HolloAdapterOptions = {}): ActivityP
 }
 
 export const holloAdapter = createHolloAdapter();
+
+async function holloUnreadCount(
+  input: NotificationUnreadCountInput,
+  context: AdapterOperationContext,
+  options: MastodonTransportOptions,
+): Promise<number> {
+  const response = await requestJson<{ readonly count?: unknown }>(
+    clientFor(context, options)
+      .get("api/v2/notifications/unread_count", {
+        headers: await tokenHeader(input.session, context, "notification.unreadCount"),
+      })
+      .json(),
+    "notification.unreadCount",
+    context,
+  );
+  if (
+    typeof response.count !== "number" ||
+    !Number.isInteger(response.count) ||
+    response.count < 0
+  ) {
+    throw new ActivityPlugError(
+      "REMOTE_ERROR",
+      "Hollo notification unread-count response is malformed.",
+      {
+        adapter: context.adapterId,
+        origin: context.origin,
+        operation: "notification.unreadCount",
+        raw: response,
+      },
+    );
+  }
+  return response.count;
+}
+
+function unsupportedHolloOperation(
+  context: AdapterOperationContext,
+  operation: string,
+  capabilityName: CapabilityName,
+  message: string,
+): never {
+  throw new ActivityPlugError("UNSUPPORTED_OPERATION", message, {
+    adapter: context.adapterId,
+    origin: context.origin,
+    operation,
+    capability: capabilityName,
+  });
+}
 
 async function holloReaction(
   input: ReactPostInput,

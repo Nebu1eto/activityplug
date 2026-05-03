@@ -338,6 +338,9 @@ describe("Misskey auth adapter", () => {
           if (url.pathname === "/api/notes/favorites/create") {
             return jsonResponse({});
           }
+          if (url.pathname === "/api/notes/favorites/delete") {
+            return jsonResponse({});
+          }
           if (url.pathname === "/api/notes/show") {
             return jsonResponse(misskeyNote());
           }
@@ -411,6 +414,21 @@ describe("Misskey auth adapter", () => {
     expect(relationship.following).toBe(true);
     expect(media.ref.rawId).toBe("file-1");
     expect(requests).toContain("POST /api/notes/timeline");
+    expect(() => client.social.bookmark({ session, postId })).toThrow(
+      "Operation is not supported: social.bookmark",
+    );
+    await expect(
+      Promise.resolve().then(() => client.social.bookmark({ session, postId })),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "social.bookmark", operation: "social.bookmark" },
+    });
+    await expect(
+      Promise.resolve().then(() => client.social.unbookmark({ session, postId })),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "social.bookmark", operation: "social.unbookmark" },
+    });
   });
 
   it("maps hashtag search through Misskey hashtags/search", async () => {
@@ -710,6 +728,21 @@ describe("Misskey auth adapter", () => {
     expect(requests[0]).toMatchObject({ includeTypes: ["reaction"] });
     expect(mixed.nodes).toHaveLength(1);
     expect(mixed.pageInfo.startCursor).toBeDefined();
+  });
+
+  it("rejects Misskey notification clearing", async () => {
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({
+        fetch: mockFetch(async () => jsonResponse({ error: "unexpected request" }, 500)),
+      }),
+      origin: "https://misskey.example",
+    });
+    const session = await client.auth.injectToken({ accessToken: "token-1" });
+
+    await expect(client.notifications.clear({ session })).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "notifications.clear", operation: "notification.clear" },
+    });
   });
 
   it("rejects malformed Misskey notification rows", async () => {

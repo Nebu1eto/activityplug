@@ -460,6 +460,16 @@ describe("Mastodon auth adapter", () => {
     });
   });
 
+  it("does not allow Mastodon quote support through shared base options", () => {
+    const adapter = createMastodonAdapter({
+      quoteStatusParameter: "quoted_status_id",
+    } as never);
+
+    expect(adapter.metadata.staticCapabilities["posts.quote"]).toMatchObject({
+      status: "unsupported",
+    });
+  });
+
   it("searches Mastodon posts through the direct adapter", async () => {
     const adapter = createMastodonAdapter({
       fetch: async (input) => {
@@ -519,7 +529,7 @@ describe("Mastodon auth adapter", () => {
     });
   });
 
-  it("rejects malformed Mastodon M10 optional fields and poll readback", async () => {
+  it("rejects malformed Mastodon auxiliary fields and poll readback", async () => {
     const client = createActivityPlugClient({
       adapter: createMastodonAdapter({
         fetch: mockFetch(async (request) => {
@@ -580,6 +590,23 @@ describe("Mastodon auth adapter", () => {
     await expect(client.filters.list({ session })).rejects.toMatchObject({
       code: "REMOTE_ERROR",
       context: { operation: "filter.list" },
+    });
+    await expect(
+      client.filters.update({
+        session,
+        id: createEntityRef({
+          adapter: "mastodon",
+          origin: "https://mastodon.example",
+          type: "filter",
+          id: "filter-1",
+        }).id,
+        title: "Muted words",
+        context: ["home"],
+        keywords: [{ keyword: "activityplug" }],
+      }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "filters.update", operation: "filter.update" },
     });
     await expect(client.scheduledPosts.list({ session })).rejects.toMatchObject({
       code: "REMOTE_ERROR",

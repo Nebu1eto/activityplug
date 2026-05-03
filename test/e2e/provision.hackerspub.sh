@@ -20,6 +20,9 @@ HTTP_DELETE_SOURCE_ID="00000000-0000-4000-8000-000000005011"
 HTTP_DELETE_POST_ID="00000000-0000-4000-8000-000000005012"
 GRAPHQL_DELETE_SOURCE_ID="00000000-0000-4000-8000-000000005013"
 GRAPHQL_DELETE_POST_ID="00000000-0000-4000-8000-000000005014"
+NOTIFICATION_ID="00000000-0000-4000-8000-000000005017"
+ARTICLE_SOURCE_ID="00000000-0000-4000-8000-000000005018"
+ARTICLE_POST_ID="00000000-0000-4000-8000-000000005019"
 
 ${COMPOSE} exec -T hackerspub-db psql -U hackerspub -d hackerspub <<SQL >/dev/null
 INSERT INTO instance (host, software, software_version)
@@ -212,6 +215,84 @@ ON CONFLICT (id) DO UPDATE SET
   visibility = EXCLUDED.visibility,
   updated = CURRENT_TIMESTAMP;
 
+INSERT INTO article_source (
+  id,
+  account_id,
+  published_year,
+  slug,
+  tags,
+  published,
+  updated
+)
+VALUES (
+  '${ARTICLE_SOURCE_ID}',
+  '${ACCOUNT_ID}',
+  EXTRACT(year FROM CURRENT_TIMESTAMP),
+  'activityplug-e2e-article',
+  ARRAY['activityplug']::text[],
+  CURRENT_TIMESTAMP,
+  CURRENT_TIMESTAMP
+)
+ON CONFLICT (id) DO UPDATE SET
+  account_id = EXCLUDED.account_id,
+  published_year = EXCLUDED.published_year,
+  slug = EXCLUDED.slug,
+  tags = EXCLUDED.tags,
+  updated = CURRENT_TIMESTAMP;
+
+INSERT INTO article_content (
+  source_id,
+  language,
+  title,
+  content,
+  updated,
+  published
+)
+VALUES (
+  '${ARTICLE_SOURCE_ID}',
+  'en',
+  'ActivityPlug HackersPub E2E article',
+  'ActivityPlug HackersPub E2E article body',
+  CURRENT_TIMESTAMP,
+  CURRENT_TIMESTAMP
+)
+ON CONFLICT (source_id, language) DO UPDATE SET
+  title = EXCLUDED.title,
+  content = EXCLUDED.content,
+  updated = CURRENT_TIMESTAMP;
+
+INSERT INTO post (
+  id,
+  iri,
+  type,
+  actor_id,
+  content_html,
+  language,
+  url,
+  article_source_id,
+  visibility
+)
+VALUES (
+  '${ARTICLE_POST_ID}',
+  '${ORIGIN}/posts/${ARTICLE_POST_ID}',
+  'Article',
+  '${ACTOR_ID}',
+  '<p>ActivityPlug HackersPub E2E article body</p>',
+  'en',
+  '${ORIGIN}/@activityplug/2026/activityplug-e2e-article',
+  '${ARTICLE_SOURCE_ID}',
+  'public'
+)
+ON CONFLICT (id) DO UPDATE SET
+  iri = EXCLUDED.iri,
+  actor_id = EXCLUDED.actor_id,
+  content_html = EXCLUDED.content_html,
+  language = EXCLUDED.language,
+  url = EXCLUDED.url,
+  article_source_id = EXCLUDED.article_source_id,
+  visibility = EXCLUDED.visibility,
+  updated = CURRENT_TIMESTAMP;
+
 INSERT INTO note_source (id, account_id, content, language, visibility)
 VALUES
   (
@@ -374,6 +455,19 @@ VALUES
 ON CONFLICT (post_id, index) DO UPDATE SET
   title = EXCLUDED.title,
   votes_count = 0;
+
+INSERT INTO notification (id, account_id, type, post_id, actor_ids, created)
+VALUES (
+  '${NOTIFICATION_ID}',
+  '${ACCOUNT_ID}',
+  'follow',
+  NULL,
+  ARRAY['${TARGET_ACTOR_ID}'::uuid],
+  CURRENT_TIMESTAMP
+)
+ON CONFLICT (id) DO UPDATE SET
+  actor_ids = EXCLUDED.actor_ids,
+  created = EXCLUDED.created;
 SQL
 
 ${COMPOSE} exec -T hackerspub-web deno eval "
@@ -383,5 +477,5 @@ ${COMPOSE} exec -T hackerspub-web deno eval "
   Deno.exit(0);
 " >/dev/null
 
-printf '{"adapter":"hackerspub","origin":"%s","accountHandle":"activityplug","socialActionHandle":"activityplug_target","socialActionPostId":"%s","token":"%s","pollId":"%s","httpPollId":"%s","graphqlPollId":"%s","libraryDeletePostId":"%s","httpDeletePostId":"%s","graphqlDeletePostId":"%s","postSearchQuery":"ActivityPlug HackersPub E2E seed post","postSearchRawId":"%s"}\n' \
-  "${ORIGIN}" "${POLL_POST_ID}" "${SESSION_ID}" "${POLL_POST_ID}" "${HTTP_POLL_POST_ID}" "${GRAPHQL_POLL_POST_ID}" "${LIBRARY_DELETE_POST_ID}" "${HTTP_DELETE_POST_ID}" "${GRAPHQL_DELETE_POST_ID}" "${POST_ID}"
+printf '{"adapter":"hackerspub","origin":"%s","accountHandle":"activityplug","socialActionHandle":"activityplug_target","socialActionPostId":"%s","token":"%s","pollId":"%s","httpPollId":"%s","graphqlPollId":"%s","libraryDeletePostId":"%s","httpDeletePostId":"%s","graphqlDeletePostId":"%s","updatePostId":"%s","postSearchQuery":"ActivityPlug HackersPub E2E seed post","postSearchRawId":"%s","notificationRawId":"%s","notificationAccountRawId":"%s","notificationType":"follow"}\n' \
+  "${ORIGIN}" "${POLL_POST_ID}" "${SESSION_ID}" "${POLL_POST_ID}" "${HTTP_POLL_POST_ID}" "${GRAPHQL_POLL_POST_ID}" "${LIBRARY_DELETE_POST_ID}" "${HTTP_DELETE_POST_ID}" "${GRAPHQL_DELETE_POST_ID}" "${ARTICLE_POST_ID}" "${POST_ID}" "${NOTIFICATION_ID}" "${TARGET_ACTOR_ID}"

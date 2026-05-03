@@ -12,6 +12,7 @@ export type MastodonAdapterOptions = Omit<
   | "supportedSoftware"
   | "supportsRefreshToken"
   | "supportsLocalVisibility"
+  | "quoteStatusParameter"
 >;
 
 export function createMastodonAdapter(options: MastodonAdapterOptions = {}): ActivityPlugAdapter {
@@ -22,6 +23,7 @@ export function createMastodonAdapter(options: MastodonAdapterOptions = {}): Act
     kind: "mastodon",
     supportedSoftware: ["mastodon"],
     supportsRefreshToken: false,
+    quoteStatusParameter: undefined,
   });
   return {
     ...adapter,

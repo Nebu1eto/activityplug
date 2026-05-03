@@ -289,7 +289,7 @@ services:
       [
         "sh",
         "-c",
-        'deno task migrate && export INSTANCE_ACTOR_KEY="$(deno run --allow-read --allow-env scripts/keygen.ts)" && deno task start',
+        'for i in $$(seq 1 60); do deno task migrate && break; if [ "$$i" = "60" ]; then exit 1; fi; sleep 2; done && export INSTANCE_ACTOR_KEY="$$(deno run --allow-read --allow-env scripts/keygen.ts)" && deno task start',
       ]
     profiles: ["hackerspub", "fediverse"]
     env_file: hackerspub/hackerspub.env

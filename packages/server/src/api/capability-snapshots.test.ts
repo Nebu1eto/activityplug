@@ -40,7 +40,7 @@ function adapterDefinition(adapter: ActivityPlugAdapter): ActivityPlugAdapterDef
       adapter.metadata.supportedSoftware.includes(context.nodeInfo.software.name.toLowerCase()),
     capabilityLayers: (context) => [
       oauthCapabilityLayer(context.oauthMetadata),
-      instanceCapabilityLayer(context),
+      instanceCapabilityLayer(context, adapter.metadata.staticCapabilities),
       probeLayer(context),
     ],
   };
@@ -64,14 +64,20 @@ function oauthCapabilityLayer(
   };
 }
 
-function instanceCapabilityLayer(context: AdapterDiscoveryContext): CapabilityInputLayer {
+function instanceCapabilityLayer(
+  context: AdapterDiscoveryContext,
+  staticCapabilities: CapabilitySet,
+): CapabilityInputLayer {
   return {
     source: "instance",
-    capabilities: {
-      "streaming.timeline": capability(
-        context.instance?.urls?.streamingApi === undefined ? "unknown" : "supported",
-      ),
-    },
+    capabilities:
+      staticCapabilities["streaming.timeline"]?.status === "unsupported"
+        ? {}
+        : {
+            "streaming.timeline": capability(
+              context.instance?.urls?.streamingApi === undefined ? "unknown" : "supported",
+            ),
+          },
   };
 }
 

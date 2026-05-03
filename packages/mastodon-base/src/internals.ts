@@ -475,6 +475,7 @@ export function postFromResponse(
     ...(status.reblog === null || status.reblog === undefined
       ? {}
       : { boostOf: postFromResponse(status.reblog, context, operation).ref }),
+    ...quoteRefFromResponse(status, context, operation),
     counts: {
       ...renamedOptionalNumber(
         status.replies_count,
@@ -504,6 +505,86 @@ export function postFromResponse(
     ...(status.pleroma === undefined ? {} : { extensions: { pleroma: status.pleroma } }),
     raw: status,
   };
+}
+
+function quoteRefFromResponse(
+  status: MastodonStatusResponse,
+  context: AdapterOperationContext,
+  operation: string,
+): { readonly quoteOf?: Post["ref"] } {
+  if (status.quote !== null && status.quote !== undefined) {
+    if (!isRecord(status.quote)) {
+      throw invalidRemoteResponse("Mastodon status quote response is malformed.", {
+        context,
+        operation,
+        raw: status,
+      });
+    }
+    const quotedStatus = status.quote["quoted_status"];
+    if (quotedStatus !== null && quotedStatus !== undefined) {
+      if (!isRecord(quotedStatus)) {
+        throw invalidRemoteResponse("Mastodon quoted status response is malformed.", {
+          context,
+          operation,
+          raw: status.quote,
+        });
+      }
+      return {
+        quoteOf: postFromResponse(
+          quotedStatus as unknown as MastodonStatusResponse,
+          context,
+          operation,
+        ).ref,
+      };
+    }
+  }
+  if (status.quote_id !== null && status.quote_id !== undefined) {
+    return {
+      quoteOf: createEntityRef({
+        adapter: context.adapterId,
+        origin: context.origin,
+        type: "post",
+        id: requiredNonEmptyString(status.quote_id, "quote_id", status, context, operation),
+      }),
+    };
+  }
+  if (isRecord(status.pleroma)) {
+    const pleromaQuote = status.pleroma["quote"];
+    if (pleromaQuote !== null && pleromaQuote !== undefined) {
+      if (!isRecord(pleromaQuote)) {
+        throw invalidRemoteResponse("Pleroma quote response is malformed.", {
+          context,
+          operation,
+          raw: status.pleroma,
+        });
+      }
+      return {
+        quoteOf: postFromResponse(
+          pleromaQuote as unknown as MastodonStatusResponse,
+          context,
+          operation,
+        ).ref,
+      };
+    }
+    const pleromaQuoteId = status.pleroma["quote_id"];
+    if (pleromaQuoteId !== null && pleromaQuoteId !== undefined) {
+      return {
+        quoteOf: createEntityRef({
+          adapter: context.adapterId,
+          origin: context.origin,
+          type: "post",
+          id: requiredNonEmptyString(
+            pleromaQuoteId,
+            "pleroma.quote_id",
+            status,
+            context,
+            operation,
+          ),
+        }),
+      };
+    }
+  }
+  return {};
 }
 
 export function mediaAttachmentFromResponse(

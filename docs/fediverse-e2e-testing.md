@@ -5,8 +5,8 @@ ActivityPlug uses Docker Compose for local E2E tests against real Fediverse
 servers. The target matrix is Mastodon, Misskey, Pleroma, Hollo, and
 HackersPub.
 
-Each target server runs in an isolated Docker Compose profile, with assertions
-kept inside the adapter packages:
+Each target server runs in an isolated Docker Compose profile. Assertions are
+split between the server package and the adapter packages:
 
  -  Each server has an isolated database and cache.
  -  The Docker service name is separate from the public instance host when the
@@ -15,8 +15,9 @@ kept inside the adapter packages:
     `mastodon.127.0.0.1.nip.io`.
  -  Provision scripts create or describe the local account, access token, and
     seed content needed by adapter tests.
- -  The E2E assertions live in each adapter package. Shared parsing and
-    baseline assertions live in `packages/e2e-fixtures`.
+ -  The server package verifies the HTTP and GraphQL APIs first. The adapter
+    package for that target then verifies the library API with the real adapter.
+ -  Shared parsing and baseline assertions live in `packages/e2e-fixtures`.
  -  Compose files, server configs, and provision scripts live under `test/e2e/`.
 
 The Compose file builds Misskey, Pleroma, and HackersPub from an adjacent
@@ -30,7 +31,9 @@ when the checkout is in a different location. The verified source revisions are:
 
 Run one target at a time on small Docker Desktop allocations. A 4 GB memory
 limit is enough for sequential runs; running the full matrix concurrently is not
-required. Use the matrix runner when the run must prove all five targets:
+required. The matrix runner waits up to 900 seconds for each target to become
+healthy; set `ACTIVITYPLUG_FEDIVERSE_WAIT_TIMEOUT` to change that value. Use the
+matrix runner when the run must prove all five targets:
 
 ~~~~ sh
 bash test/e2e/run-fediverse-matrix.sh
@@ -44,7 +47,8 @@ target="$(bash test/e2e/provision.mastodon.sh)"
 printf '%s\n' "$target"
 ~~~~
 
-Run adapter E2E tests by passing the provisioned targets as JSON:
+Run the Fediverse E2E suite for the provisioned target by passing targets as
+JSON. The server HTTP and GraphQL checks run before the adapter package checks:
 
 ~~~~ sh
 NODE_TLS_REJECT_UNAUTHORIZED=0 \
@@ -60,16 +64,27 @@ requires all five adapters in one target array. The matrix runner sets
 `ACTIVITYPLUG_FEDIVERSE_REQUIRED_ADAPTERS` for each sequential target so the
 same strict check works without running all servers at once.
 
+The matrix runner provisions a target before server E2E tests. It can provision
+the same target again before adapter package E2E tests. This is the default for
+`pnpm test:e2e`; set `ACTIVITYPLUG_FEDIVERSE_REPROVISION_PACKAGE_TARGETS=0`
+only when the target payload already uses independent fixtures for each phase.
+This keeps destructive notification and post actions in server tests from
+removing fixtures needed by package tests.
+
 The baseline verifies instance profile reads, viewer verification when a token
 is available, account lookup, account post listing, public timeline reads, local
 timeline reads where mapped, hashtag timelines where mapped, account search
 where mapped, hashtag search where mapped, authenticated post search where
 mapped, home timeline reads where mapped, media upload where mapped, post
-create/delete where mapped, and capability-gated post social actions on
-test-owned posts. When a target emits a
-`socialActionHandle`, the baseline also verifies follow/unfollow, block/unblock,
-and mute/unmute against a disposable local account. Tests must not fall back to
-public instances.
+create/delete/update/history where mapped, reply and quote post creation where
+mapped, poll create/read/vote where mapped, notification list/dismiss/clear and
+unread counts where mapped, follow-request listing where mapped, list
+create/list/get/update/member/timeline/delete where mapped, filter
+create/list/get/update/delete where mapped, scheduled post
+create/list/get/update/delete where mapped, and capability-gated post social
+actions on test-owned posts. When a target emits a `socialActionHandle`, the
+baseline also verifies follow/unfollow, block/unblock, and mute/unmute against a
+disposable local account. Tests must not fall back to public instances.
 
 Target notes:
 
@@ -87,7 +102,7 @@ Target notes:
     creates a disposable social-action account and a public seed status.
  -  Hollo provisioning seeds PostgreSQL rows for the account, token, and public
     post because the pinned Hollo image does not expose the full
-    Mastodon-compatible bootstrap surface needed by this fixture.
+    Mastodon-compatible bootstrap APIs needed by this fixture.
  -  HackersPub provisioning seeds PostgreSQL rows for a local instance, account,
     actor, note source, and post. Its Docker build passes a fixed `GIT_COMMIT`
     value, and the container command generates `INSTANCE_ACTOR_KEY` at startup.

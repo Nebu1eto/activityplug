@@ -34,11 +34,11 @@ import {
 import ky, { type KyInstance } from "ky";
 
 import { createMisskeyStaticCapabilities } from "./capabilities.js";
+import { followRequestAction, listFollowRequests } from "./follow-requests.js";
 import {
   misskeyNodeInfoRelPriority,
   misskeySearchCapability,
   misskeySearchOperation,
-  unsupportedMisskeyPostOperation,
 } from "./helpers.js";
 import {
   accountFromResponse,
@@ -51,23 +51,8 @@ import {
   noteFromResponse,
   relationshipFromResponse,
 } from "./internals.js";
-import {
-  addUserListAccount,
-  clearNotifications,
-  createUserList,
-  deleteUserList,
-  followRequestAction,
-  getPoll,
-  getUserList,
-  listFollowRequests,
-  listNotifications,
-  listUserListAccounts,
-  listUserLists,
-  listUserListTimeline,
-  removeUserListAccount,
-  updateUserList,
-  votePoll,
-} from "./milestone10.js";
+import { listNotifications } from "./notifications.js";
+import { getPoll, votePoll } from "./polls.js";
 import {
   absoluteRemoteUrl,
   assertAccessTokenFresh,
@@ -103,6 +88,17 @@ import {
   type NodeInfoLinksResponse,
   type NodeInfoResponse,
 } from "./types.js";
+import {
+  addUserListAccount,
+  createUserList,
+  deleteUserList,
+  getUserList,
+  listUserListAccounts,
+  listUserLists,
+  listUserListTimeline,
+  removeUserListAccount,
+  updateUserList,
+} from "./user-lists.js";
 
 export { accountFromResponse, noteFromResponse } from "./internals.js";
 export type * from "./types.js";
@@ -166,7 +162,18 @@ export function createMisskeyAdapter(options: MisskeyAdapterOptions = {}): Activ
     },
     notifications: {
       list: async (input, context) => listNotifications(input, context, options),
-      clear: async (input, context) => clearNotifications(input, context, options),
+      clear: async (_input, context) => {
+        throw new ActivityPlugError(
+          "UNSUPPORTED_OPERATION",
+          "Misskey exposes mark-all-as-read, not a portable notification clear operation.",
+          {
+            adapter: context.adapterId,
+            origin: context.origin,
+            operation: "notification.clear",
+            capability: "notifications.clear",
+          },
+        );
+      },
     },
     lists: {
       list: async (input, context) => listUserLists(input, context, options),
@@ -214,10 +221,6 @@ export function createMisskeyAdapter(options: MisskeyAdapterOptions = {}): Activ
         noteAction(input, "notes/favorites/create", "social.favourite", context, options),
       unfavourite: async (input, context) =>
         noteAction(input, "notes/favorites/delete", "social.unfavourite", context, options),
-      bookmark: async (_input, context) =>
-        unsupportedMisskeyPostOperation(context, "social.bookmark", "social.bookmark"),
-      unbookmark: async (_input, context) =>
-        unsupportedMisskeyPostOperation(context, "social.unbookmark", "social.bookmark"),
       boost: async (input, context) => boostNote(input, context, options),
       unboost: async (input, context) => unboostNote(input, context, options),
       react: async (input, context) =>

@@ -491,6 +491,10 @@ export function openApiComponents(
         type: "string",
         enum: ["public", "unlisted", "followers", "direct", "local", "list", "none", "unknown"],
       },
+      PostVisibilityInput: {
+        type: "string",
+        enum: ["public", "unlisted", "followers", "direct", "local", "list", "none"],
+      },
       Account: objectSchema(
         ["ref", "username", "handle", "displayName", "fields", "bot", "locked", "raw"],
         {
@@ -664,7 +668,7 @@ export function openApiComponents(
         adapter: adapterSchema(),
         origin: nonEmptyStringSchema(),
         content: { type: "string" },
-        visibility: { $ref: "#/components/schemas/PostVisibility" },
+        visibility: { $ref: "#/components/schemas/PostVisibilityInput" },
         sensitive: { type: "boolean" },
         summary: { type: "string" },
         replyToId: { type: "string" },
@@ -680,7 +684,7 @@ export function openApiComponents(
         adapter: adapterSchema(),
         origin: nonEmptyStringSchema(),
         content: { type: "string" },
-        visibility: { $ref: "#/components/schemas/PostVisibility" },
+        visibility: { $ref: "#/components/schemas/PostVisibilityInput" },
         sensitive: { type: "boolean" },
         summary: { type: "string" },
         replyToId: { type: "string" },
@@ -697,7 +701,7 @@ export function openApiComponents(
         origin: nonEmptyStringSchema(),
         content: { type: "string" },
         scheduledAt: dateTimeStringSchema(),
-        visibility: { $ref: "#/components/schemas/PostVisibility" },
+        visibility: { $ref: "#/components/schemas/PostVisibilityInput" },
         sensitive: { type: "boolean" },
         summary: { type: "string" },
         replyToId: { type: "string" },
@@ -714,7 +718,7 @@ export function openApiComponents(
         durationSeconds: { type: "integer", minimum: 1 },
       }),
       BoostPostRequest: objectSchema([], {
-        visibility: { $ref: "#/components/schemas/PostVisibility" },
+        visibility: { $ref: "#/components/schemas/PostVisibilityInput" },
       }),
       ReactPostRequest: objectSchema(["emoji"], {
         emoji: nonBlankStringSchema(),

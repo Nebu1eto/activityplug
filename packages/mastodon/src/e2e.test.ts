@@ -10,7 +10,11 @@ import { createMastodonAdapter } from "./index.js";
 const targets = targetsForAdapter("mastodon");
 
 describe.skipIf(!fediverseE2EEnabled || targets.length === 0)("Mastodon Docker E2E", () => {
-  it.each(targets)("reads $origin", async (target) => {
-    await expectReadBaseline(target, createMastodonAdapter());
-  });
+  it.each(targets)(
+    "reads $origin",
+    async (target) => {
+      await expectReadBaseline(target, createMastodonAdapter());
+    },
+    60_000,
+  );
 });

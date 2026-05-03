@@ -2,6 +2,7 @@ import {
   ActivityPlugError,
   createEntityRef,
   type AdapterOperationContext,
+  type AuthSession,
   type CreatePostInput,
   type MediaAttachment,
   type Post,
@@ -51,6 +52,30 @@ export async function createHackersPubPost(
       },
     );
   }
+  if (input.summary !== undefined && input.summary.length > 0) {
+    throw new ActivityPlugError(
+      "UNSUPPORTED_OPERATION",
+      "HackersPub createNote does not expose content warning input.",
+      {
+        adapter: context.adapterId,
+        origin: context.origin,
+        operation: "post.create",
+        capability: "posts.create",
+      },
+    );
+  }
+  if (input.sensitive === true) {
+    throw new ActivityPlugError(
+      "UNSUPPORTED_OPERATION",
+      "HackersPub createNote does not expose sensitive post input.",
+      {
+        adapter: context.adapterId,
+        origin: context.origin,
+        operation: "post.create",
+        capability: "posts.create",
+      },
+    );
+  }
   const response = await graphql<Record<string, unknown>>(
     `
       mutation ($input: CreateNoteInput!) {
@@ -77,10 +102,24 @@ export async function createHackersPubPost(
         language: "en",
         ...(input.replyToId === undefined
           ? {}
-          : { replyTargetId: await firstPostGlobalId(input.replyToId, context, options) }),
+          : {
+              replyTargetId: await firstPostGlobalId(
+                input.replyToId,
+                context,
+                options,
+                input.session,
+              ),
+            }),
         ...(input.quoteOfId === undefined
           ? {}
-          : { quotedPostId: await firstPostGlobalId(input.quoteOfId, context, options) }),
+          : {
+              quotedPostId: await firstPostGlobalId(
+                input.quoteOfId,
+                context,
+                options,
+                input.session,
+              ),
+            }),
       },
     },
     context,
@@ -90,7 +129,17 @@ export async function createHackersPubPost(
   );
   assertMutationSuccess(response["createNote"], "createNote", "post.create", context, response);
   const post = postFromMutationPayload(response, "createNote", "note", context, "post.create");
-  return postFromResponse(post, context, "post.create");
+  const normalized = postFromResponse(post, context, "post.create");
+  if (input.quoteOfId !== undefined && normalized.quoteOf?.rawId !== input.quoteOfId) {
+    throw activityPlugError(
+      "REMOTE_ERROR",
+      "HackersPub createNote did not return the requested quote relation.",
+      context,
+      "post.create",
+      response,
+    );
+  }
+  return normalized;
 }
 
 export async function uploadHackersPubMedia(
@@ -171,7 +220,26 @@ function notePostSelection(): string {
     content
     summary
     visibility
+    sensitive
     published
+    replyTarget {
+      id
+      uuid
+      iri
+      url
+    }
+    quotedPost {
+      id
+      uuid
+      iri
+      url
+    }
+    sharedPost {
+      id
+      uuid
+      iri
+      url
+    }
     actor {
       id
       uuid
@@ -190,12 +258,13 @@ async function firstPostGlobalId(
   id: string,
   context: AdapterOperationContext,
   options: HackersPubAdapterOptions,
+  session: AuthSession,
 ): Promise<string> {
   let lastError: unknown;
   for (const type of ["Note", "Article", "Question"] as const) {
     const globalId = encodeBase64Utf8(`${type}:${id}`);
     try {
-      await assertPostGlobalId(globalId, context, options);
+      await assertPostGlobalId(globalId, context, options, session);
       return globalId;
     } catch (error) {
       if (!isRecoverablePostGlobalIdError(error)) throw error;
@@ -210,8 +279,16 @@ async function assertPostGlobalId(
   id: string,
   context: AdapterOperationContext,
   options: HackersPubAdapterOptions,
+  session: AuthSession,
 ): Promise<void> {
-  const response = await graphql(postGlobalIdDocument, { id }, context, options, "post.get");
+  const response = await graphql(
+    postGlobalIdDocument,
+    { id },
+    context,
+    options,
+    "post.get",
+    session,
+  );
   if (response.node === null) {
     throw activityPlugError("NOT_FOUND", "HackersPub post was not found.", context, "post.get");
   }

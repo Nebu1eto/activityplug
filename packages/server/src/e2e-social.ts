@@ -32,8 +32,17 @@ export async function expectSupportedAccountSocialActions(
     await accountRelationshipOverGraphQL(fetch, accountId, graphqlSessionId, postGraphQL);
   }
   if (isSupported("social.follow")) {
+    await accountActionOverHttp(fetch, accountId, "unfollow", sessionId, true);
     await accountActionOverHttp(fetch, accountId, "follow", sessionId);
     await accountActionOverHttp(fetch, accountId, "unfollow", sessionId);
+    await accountActionOverGraphQL(
+      fetch,
+      "unfollowAccount",
+      accountId,
+      graphqlSessionId,
+      postGraphQL,
+      true,
+    );
     await accountActionOverGraphQL(
       fetch,
       "followAccount",
@@ -50,8 +59,17 @@ export async function expectSupportedAccountSocialActions(
     );
   }
   if (isSupported("social.block")) {
+    await accountActionOverHttp(fetch, accountId, "unblock", sessionId, true);
     await accountActionOverHttp(fetch, accountId, "block", sessionId);
     await accountActionOverHttp(fetch, accountId, "unblock", sessionId);
+    await accountActionOverGraphQL(
+      fetch,
+      "unblockAccount",
+      accountId,
+      graphqlSessionId,
+      postGraphQL,
+      true,
+    );
     await accountActionOverGraphQL(fetch, "blockAccount", accountId, graphqlSessionId, postGraphQL);
     await accountActionOverGraphQL(
       fetch,
@@ -62,8 +80,17 @@ export async function expectSupportedAccountSocialActions(
     );
   }
   if (isSupported("social.mute")) {
+    await accountActionOverHttp(fetch, accountId, "unmute", sessionId, true);
     await accountActionOverHttp(fetch, accountId, "mute", sessionId);
     await accountActionOverHttp(fetch, accountId, "unmute", sessionId);
+    await accountActionOverGraphQL(
+      fetch,
+      "unmuteAccount",
+      accountId,
+      graphqlSessionId,
+      postGraphQL,
+      true,
+    );
     await accountActionOverGraphQL(fetch, "muteAccount", accountId, graphqlSessionId, postGraphQL);
     await accountActionOverGraphQL(
       fetch,
@@ -92,13 +119,21 @@ export async function expectSupportedPostSocialActions(
     await postActionOverHttp(fetch, target, postId, "unbookmark", sessionId);
   }
   if (isSupported("social.boost")) {
-    await postActionOverHttp(fetch, target, postId, "boost", sessionId, { visibility: "public" });
+    await postActionOverHttp(
+      fetch,
+      target,
+      postId,
+      "boost",
+      sessionId,
+      target.adapter === "hackerspub" ? undefined : { visibility: "public" },
+    );
     if (target.adapter === "misskey") await waitForPostOverHttp(fetch, postId);
     await postActionOverHttp(fetch, target, postId, "unboost", sessionId);
   }
   if (isSupported("social.reaction")) {
-    await postActionOverHttp(fetch, target, postId, "reactions", sessionId, { emoji: "👍" });
-    await deleteReactionOverHttp(fetch, target, postId, sessionId, "👍");
+    const emoji = target.adapter === "hackerspub" ? "❤️" : "👍";
+    await postActionOverHttp(fetch, target, postId, "reactions", sessionId, { emoji });
+    await deleteReactionOverHttp(fetch, target, postId, sessionId, emoji);
   }
 }
 
@@ -123,18 +158,25 @@ export async function expectSupportedPostSocialActionsGraphQL(
     await postActionOverGraphQL(fetch, target, "unbookmarkPost", postId, sessionId, postGraphQL);
   }
   if (isSupported("social.boost")) {
-    await postActionOverGraphQL(fetch, target, "boostPost", postId, sessionId, postGraphQL, {
-      visibility: "PUBLIC",
-    });
+    await postActionOverGraphQL(
+      fetch,
+      target,
+      "boostPost",
+      postId,
+      sessionId,
+      postGraphQL,
+      target.adapter === "hackerspub" ? undefined : { visibility: "PUBLIC" },
+    );
     if (target.adapter === "misskey") await waitForPostOverHttp(fetch, postId);
     await postActionOverGraphQL(fetch, target, "unboostPost", postId, sessionId, postGraphQL);
   }
   if (isSupported("social.reaction")) {
+    const emoji = target.adapter === "hackerspub" ? "❤️" : "👍";
     await postActionOverGraphQL(fetch, target, "reactToPost", postId, sessionId, postGraphQL, {
-      emoji: "👍",
+      emoji,
     });
     await postActionOverGraphQL(fetch, target, "unreactToPost", postId, sessionId, postGraphQL, {
-      emoji: "👍",
+      emoji,
     });
   }
 }
@@ -178,6 +220,7 @@ async function accountActionOverHttp(
   accountId: string,
   action: "follow" | "unfollow" | "block" | "unblock" | "mute" | "unmute",
   sessionId: string,
+  allowFailure = false,
 ): Promise<void> {
   const response = await fetch(
     new Request(
@@ -188,8 +231,15 @@ async function accountActionOverHttp(
       },
     ),
   );
-  expect(response.status).toBe(200);
+  if (allowFailure && response.status !== 200) return;
+  await expectStatus(response, 200);
   expect(await readJsonData(response)).toMatchObject({ account: { id: accountId } });
+}
+
+async function expectStatus(response: Response, status: number): Promise<void> {
+  if (response.status !== status) {
+    throw new Error(`Expected HTTP ${status}, got ${response.status}: ${await response.text()}`);
+  }
 }
 
 async function accountActionOverGraphQL(
@@ -207,18 +257,37 @@ async function accountActionOverGraphQL(
     fetch: E2EFetch,
     body: { readonly query: string; readonly variables?: Record<string, unknown> },
   ) => Promise<Record<string, unknown>>,
+  allowFailure = false,
 ): Promise<void> {
-  const result =
+  const body =
     mutation === "muteAccount"
-      ? await postGraphQL(fetch, {
+      ? {
           query: `mutation($input: MuteAccountInput!) { ${mutation}(input: $input) { account { id } } }`,
           variables: { input: { accountId, sessionId } },
-        })
-      : await postGraphQL(fetch, {
+        }
+      : {
           query: `mutation($id: ID!, $sessionId: ID!) { ${mutation}(id: $id, sessionId: $sessionId) { account { id } } }`,
           variables: { id: accountId, sessionId },
-        });
+        };
+  const result = allowFailure ? await tryPostGraphQL(fetch, body) : await postGraphQL(fetch, body);
+  if (result === undefined) return;
   expect(result["data"]).toMatchObject({ [mutation]: { account: { id: accountId } } });
+}
+
+async function tryPostGraphQL(
+  fetch: E2EFetch,
+  body: { readonly query: string; readonly variables?: Record<string, unknown> },
+): Promise<Record<string, unknown> | undefined> {
+  const response = await fetch(
+    new Request("http://activityplug.test/graphql", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+  const json = (await response.json()) as unknown;
+  if (!isRecord(json) || json["errors"] !== undefined) return undefined;
+  return json;
 }
 
 async function postActionOverHttp(

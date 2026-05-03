@@ -292,9 +292,19 @@ export function pollFromResponse(
       response,
     );
   }
+  const responsePostId = optionalString(response.postId, "postId", response, context, operation);
+  if (responsePostId !== undefined && responsePostId !== fallbackId) {
+    throw activityPlugError(
+      "REMOTE_ERROR",
+      "HackersPub poll response belongs to a different post.",
+      context,
+      operation,
+      response,
+    );
+  }
   const rawId = validatedRemoteId(
     undefined,
-    optionalString(response.postId, "postId", response, context, operation) ?? fallbackId,
+    responsePostId ?? fallbackId,
     response,
     context,
     operation,
@@ -484,6 +494,50 @@ export function postSelection(): string {
           votes { totalCount }
         }
       }
+    }
+    actor {
+      id
+      uuid
+      iri
+      username
+      handle
+      rawName
+      name
+      avatarUrl
+      created
+    }
+  `;
+}
+
+export function articlePostSelection(): string {
+  return `
+    __typename
+    id
+    uuid
+    iri
+    url
+    content
+    summary
+    visibility
+    sensitive
+    published
+    replyTarget {
+      id
+      uuid
+      iri
+      url
+    }
+    quotedPost {
+      id
+      uuid
+      iri
+      url
+    }
+    sharedPost {
+      id
+      uuid
+      iri
+      url
     }
     actor {
       id

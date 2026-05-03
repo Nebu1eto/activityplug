@@ -11,7 +11,6 @@ import {
   type Connection,
   type DeletedEntity,
   type PageInput,
-  type Poll,
   type Post,
   type PostActionInput,
   type Relationship,
@@ -19,8 +18,6 @@ import {
   type SearchInput,
   type SearchResult,
   type ReactPostInput,
-  type UpdatePostInput,
-  type VotePollInput,
 } from "@activityplug/core";
 
 import { createHackersPubStaticCapabilities } from "./capabilities.js";
@@ -42,7 +39,6 @@ import {
   encodeAccountPostsCursor,
   encodeOperationCursor,
   forwardTimelinePageVariables,
-  pollFromResponse,
   postFromMutationPayload,
   postFromResponse,
   postNodeFromEdge,
@@ -52,24 +48,22 @@ import {
   relayPageVariables,
   viewerAccountFromResponse,
 } from "./mapping.js";
+import { listNotifications } from "./notifications.js";
+import { getPoll, votePoll } from "./polls.js";
 import { hackersPubReactionEmoji } from "./reactions.js";
 import { hackersPubSearchCapability, hackersPubSearchOperation } from "./search.js";
 import {
   activityPlugError,
   assertAccessTokenFresh,
   assertSelectedField,
-  authorizationHeader,
-  clientFor,
   graphql,
   hackersPubGlobalId,
   isRecord,
   nonEmptyString,
-  requestJson,
   validPageInfo,
 } from "./transport.js";
 import {
   type HackersPubAdapterOptions,
-  type HackersPubPoll,
   type HackersPubPost,
   type HackersPubPostEdge,
   type HackersPubPostConnection,
@@ -103,12 +97,17 @@ export function createHackersPubAdapter(
     posts: {
       get: async (input, context) => getPostById(input.id, context, options),
       create: async (input, context) => createHackersPubPost(input, context, options),
-      update: async (input, context) => updateArticlePost(input, context, options),
+      update: async (_input, context) => {
+        throw unsupportedPostUpdate(context, "posts.update");
+      },
       delete: async (input, context) => deletePost(input.id, input.session, context, options),
     },
     polls: {
       get: async (input, context) => getPoll(input.id, context, options),
       vote: async (input, context) => votePoll(input, context, options),
+    },
+    notifications: {
+      list: async (input, context) => listNotifications(input, context, options),
     },
     timelines: {
       home: async (input, context) => listHomeTimeline(input.session, input.page, context, options),
@@ -404,6 +403,18 @@ async function boostPost(
   context: AdapterOperationContext,
   options: HackersPubAdapterOptions,
 ): Promise<Post> {
+  if (input.visibility !== undefined) {
+    throw new ActivityPlugError(
+      "UNSUPPORTED_OPERATION",
+      "HackersPub sharePost does not expose boost visibility input.",
+      {
+        adapter: context.adapterId,
+        origin: context.origin,
+        operation: "social.boost",
+        capability: "social.boost",
+      },
+    );
+  }
   const post = await postMutation(input, "sharePost", "share", context, options, "social.boost");
   return {
     ...post,
@@ -520,73 +531,6 @@ async function deletePost(
   });
 }
 
-async function updateArticlePost(
-  input: UpdatePostInput,
-  context: AdapterOperationContext,
-  options: HackersPubAdapterOptions,
-): Promise<Post> {
-  if (input.mediaIds !== undefined) {
-    throw unsupportedPostUpdate(context, "media.upload");
-  }
-  if (input.poll !== undefined) {
-    throw unsupportedPostUpdate(context, "polls.create");
-  }
-  if (input.replyToId !== undefined || input.quoteOfId !== undefined) {
-    throw unsupportedPostUpdate(context, "posts.update");
-  }
-  if (input.visibility !== undefined || input.sensitive !== undefined) {
-    throw unsupportedPostUpdate(context, "posts.update");
-  }
-  const current = await getPostById(input.id, context, options, input.session, "post.update");
-  if (
-    typeof current.raw !== "object" ||
-    current.raw === null ||
-    (current.raw as { readonly __typename?: unknown }).__typename !== "Article"
-  ) {
-    throw unsupportedPostUpdate(context, "posts.update");
-  }
-  const postId = hackersPubGlobalId("Article", input.id);
-  const response = await graphql<Record<string, unknown>>(
-    `
-        mutation ($input: UpdateArticleInput!) {
-          updateArticle(input: $input) {
-            __typename
-            ... on UpdateArticlePayload {
-              article {
-                ${postSelection()}
-              }
-            }
-            ... on InvalidInputError {
-              inputPath
-            }
-            ... on NotAuthenticatedError {
-              __typename
-            }
-          }
-        }
-      `,
-    {
-      input: {
-        articleId: postId,
-        ...(input.content === undefined ? {} : { content: input.content }),
-        ...(input.summary === undefined ? {} : { title: input.summary }),
-      },
-    },
-    context,
-    options,
-    "post.update",
-    input.session,
-  );
-  const post = postFromMutationPayload(
-    response,
-    "updateArticle",
-    "article",
-    context,
-    "post.update",
-  );
-  return postFromResponse(post, context, "post.update");
-}
-
 function unsupportedPostUpdate(
   context: AdapterOperationContext,
   capability: "media.upload" | "polls.create" | "posts.update",
@@ -601,39 +545,6 @@ function unsupportedPostUpdate(
       capability,
     },
   );
-}
-
-async function getPoll(
-  id: string,
-  context: AdapterOperationContext,
-  options: HackersPubAdapterOptions,
-): Promise<Poll> {
-  const poll = await requestJson<HackersPubPoll>(
-    clientFor(context, options)
-      .get(`api/posts/${encodeURIComponent(id)}/poll`)
-      .json(),
-    context,
-    "poll.get",
-  );
-  return pollFromResponse(poll, id, context, "poll.get");
-}
-
-async function votePoll(
-  input: VotePollInput,
-  context: AdapterOperationContext,
-  options: HackersPubAdapterOptions,
-): Promise<Poll> {
-  const poll = await requestJson<HackersPubPoll>(
-    clientFor(context, options)
-      .post(`api/posts/${encodeURIComponent(input.pollId)}/vote`, {
-        headers: await authorizationHeader(input.session, context, "poll.vote"),
-        json: input.choices,
-      })
-      .json(),
-    context,
-    "poll.vote",
-  );
-  return pollFromResponse(poll, input.pollId, context, "poll.vote");
 }
 
 async function getActorById(

@@ -3,7 +3,6 @@ import {
   capability,
   createCapabilitySet,
   createEntityRef,
-  mergeCapabilityLayers,
   type Account,
   type ActivityPlugAdapter,
   type AdapterOperationContext,
@@ -32,6 +31,8 @@ import {
 } from "@activityplug/core";
 import ky, { type KyInstance } from "ky";
 
+import { createFilter, deleteFilter, getFilter, listFilters } from "./filters.js";
+import { followRequestAction, listFollowRequests } from "./follow-requests.js";
 import {
   absoluteRemoteUrl,
   accountFromResponse,
@@ -74,30 +75,27 @@ import {
 } from "./internals.js";
 import {
   addListAccount,
-  clearNotifications,
-  createFilter,
   createList,
-  deleteFilter,
   deleteList,
-  deleteScheduledPost,
-  dismissNotification,
-  followRequestAction,
-  getFilter,
   getList,
-  getScheduledPost,
-  listFilters,
-  listFollowRequests,
   listListAccounts,
   listLists,
-  listNotifications,
-  listScheduledPosts,
-  notificationUnreadCount,
   removeListAccount,
-  schedulePost,
-  updateFilter,
   updateList,
+} from "./lists.js";
+import {
+  clearNotifications,
+  dismissNotification,
+  listNotifications,
+  notificationUnreadCount,
+} from "./notifications.js";
+import {
+  deleteScheduledPost,
+  getScheduledPost,
+  listScheduledPosts,
+  schedulePost,
   updateScheduledPost,
-} from "./milestone10.js";
+} from "./scheduled-posts.js";
 import {
   type MastodonAccountResponse,
   type MastodonBaseAdapterOptions,
@@ -112,7 +110,15 @@ import {
   type NodeInfoResponse,
 } from "./types.js";
 
-export { clientFor, requestVoid, tokenHeader, type MastodonTransportOptions } from "./internals.js";
+export {
+  clientFor,
+  parseJsonArray,
+  requestJson,
+  requestResponse,
+  requestVoid,
+  tokenHeader,
+  type MastodonTransportOptions,
+} from "./internals.js";
 
 export { accountFromResponse, postFromResponse } from "./internals.js";
 export type * from "./types.js";
@@ -145,8 +151,10 @@ export function createMastodonBaseAdapter(
         "posts.update": capability("supported"),
         "posts.reply": capability("supported"),
         "posts.quote": capability(
-          "unsupported",
-          "This adapter does not expose a stable quote-post API.",
+          options.quoteStatusParameter === undefined ? "unsupported" : "supported",
+          options.quoteStatusParameter === undefined
+            ? "This adapter does not expose a stable quote-post API."
+            : undefined,
         ),
         "posts.history": capability("supported"),
         "timelines.home": capability("supported"),
@@ -197,6 +205,18 @@ export function createMastodonBaseAdapter(
         "social.reaction": capability(
           "unsupported",
           "Mastodon-compatible base APIs do not assume emoji reaction support.",
+        ),
+        "streaming.timeline": capability(
+          "unsupported",
+          "Streaming is not implemented by this adapter yet.",
+        ),
+        "streaming.notifications": capability(
+          "unsupported",
+          "Streaming is not implemented by this adapter yet.",
+        ),
+        "streaming.conversations": capability(
+          "unsupported",
+          "Streaming is not implemented by this adapter yet.",
         ),
       }),
       ...(options.documentationUrl === undefined
@@ -262,7 +282,18 @@ export function createMastodonBaseAdapter(
       list: async (input, context) => listFilters(input, context, options),
       get: async (input, context) => getFilter(input, context, options),
       create: async (input, context) => createFilter(input, context, options),
-      update: async (input, context) => updateFilter(input, context, options),
+      update: async (_input, context) => {
+        throw new ActivityPlugError(
+          "UNSUPPORTED_OPERATION",
+          "Mastodon v2 filter keyword replacement is not mapped by this adapter yet.",
+          {
+            adapter: context.adapterId,
+            origin: context.origin,
+            operation: "filter.update",
+            capability: "filters.update",
+          },
+        );
+      },
       delete: async (input, context) => deleteFilter(input, context, options),
     },
     scheduledPosts: {
@@ -470,22 +501,7 @@ async function getInstanceProfile(
                 }),
           },
         }),
-    capabilities: mergeCapabilityLayers([
-      { source: "static", capabilities: context.capabilities },
-      {
-        source: "instance",
-        capabilities: {
-          "streaming.timeline": capability(
-            isRecord((instance as { readonly urls?: unknown }).urls) &&
-              typeof (instance as { readonly urls?: Record<string, unknown> }).urls?.[
-                "streaming_api"
-              ] === "string"
-              ? "supported"
-              : "unknown",
-          ),
-        },
-      },
-    ]),
+    capabilities: context.capabilities,
     raw: { nodeInfo, instance },
   };
 }
@@ -674,15 +690,20 @@ async function getPost(
   id: string,
   context: AdapterOperationContext,
   options: MastodonBaseAdapterOptions,
+  session?: AuthSession,
+  operation = "post.get",
 ): Promise<Post> {
   const response = await requestJson<MastodonStatusResponse>(
     clientFor(context, options)
-      .get(`api/v1/statuses/${encodeURIComponent(id)}`)
+      .get(
+        `api/v1/statuses/${encodeURIComponent(id)}`,
+        session === undefined ? {} : { headers: await tokenHeader(session, context, operation) },
+      )
       .json(),
-    "post.get",
+    operation,
     context,
   );
-  return postFromResponse(response, context, "post.get");
+  return postFromResponse(response, context, operation);
 }
 
 async function listHomeTimeline(
@@ -871,7 +892,7 @@ async function createPost(
       { ...errorContext(context, "post.create"), capability: "posts.create" },
     );
   }
-  if (input.quoteOfId !== undefined) {
+  if (input.quoteOfId !== undefined && options.quoteStatusParameter === undefined) {
     throw new ActivityPlugError(
       "UNSUPPORTED_OPERATION",
       "This adapter cannot create quote posts without silently changing the request.",
@@ -888,7 +909,25 @@ async function createPost(
     "post.create",
     context,
   );
-  return postFromResponse(response, context, "post.create");
+  const post = postFromResponse(response, context, "post.create");
+  if (input.quoteOfId !== undefined) {
+    if (post.quoteOf?.rawId === input.quoteOfId) return post;
+    if (post.quoteOf !== undefined) {
+      throw new ActivityPlugError(
+        "REMOTE_ERROR",
+        "The remote server returned a quote relation for a different post.",
+        { ...errorContext(context, "post.create"), raw: response },
+      );
+    }
+    const verified = await getPost(post.ref.rawId, context, options, input.session, "post.create");
+    if (verified.quoteOf?.rawId === input.quoteOfId) return verified;
+    throw new ActivityPlugError(
+      "REMOTE_ERROR",
+      "The remote server accepted a quote request but did not return the requested quote relation.",
+      { ...errorContext(context, "post.create"), raw: response },
+    );
+  }
+  return post;
 }
 
 async function deletePost(
@@ -1085,6 +1124,9 @@ function statusJson(
     ...(input.sensitive === undefined ? {} : { sensitive: input.sensitive }),
     ...(input.summary === undefined ? {} : { spoiler_text: input.summary }),
     ...(input.replyToId === undefined ? {} : { in_reply_to_id: input.replyToId }),
+    ...(input.quoteOfId === undefined || options.quoteStatusParameter === undefined
+      ? {}
+      : { [options.quoteStatusParameter]: input.quoteOfId }),
     ...(input.mediaIds === undefined ? {} : { media_ids: input.mediaIds }),
     ...(input.poll === undefined
       ? {}

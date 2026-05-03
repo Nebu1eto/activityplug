@@ -77,6 +77,83 @@ from seed
 on conflict (id) do nothing;
 
 with seed as (
+  select *
+  from (values
+    ('00000000-0000-4000-8000-000000004432'::uuid, 'activityplug_req_http_accept'::text),
+    ('00000000-0000-4000-8000-000000004433'::uuid, 'activityplug_req_graphql_accept'::text),
+    ('00000000-0000-4000-8000-000000004434'::uuid, 'activityplug_req_http_reject'::text),
+    ('00000000-0000-4000-8000-000000004435'::uuid, 'activityplug_req_graphql_reject'::text)
+  ) as request_accounts(account_id, username),
+  (select
+    'hollo.127.0.0.1.nip.io:44080'::text as host,
+    'http://hollo.127.0.0.1.nip.io:44080'::text as origin
+  ) as instance
+)
+insert into accounts (
+  id, iri, type, name, handle, bio_html, url, protected, inbox_url,
+  followers_url, shared_inbox_url, featured_url, instance_host, published
+)
+select
+  account_id,
+  origin || '/@' || username,
+  'Person',
+  replace(username, '_', ' '),
+  '@' || username || '@' || host,
+  '',
+  origin || '/@' || username,
+  false,
+  origin || '/@' || username || '/inbox',
+  origin || '/@' || username || '/followers',
+  origin || '/inbox',
+  origin || '/@' || username || '/pinned',
+  host,
+  now()
+from seed
+on conflict (id) do nothing;
+
+insert into follows (iri, following_id, follower_id, shares, notify, created, approved)
+values
+  (
+    'http://hollo.127.0.0.1.nip.io:44080/follows/activityplug_req_http_accept',
+    '00000000-0000-4000-8000-000000004401',
+    '00000000-0000-4000-8000-000000004432',
+    true,
+    false,
+    now(),
+    null
+  ),
+  (
+    'http://hollo.127.0.0.1.nip.io:44080/follows/activityplug_req_graphql_accept',
+    '00000000-0000-4000-8000-000000004401',
+    '00000000-0000-4000-8000-000000004433',
+    true,
+    false,
+    now(),
+    null
+  ),
+  (
+    'http://hollo.127.0.0.1.nip.io:44080/follows/activityplug_req_http_reject',
+    '00000000-0000-4000-8000-000000004401',
+    '00000000-0000-4000-8000-000000004434',
+    true,
+    false,
+    now(),
+    null
+  ),
+  (
+    'http://hollo.127.0.0.1.nip.io:44080/follows/activityplug_req_graphql_reject',
+    '00000000-0000-4000-8000-000000004401',
+    '00000000-0000-4000-8000-000000004435',
+    true,
+    false,
+    now(),
+    null
+  )
+on conflict (following_id, follower_id) do update set
+  approved = null,
+  created = excluded.created;
+
+with seed as (
   select '00000000-0000-4000-8000-000000004401'::uuid as account_id,
          'activityplug'::text as username
 )
@@ -217,15 +294,69 @@ values (
   'activityplug-hollo-e2e-token',
   '00000000-0000-4000-8000-000000004403',
   '00000000-0000-4000-8000-000000004401',
-  array['read','write']::scope[],
-  'authorization_code'
-)
-on conflict (code) do nothing;
+	  array['read','write']::scope[],
+	  'authorization_code'
+	)
+	on conflict (code) do nothing;
+
+	insert into notifications (
+	  id, account_owner_id, type, actor_account_id, target_account_id, group_key, created
+	)
+	values (
+	  '00000000-0000-4000-8000-000000004431',
+	  '00000000-0000-4000-8000-000000004401',
+	  'follow',
+	  '00000000-0000-4000-8000-000000004411',
+	  '00000000-0000-4000-8000-000000004401',
+	  'activityplug-e2e-follow',
+	  now()
+	)
+	on conflict (id) do update set
+	  created = excluded.created;
+
+	insert into notification_groups (
+	  group_key, account_owner_id, type, notifications_count,
+	  most_recent_notification_id, sample_account_ids,
+	  latest_page_notification_at, page_min_id, page_max_id, created, updated
+	)
+	values (
+	  'activityplug-e2e-follow',
+	  '00000000-0000-4000-8000-000000004401',
+	  'follow',
+	  1,
+	  '00000000-0000-4000-8000-000000004431',
+	  array['00000000-0000-4000-8000-000000004411']::uuid[],
+	  now(),
+	  '00000000-0000-4000-8000-000000004431',
+	  '00000000-0000-4000-8000-000000004431',
+	  now(),
+	  now()
+	)
+	on conflict (group_key) do update set
+	  notifications_count = excluded.notifications_count,
+	  most_recent_notification_id = excluded.most_recent_notification_id,
+	  latest_page_notification_at = excluded.latest_page_notification_at,
+	  page_min_id = excluded.page_min_id,
+	  page_max_id = excluded.page_max_id,
+	  updated = excluded.updated;
 SQL
+
+NOTIFICATION_RAW_ID=$(curl -sf "$BASE_URL/api/v1/notifications?limit=20" \
+  -H "Authorization: Bearer $TOKEN" | jq -r \
+  '.[] | select(.type == "follow") | .id' | head -n 1)
+if [[ -z "$NOTIFICATION_RAW_ID" ]]; then
+  echo "Hollo follow notification was not found." >&2
+  exit 1
+fi
+NOTIFICATION_ACCOUNT_RAW_ID=$(curl -sf "$BASE_URL/api/v1/notifications?limit=20" \
+  -H "Authorization: Bearer $TOKEN" | jq -r \
+  --arg id "$NOTIFICATION_RAW_ID" '.[] | select(.id == $id) | .account.id' | head -n 1)
 
 jq -nc --arg origin "$BASE_URL" --arg token "$TOKEN" \
   --arg postSearchQuery "ActivityPlug" --arg pollId "00000000-0000-4000-8000-000000004421" \
-  --arg postSearchRawId "00000000-0000-4000-8000-000000004402" \
-  --arg httpPollId "00000000-0000-4000-8000-000000004423" \
-  --arg graphqlPollId "00000000-0000-4000-8000-000000004425" \
-  '{adapter:"hollo",origin:$origin,token:$token,accountHandle:"activityplug",socialActionHandle:"activityplug_target",pollId:$pollId,httpPollId:$httpPollId,graphqlPollId:$graphqlPollId,postSearchQuery:$postSearchQuery,postSearchRawId:$postSearchRawId}'
+	  --arg postSearchRawId "00000000-0000-4000-8000-000000004402" \
+	  --arg httpPollId "00000000-0000-4000-8000-000000004423" \
+	  --arg graphqlPollId "00000000-0000-4000-8000-000000004425" \
+	  --arg notificationRawId "$NOTIFICATION_RAW_ID" \
+	  --arg notificationAccountRawId "$NOTIFICATION_ACCOUNT_RAW_ID" \
+	  '{adapter:"hollo",origin:$origin,token:$token,accountHandle:"activityplug",socialActionHandle:"activityplug_target",pollId:$pollId,httpPollId:$httpPollId,graphqlPollId:$graphqlPollId,postSearchQuery:$postSearchQuery,postSearchRawId:$postSearchRawId,notificationRawId:$notificationRawId,notificationAccountRawId:$notificationAccountRawId,notificationType:"follow",followRequestHttpAcceptRawId:"00000000-0000-4000-8000-000000004432",followRequestGraphqlAcceptRawId:"00000000-0000-4000-8000-000000004433",followRequestHttpRejectRawId:"00000000-0000-4000-8000-000000004434",followRequestGraphqlRejectRawId:"00000000-0000-4000-8000-000000004435"}'
