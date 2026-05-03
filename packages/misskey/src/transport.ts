@@ -1,5 +1,6 @@
 import {
   ActivityPlugError,
+  isIsoDateTimeString,
   type AdapterOperationContext,
   type AuthAdapterContext,
   type AuthSession,
@@ -291,6 +292,23 @@ export function optionalString(
   });
 }
 
+export function optionalDateTimeString(
+  value: unknown,
+  field: string,
+  raw: unknown,
+  context: AuthAdapterContext | AdapterOperationContext,
+  operation: string,
+): string | undefined {
+  const parsed = optionalString(value, field, raw, context, operation);
+  if (parsed === undefined) return undefined;
+  if (parsed.length > 0 && isIsoDateTimeString(parsed)) return parsed;
+  throw invalidRemoteResponse(`Remote response field must be a valid date-time: ${field}.`, {
+    context,
+    operation,
+    raw,
+  });
+}
+
 export function optionalNonEmptyString(
   value: unknown,
   field: string,
@@ -465,11 +483,12 @@ export function assertOptionalString(
   field: string,
   raw: unknown,
   context: AuthAdapterContext | AdapterOperationContext,
+  operation = "posts.read",
 ): void {
   if (value === null || value === undefined || typeof value === "string") return;
   throw invalidRemoteResponse(`Remote response field must be a string when present: ${field}.`, {
     context,
-    operation: "posts.read",
+    operation,
     raw,
   });
 }

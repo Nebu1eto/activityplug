@@ -1,19 +1,22 @@
-import { ActivityPlugError } from "@activityplug/core";
+import { ActivityPlugError, createCapabilitySet } from "@activityplug/core";
 import { describe, expect, it } from "vitest";
 
 import { createOpenApiDocument } from "../api/openapi.js";
+import { serializeCapabilitySetPayload } from "../api/service.js";
 import {
   authenticatedHttpOnlyOperations,
   createTestService,
   getFirstGraphQLError,
   getGraphQLIntrospection,
   hasBearerSecurity,
+  type IntrospectionTypeRef,
   jsonRequest,
   publicOperationMatrix,
   requestBodyRef,
   reservedOperationMatrix,
   responseDataRef,
   testSession,
+  typeSignature,
   typeName,
   untrackedGraphQLOperations,
   untrackedOpenApiOperations,
@@ -188,12 +191,37 @@ describe("ActivityPlug HTTP and GraphQL contract edges", () => {
       const field = fields.find((candidate) => candidate.name === operation.graphqlField);
       expect(field).toBeDefined();
       expect(field?.args.map((arg) => arg.name).toSorted()).toEqual(operation.graphqlArgs);
-      expect(typeName(field?.type)).toBe(operation.graphqlReturnType);
+      const expectedSignature =
+        "graphqlReturnTypeSignature" in operation
+          ? operation.graphqlReturnTypeSignature
+          : undefined;
+      expect(
+        expectedSignature === undefined ? typeName(field?.type) : typeSignature(field?.type),
+      ).toBe(expectedSignature ?? operation.graphqlReturnType);
       expect(responseDataRef(httpOperation)).toBe(operation.httpResponseDataRef);
       if (operation.httpRequestRef !== undefined) {
         expect(requestBodyRef(httpOperation)).toBe(operation.httpRequestRef);
       }
+      if ("httpRequestRequiredFields" in operation) {
+        expect(inlineRequestRequiredFields(httpOperation)?.toSorted()).toEqual(
+          operation.httpRequestRequiredFields.toSorted(),
+        );
+      }
+      if ("httpResponseInlineFields" in operation) {
+        expect(inlineResponseFields(httpOperation)?.toSorted()).toEqual(
+          operation.httpResponseInlineFields.toSorted(),
+        );
+      }
     }
+    expect(
+      inlineResponseProperty(openapi.paths["/api/v1/notifications/unread-count"].get, "count"),
+    ).toEqual({ type: "integer", minimum: 0 });
+    expect(inlineResponseProperty(openapi.paths["/api/v1/notifications/clear"].post, "ok")).toEqual(
+      { type: "boolean" },
+    );
+    expect(
+      inlineResponseProperty(openapi.paths["/api/v1/posts/{id}/history"].get, "revisions"),
+    ).toEqual({ type: "array", items: { $ref: "#/components/schemas/PostRevision" } });
     for (const operation of reservedOperationMatrix) {
       expect(openapi.paths).toHaveProperty(operation.httpPath);
       const httpOperation = openapi.paths[operation.httpPath][operation.httpMethod];
@@ -216,6 +244,80 @@ describe("ActivityPlug HTTP and GraphQL contract edges", () => {
     }
     expect(untrackedOpenApiOperations(openapi)).toEqual([]);
     expect(untrackedGraphQLOperations(introspection)).toEqual([]);
+  });
+
+  it("types M10 finite GraphQL and OpenAPI values", async () => {
+    const app = createActivityPlugApp({
+      service: createTestService(),
+    });
+    const openapi = createOpenApiDocument({ tokenImport: "open" });
+    const introspection = getGraphQLIntrospection(
+      await jsonRequest(
+        app.request("/graphql", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            query:
+              '{ list: __type(name: "List") { fields { name type { kind name ofType { kind name } } } } filter: __type(name: "Filter") { fields { name type { kind name ofType { kind name } } } } scheduled: __type(name: "ScheduledPost") { fields { name type { kind name ofType { kind name } } } } createFilter: __type(name: "CreateFilterInput") { inputFields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } } notifications: __type(name: "NotificationTypeInput") { enumValues { name } } }',
+          }),
+        }),
+      ),
+    );
+
+    const data = introspection.data as Record<string, unknown>;
+    expect(typeSignature(fieldType(data["list"], "repliesPolicy"))).toBe("ListRepliesPolicy");
+    expect(typeSignature(fieldType(data["filter"], "action"))).toBe("FilterAction!");
+    expect(typeSignature(fieldType(data["scheduled"], "visibility"))).toBe("PostVisibility");
+    expect(typeSignature(inputFieldType(data["createFilter"], "context"))).toBe(
+      "[FilterContextInput!]!",
+    );
+    expect(
+      (
+        data["notifications"] as { readonly enumValues: readonly { readonly name: string }[] }
+      ).enumValues.map((value) => value.name),
+    ).toContain("PLEROMA_EMOJI_REACTION");
+    expect(notificationTypeQueryEnum(openapi.paths["/api/v1/notifications"].get, "type")).toContain(
+      "pleroma.emoji_reaction",
+    );
+    expect(filterContextSchema(openapi)).toEqual({
+      type: "string",
+      enum: ["home", "notifications", "public", "thread", "account", "profile", "unknown"],
+    });
+    expect(filterContextRequestSchema(openapi, "/api/v1/filters", "post")).toEqual({
+      type: "string",
+      enum: ["home", "notifications", "public", "thread", "account", "profile"],
+    });
+    expect(filterContextRequestSchema(openapi, "/api/v1/filters/{id}", "patch")).toEqual({
+      type: "string",
+      enum: ["home", "notifications", "public", "thread", "account", "profile"],
+    });
+  });
+
+  it("keeps capability groups aligned between payloads and GraphQL", async () => {
+    const app = createActivityPlugApp({ service: createTestService() });
+    const response = await jsonRequest(
+      app.request("/graphql", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: '{ __type(name: "CapabilitySet") { fields { name } } }',
+        }),
+      }),
+    );
+    const graphqlFields = (
+      (
+        (response as { readonly data?: unknown }).data as {
+          readonly __type?: { readonly fields?: readonly { readonly name: string }[] };
+        }
+      ).__type?.fields ?? []
+    )
+      .map((field) => field.name)
+      .toSorted();
+    const payloadFields = Object.keys(serializeCapabilitySetPayload(createCapabilitySet()))
+      .filter((field) => field !== "raw")
+      .toSorted();
+
+    expect(graphqlFields).toEqual(payloadFields);
   });
 
   it("documents token import as disabled by default in standalone OpenAPI output", () => {
@@ -307,15 +409,118 @@ describe("ActivityPlug HTTP and GraphQL contract edges", () => {
       service: createTestService(),
     });
 
-    const notification = await app.request("/api/v1/notifications");
+    const notification = await app.request("/api/v1/media/media-1");
 
     expect(notification.status).toBe(400);
     await expect(notification.json()).resolves.toEqual({
       error: {
         code: "UNSUPPORTED_OPERATION",
         message: "This API operation is reserved but not implemented yet.",
-        operation: "notification.list",
+        operation: "media.get",
       },
     });
   });
 });
+
+function inlineRequestRequiredFields(operation: unknown): readonly string[] | undefined {
+  const requestBody = (operation as { readonly requestBody?: unknown }).requestBody as
+    | { readonly content?: { readonly "application/json"?: { readonly schema?: unknown } } }
+    | undefined;
+  const schema = requestBody?.content?.["application/json"]?.schema as
+    | { readonly required?: readonly string[] }
+    | undefined;
+  return schema?.required;
+}
+
+function inlineResponseFields(operation: unknown): readonly string[] | undefined {
+  const response = (operation as { readonly responses?: Record<string, unknown> }).responses?.[
+    "200"
+  ] as
+    | { readonly content?: { readonly "application/json"?: { readonly schema?: unknown } } }
+    | undefined;
+  const schema = response?.content?.["application/json"]?.schema as
+    | {
+        readonly properties?: {
+          readonly data?: { readonly properties?: Record<string, unknown> };
+        };
+      }
+    | undefined;
+  return schema?.properties?.data?.properties === undefined
+    ? undefined
+    : Object.keys(schema.properties.data.properties);
+}
+
+function inlineResponseProperty(operation: unknown, field: string): unknown {
+  const response = (operation as { readonly responses?: Record<string, unknown> }).responses?.[
+    "200"
+  ] as
+    | { readonly content?: { readonly "application/json"?: { readonly schema?: unknown } } }
+    | undefined;
+  const schema = response?.content?.["application/json"]?.schema as
+    | {
+        readonly properties?: {
+          readonly data?: { readonly properties?: Record<string, unknown> };
+        };
+      }
+    | undefined;
+  return schema?.properties?.data?.properties?.[field];
+}
+
+function fieldType(type: unknown, field: string): IntrospectionTypeRef | undefined {
+  const fields = (
+    type as {
+      readonly fields?: readonly { readonly name: string; readonly type: IntrospectionTypeRef }[];
+    }
+  ).fields;
+  return fields?.find((candidate) => candidate.name === field)?.type;
+}
+
+function inputFieldType(type: unknown, field: string): IntrospectionTypeRef | undefined {
+  const fields = (
+    type as {
+      readonly inputFields?: readonly {
+        readonly name: string;
+        readonly type: IntrospectionTypeRef;
+      }[];
+    }
+  ).inputFields;
+  return fields?.find((candidate) => candidate.name === field)?.type;
+}
+
+function notificationTypeQueryEnum(operation: unknown, name: string): readonly string[] {
+  const parameters = (operation as { readonly parameters?: readonly unknown[] }).parameters ?? [];
+  const parameter = parameters.find(
+    (candidate) => (candidate as { readonly name?: string }).name === name,
+  ) as { readonly schema?: { readonly items?: { readonly enum?: readonly string[] } } } | undefined;
+  return parameter?.schema?.items?.enum ?? [];
+}
+
+function filterContextSchema(openapi: ReturnType<typeof createOpenApiDocument>): unknown {
+  const schemas = openapi.components.schemas as Record<string, unknown>;
+  const filter = schemas["Filter"] as
+    | {
+        readonly properties?: {
+          readonly context?: { readonly items?: unknown };
+        };
+      }
+    | undefined;
+  return filter?.properties?.context?.items;
+}
+
+function filterContextRequestSchema(
+  openapi: ReturnType<typeof createOpenApiDocument>,
+  path: "/api/v1/filters" | "/api/v1/filters/{id}",
+  method: "post" | "patch",
+): unknown {
+  const operation = openapi.paths[path][method] as
+    | {
+        readonly requestBody?: {
+          readonly content?: { readonly "application/json"?: { readonly schema?: unknown } };
+        };
+      }
+    | undefined;
+  const schema = operation?.requestBody?.content?.["application/json"]?.schema as
+    | { readonly properties?: { readonly context?: { readonly items?: unknown } } }
+    | undefined;
+  return schema?.properties?.context?.items;
+}

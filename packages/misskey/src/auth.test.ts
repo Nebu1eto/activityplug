@@ -655,6 +655,167 @@ describe("Misskey auth adapter", () => {
       vi.useRealTimers();
     }
   });
+
+  it("keeps Misskey notification filters and skipped rows narrow", async () => {
+    const requests: unknown[] = [];
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({
+        fetch: mockFetch(async (request) => {
+          const url = new URL(request.url);
+          expect(url.pathname).toBe("/api/i/notifications");
+          const body = await request.json();
+          requests.push(body);
+          return jsonResponse([
+            { id: "notification-1", createdAt: "2026-04-27T00:00:00.000Z", type: "reaction" },
+            {
+              id: "notification-2",
+              createdAt: "2026-04-27T00:00:01.000Z",
+              type: "reaction",
+              user: misskeyAccountBody(),
+            },
+          ]);
+        }),
+      }),
+      origin: "https://misskey.example",
+    });
+    const session = await client.auth.injectToken({ accessToken: "token-1" });
+
+    const favouriteOnly = await client.notifications.list({
+      session,
+      types: ["favourite"],
+    });
+    const mixed = await client.notifications.list({
+      session,
+      types: ["favourite", "emoji_reaction"],
+      page: { limit: 1 },
+    });
+    const unsupportedOnly = await client.notifications.list({
+      session,
+      types: ["move"],
+    });
+    await expect(
+      client.notifications.list({
+        session,
+        types: ["move"],
+        page: { after: "not-a-cursor" },
+      }),
+    ).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+      context: { operation: "notification.list" },
+    });
+
+    expect(favouriteOnly.nodes).toEqual([]);
+    expect(unsupportedOnly.nodes).toEqual([]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ includeTypes: ["reaction"] });
+    expect(mixed.nodes).toHaveLength(1);
+    expect(mixed.pageInfo.startCursor).toBeDefined();
+  });
+
+  it("rejects malformed Misskey notification rows", async () => {
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({
+        fetch: mockFetch(async () =>
+          jsonResponse([
+            { id: "", createdAt: "2026-04-27T00:00:00.000Z", type: "reaction", user: null },
+          ]),
+        ),
+      }),
+      origin: "https://misskey.example",
+    });
+    const session = await client.auth.injectToken({ accessToken: "token-1" });
+
+    await expect(client.notifications.list({ session, page: { limit: 1 } })).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { operation: "notification.list" },
+    });
+  });
+
+  it("rejects loose Misskey notification timestamps", async () => {
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({
+        fetch: mockFetch(async () =>
+          jsonResponse([
+            {
+              id: "notification-1",
+              createdAt: "2026-04-31T00:00:00Z",
+              type: "reaction",
+              user: misskeyAccountBody(),
+            },
+          ]),
+        ),
+      }),
+      origin: "https://misskey.example",
+    });
+    const session = await client.auth.injectToken({ accessToken: "token-1" });
+
+    await expect(client.notifications.list({ session, page: { limit: 1 } })).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { operation: "notification.list" },
+    });
+  });
+
+  it("reports the right Misskey list option capability", async () => {
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({
+        fetch: mockFetch(async () => {
+          throw new Error("adapter should not be called");
+        }),
+      }),
+      origin: "https://misskey.example",
+    });
+    const session = await client.auth.injectToken({ accessToken: "token-1" });
+    const listId = createEntityRef({
+      adapter: "misskey",
+      origin: "https://misskey.example",
+      type: "list",
+      id: "list-1",
+    }).id;
+
+    await expect(
+      client.lists.create({ session, title: "List", repliesPolicy: "followed" }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { operation: "list.create", capability: "lists.create" },
+    });
+    await expect(
+      client.lists.update({ session, id: listId, title: "List", repliesPolicy: "followed" }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { operation: "list.update", capability: "lists.update" },
+    });
+  });
+
+  it("rejects out-of-range Misskey poll choices before remote voting", async () => {
+    let voteCalled = false;
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({
+        fetch: mockFetch(async (request) => {
+          const url = new URL(request.url);
+          if (url.pathname === "/api/notes/show") {
+            return jsonResponse({
+              ...misskeyNote("note-1"),
+              poll: { multiple: true, choices: [{ text: "Yes" }, { text: "No" }] },
+            });
+          }
+          if (url.pathname === "/api/notes/polls/vote") {
+            voteCalled = true;
+          }
+          return jsonResponse({});
+        }),
+      }),
+      origin: "https://misskey.example",
+    });
+    const session = await client.auth.injectToken({ accessToken: "token-1" });
+
+    await expect(
+      client.polls.vote({ pollId: `${misskeyPostRef("note-1").id}:poll`, session, choices: [2] }),
+    ).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+      context: { operation: "poll.vote" },
+    });
+    expect(voteCalled).toBe(false);
+  });
 });
 
 function mockFetch(handler: (request: Request) => Promise<Response>): typeof fetch {

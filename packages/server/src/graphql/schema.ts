@@ -4,6 +4,7 @@ import {
   activityPlugApiVersion,
   serializeAuthStart,
   serializeAuthSession,
+  serializeAccountConnection,
   serializeCapabilitySetPayload,
   serializeParsedAuthCallback,
   type ActivityPlugApiService,
@@ -16,23 +17,36 @@ import {
   type PublicAccountField,
   type PublicAuthSession,
   type PublicEntityRef,
+  type PublicFilter,
   type PublicInstanceProfile,
   type PublicMediaAttachment,
   type PublicPoll,
   type PublicPollOption,
   type PublicPost,
+  type PublicPostRevision,
   type PublicDeletedEntity,
   type PublicHashtag,
+  type PublicList,
+  type PublicNotification,
   type PublicRelationship,
   type PublicSearchResult,
+  type PublicScheduledPost,
   serializeDeletedEntity,
   serializeAccount,
   serializeInstanceProfile,
+  serializeFilter,
+  serializeFilterConnection,
   serializeMediaAttachment,
+  serializeList,
+  serializeListConnection,
+  serializeNotificationConnection,
   serializePoll,
   serializePost,
   serializePostConnection,
+  serializePostRevision,
   serializeRelationship,
+  serializeScheduledPost,
+  serializeScheduledPostConnection,
   serializeSearchResult,
 } from "../api/service.js";
 import { type TokenImportOptions } from "../http/app.js";
@@ -86,9 +100,14 @@ const builder = new SchemaBuilder<{
     Poll: PublicPoll;
     PollOption: PublicPollOption;
     Post: PublicPost;
+    PostRevision: PublicPostRevision;
     DeletedEntity: PublicDeletedEntity;
     Relationship: PublicRelationship;
     SearchResult: PublicSearchResult;
+    Notification: PublicNotification;
+    List: PublicList;
+    Filter: PublicFilter;
+    ScheduledPost: PublicScheduledPost;
   };
   Scalars: {
     JSON: {
@@ -141,11 +160,103 @@ const PostVisibilityEnum = builder.enumType("PostVisibility", {
   } as const,
 });
 
+const PostVisibilityInputEnum = builder.enumType("PostVisibilityInput", {
+  values: {
+    PUBLIC: { value: "public" },
+    UNLISTED: { value: "unlisted" },
+    FOLLOWERS: { value: "followers" },
+    DIRECT: { value: "direct" },
+    LOCAL: { value: "local" },
+    LIST: { value: "list" },
+    NONE: { value: "none" },
+  } as const,
+});
+
 const SearchTypeEnum = builder.enumType("SearchType", {
   values: {
     ACCOUNTS: { value: "accounts" },
     POSTS: { value: "posts" },
     HASHTAGS: { value: "hashtags" },
+  } as const,
+});
+
+const ListRepliesPolicyEnum = builder.enumType("ListRepliesPolicy", {
+  values: {
+    FOLLOWED: { value: "followed" },
+    LIST: { value: "list" },
+    NONE: { value: "none" },
+    UNKNOWN: { value: "unknown" },
+  } as const,
+});
+
+const ListRepliesPolicyInputEnum = builder.enumType("ListRepliesPolicyInput", {
+  values: {
+    FOLLOWED: { value: "followed" },
+    LIST: { value: "list" },
+    NONE: { value: "none" },
+  } as const,
+});
+
+const FilterContextEnum = builder.enumType("FilterContext", {
+  values: {
+    HOME: { value: "home" },
+    NOTIFICATIONS: { value: "notifications" },
+    PUBLIC: { value: "public" },
+    THREAD: { value: "thread" },
+    ACCOUNT: { value: "account" },
+    PROFILE: { value: "profile" },
+    UNKNOWN: { value: "unknown" },
+  } as const,
+});
+
+const FilterContextInputEnum = builder.enumType("FilterContextInput", {
+  values: {
+    HOME: { value: "home" },
+    NOTIFICATIONS: { value: "notifications" },
+    PUBLIC: { value: "public" },
+    THREAD: { value: "thread" },
+    ACCOUNT: { value: "account" },
+    PROFILE: { value: "profile" },
+  } as const,
+});
+
+const FilterActionEnum = builder.enumType("FilterAction", {
+  values: {
+    WARN: { value: "warn" },
+    HIDE: { value: "hide" },
+    UNKNOWN: { value: "unknown" },
+  } as const,
+});
+
+const FilterActionInputEnum = builder.enumType("FilterActionInput", {
+  values: {
+    WARN: { value: "warn" },
+    HIDE: { value: "hide" },
+  } as const,
+});
+
+const NotificationTypeInputEnum = builder.enumType("NotificationTypeInput", {
+  values: {
+    MENTION: { value: "mention" },
+    STATUS: { value: "status" },
+    REBLOG: { value: "reblog" },
+    QUOTE: { value: "quote" },
+    QUOTED_UPDATE: { value: "quoted_update" },
+    FOLLOW: { value: "follow" },
+    FOLLOW_REQUEST: { value: "follow_request" },
+    FAVOURITE: { value: "favourite" },
+    EMOJI_REACTION: { value: "emoji_reaction" },
+    POLL: { value: "poll" },
+    UPDATE: { value: "update" },
+    MOVE: { value: "move" },
+    MODERATION_WARNING: { value: "moderation_warning" },
+    SEVERED_RELATIONSHIPS: { value: "severed_relationships" },
+    ANNUAL_REPORT: { value: "annual_report" },
+    ADMIN_SIGN_UP: { value: "admin.sign_up" },
+    ADMIN_REPORT: { value: "admin.report" },
+    PLEROMA_EMOJI_REACTION: { value: "pleroma.emoji_reaction" },
+    PLEROMA_CHAT_MENTION: { value: "pleroma.chat_mention" },
+    PLEROMA_REPORT: { value: "pleroma.report" },
   } as const,
 });
 
@@ -336,13 +447,120 @@ const CreatePostInput = builder.inputType("CreatePostInput", {
     adapter: t.field({ type: AdapterKindEnum, required: false }),
     sessionId: t.id({ required: true }),
     content: t.string({ required: true }),
-    visibility: t.field({ type: PostVisibilityEnum, required: false }),
+    visibility: t.field({ type: PostVisibilityInputEnum, required: false }),
     sensitive: t.boolean({ required: false }),
     summary: t.string({ required: false }),
     replyToId: t.id({ required: false }),
     quoteOfId: t.id({ required: false }),
     mediaIds: t.stringList({ required: false }),
     poll: t.field({ type: CreatePollInput, required: false }),
+  }),
+});
+
+const UpdatePostInput = builder.inputType("UpdatePostInput", {
+  fields: (t) => ({
+    id: t.id({ required: true }),
+    origin: t.string({ required: false }),
+    adapter: t.field({ type: AdapterKindEnum, required: false }),
+    sessionId: t.id({ required: true }),
+    content: t.string({ required: false }),
+    visibility: t.field({ type: PostVisibilityInputEnum, required: false }),
+    sensitive: t.boolean({ required: false }),
+    summary: t.string({ required: false }),
+    replyToId: t.id({ required: false }),
+    quoteOfId: t.id({ required: false }),
+    mediaIds: t.stringList({ required: false }),
+    poll: t.field({ type: CreatePollInput, required: false }),
+  }),
+});
+
+const CreateListInput = builder.inputType("CreateListInput", {
+  fields: (t) => ({
+    origin: t.string({ required: true }),
+    adapter: t.field({ type: AdapterKindEnum, required: false }),
+    sessionId: t.id({ required: true }),
+    title: t.string({ required: true }),
+    repliesPolicy: t.field({ type: ListRepliesPolicyInputEnum, required: false }),
+    exclusive: t.boolean({ required: false }),
+  }),
+});
+
+const UpdateListInput = builder.inputType("UpdateListInput", {
+  fields: (t) => ({
+    id: t.id({ required: true }),
+    origin: t.string({ required: false }),
+    adapter: t.field({ type: AdapterKindEnum, required: false }),
+    sessionId: t.id({ required: true }),
+    title: t.string({ required: true }),
+    repliesPolicy: t.field({ type: ListRepliesPolicyInputEnum, required: false }),
+    exclusive: t.boolean({ required: false }),
+  }),
+});
+
+const FilterKeywordInput = builder.inputType("FilterKeywordInput", {
+  fields: (t) => ({
+    keyword: t.string({ required: true }),
+    wholeWord: t.boolean({ required: false }),
+  }),
+});
+
+const CreateFilterInput = builder.inputType("CreateFilterInput", {
+  fields: (t) => ({
+    origin: t.string({ required: true }),
+    adapter: t.field({ type: AdapterKindEnum, required: false }),
+    sessionId: t.id({ required: true }),
+    title: t.string({ required: true }),
+    context: t.field({ type: [FilterContextInputEnum], required: true }),
+    action: t.field({ type: FilterActionInputEnum, required: false }),
+    expiresInSeconds: t.int({ required: false }),
+    keywords: t.field({ type: [FilterKeywordInput], required: true }),
+  }),
+});
+
+const UpdateFilterInput = builder.inputType("UpdateFilterInput", {
+  fields: (t) => ({
+    id: t.id({ required: true }),
+    origin: t.string({ required: false }),
+    adapter: t.field({ type: AdapterKindEnum, required: false }),
+    sessionId: t.id({ required: true }),
+    title: t.string({ required: true }),
+    context: t.field({ type: [FilterContextInputEnum], required: true }),
+    action: t.field({ type: FilterActionInputEnum, required: false }),
+    expiresInSeconds: t.int({ required: false }),
+    keywords: t.field({ type: [FilterKeywordInput], required: true }),
+  }),
+});
+
+const SchedulePostInput = builder.inputType("SchedulePostInput", {
+  fields: (t) => ({
+    origin: t.string({ required: true }),
+    adapter: t.field({ type: AdapterKindEnum, required: false }),
+    sessionId: t.id({ required: true }),
+    content: t.string({ required: true }),
+    scheduledAt: t.string({ required: true }),
+    visibility: t.field({ type: PostVisibilityInputEnum, required: false }),
+    sensitive: t.boolean({ required: false }),
+    summary: t.string({ required: false }),
+    replyToId: t.id({ required: false }),
+    quoteOfId: t.id({ required: false }),
+    mediaIds: t.stringList({ required: false }),
+    poll: t.field({ type: CreatePollInput, required: false }),
+  }),
+});
+
+const UpdateScheduledPostInput = builder.inputType("UpdateScheduledPostInput", {
+  fields: (t) => ({
+    id: t.id({ required: true }),
+    sessionId: t.id({ required: true }),
+    scheduledAt: t.string({ required: true }),
+  }),
+});
+
+const ListAccountInput = builder.inputType("ListAccountInput", {
+  fields: (t) => ({
+    id: t.id({ required: true }),
+    sessionId: t.id({ required: true }),
+    accountId: t.id({ required: true }),
   }),
 });
 
@@ -359,7 +577,7 @@ const BoostPostInput = builder.inputType("BoostPostInput", {
   fields: (t) => ({
     postId: t.id({ required: true }),
     sessionId: t.id({ required: true }),
-    visibility: t.field({ type: PostVisibilityEnum, required: false }),
+    visibility: t.field({ type: PostVisibilityInputEnum, required: false }),
   }),
 });
 
@@ -410,6 +628,9 @@ const CapabilitySet = builder.objectRef<CapabilitySetPayload>("CapabilitySet").i
     notifications: t.expose("notifications", { type: [Capability] }),
     polls: t.expose("polls", { type: [Capability] }),
     lists: t.expose("lists", { type: [Capability] }),
+    followRequests: t.expose("followRequests", { type: [Capability] }),
+    filters: t.expose("filters", { type: [Capability] }),
+    scheduledPosts: t.expose("scheduledPosts", { type: [Capability] }),
     streaming: t.expose("streaming", { type: [Capability] }),
     admin: t.expose("admin", { type: [Capability] }),
   }),
@@ -661,8 +882,78 @@ const PostType = builder.objectRef<PublicPost>("Post").implement({
     }),
   }),
 });
-const NotificationType = reservedObjectType("Notification");
-const ListType = reservedObjectType("List");
+const NotificationType = builder.objectRef<PublicNotification>("Notification").implement({
+  fields: (t) => ({
+    ref: t.expose("ref", { type: EntityRefType }),
+    type: t.exposeString("type"),
+    createdAt: t.exposeString("createdAt"),
+    account: t.expose("account", { type: EntityRefType }),
+    post: t.expose("post", { type: EntityRefType, nullable: true }),
+    raw: t.field({
+      type: JsonScalar,
+      resolve: (value) => value.raw,
+    }),
+  }),
+});
+const ListType = builder.objectRef<PublicList>("List").implement({
+  fields: (t) => ({
+    ref: t.expose("ref", { type: EntityRefType }),
+    title: t.exposeString("title"),
+    repliesPolicy: t.expose("repliesPolicy", { type: ListRepliesPolicyEnum, nullable: true }),
+    exclusive: t.exposeBoolean("exclusive", { nullable: true }),
+    raw: t.field({
+      type: JsonScalar,
+      resolve: (value) => value.raw,
+    }),
+  }),
+});
+const FilterKeywordType = builder
+  .objectRef<PublicFilter["keywords"][number]>("FilterKeyword")
+  .implement({
+    fields: (t) => ({
+      keyword: t.exposeString("keyword"),
+      wholeWord: t.exposeBoolean("wholeWord"),
+      raw: t.field({ type: JsonScalar, resolve: (value) => value.raw }),
+    }),
+  });
+const FilterType = builder.objectRef<PublicFilter>("Filter").implement({
+  fields: (t) => ({
+    ref: t.expose("ref", { type: EntityRefType }),
+    title: t.exposeString("title"),
+    context: t.field({ type: [FilterContextEnum], resolve: (value) => value.context }),
+    action: t.expose("action", { type: FilterActionEnum }),
+    expiresAt: t.exposeString("expiresAt", { nullable: true }),
+    keywords: t.field({ type: [FilterKeywordType], resolve: (value) => value.keywords }),
+    raw: t.field({ type: JsonScalar, resolve: (value) => value.raw }),
+  }),
+});
+const ScheduledPostType = builder.objectRef<PublicScheduledPost>("ScheduledPost").implement({
+  fields: (t) => ({
+    ref: t.expose("ref", { type: EntityRefType }),
+    scheduledAt: t.exposeString("scheduledAt"),
+    contentText: t.exposeString("contentText", { nullable: true }),
+    visibility: t.expose("visibility", { type: PostVisibilityEnum, nullable: true }),
+    sensitive: t.exposeBoolean("sensitive", { nullable: true }),
+    summary: t.exposeString("summary", { nullable: true }),
+    media: t.expose("media", { type: [MediaAttachmentType] }),
+    poll: t.expose("poll", { type: PollType, nullable: true }),
+    replyTo: t.expose("replyTo", { type: EntityRefType, nullable: true }),
+    raw: t.field({ type: JsonScalar, resolve: (value) => value.raw }),
+  }),
+});
+const PostRevisionType = builder.objectRef<PublicPostRevision>("PostRevision").implement({
+  fields: (t) => ({
+    ref: t.expose("ref", { type: EntityRefType }),
+    contentHtml: t.exposeString("contentHtml", { nullable: true }),
+    contentText: t.exposeString("contentText", { nullable: true }),
+    sensitive: t.exposeBoolean("sensitive", { nullable: true }),
+    summary: t.exposeString("summary", { nullable: true }),
+    createdAt: t.exposeString("createdAt"),
+    media: t.expose("media", { type: [MediaAttachmentType] }),
+    poll: t.expose("poll", { type: PollType, nullable: true }),
+    raw: t.field({ type: JsonScalar, resolve: (value) => value.raw }),
+  }),
+});
 const RelationshipType = builder.objectRef<PublicRelationship>("Relationship").implement({
   fields: (t) => ({
     account: t.expose("account", { type: EntityRefType }),
@@ -727,8 +1018,10 @@ const AccountConnectionType = builder
     }),
   });
 
-function reservedConnectionType(name: string, nodeType: unknown) {
-  return builder.objectRef<ReservedConnectionPayload>(name).implement({
+function connectionType<
+  T extends { readonly pageInfo: PageInfoPayload; readonly nodes: readonly unknown[] },
+>(name: string, nodeType: unknown) {
+  return builder.objectRef<T>(name).implement({
     fields: (t) => ({
       nodes: t.field({
         type: [nodeType] as never,
@@ -742,18 +1035,33 @@ function reservedConnectionType(name: string, nodeType: unknown) {
   });
 }
 
-const PostConnectionType = reservedConnectionType("PostConnection", PostType);
-const TimelineConnectionType = reservedConnectionType("TimelineConnection", PostType);
-const NotificationConnectionType = reservedConnectionType(
-  "NotificationConnection",
-  NotificationType,
+const PostConnectionType = connectionType<ReservedConnectionPayload>("PostConnection", PostType);
+const TimelineConnectionType = connectionType<ReservedConnectionPayload>(
+  "TimelineConnection",
+  PostType,
 );
-const ListConnectionType = reservedConnectionType("ListConnection", ListType);
+const NotificationConnectionType = connectionType<{
+  readonly nodes: readonly PublicNotification[];
+  readonly pageInfo: PageInfoPayload;
+}>("NotificationConnection", NotificationType);
+const ListConnectionType = connectionType<{
+  readonly nodes: readonly PublicList[];
+  readonly pageInfo: PageInfoPayload;
+}>("ListConnection", ListType);
+const FilterConnectionType = connectionType<{
+  readonly nodes: readonly PublicFilter[];
+  readonly pageInfo: PageInfoPayload;
+}>("FilterConnection", FilterType);
+const ScheduledPostConnectionType = connectionType<{
+  readonly nodes: readonly PublicScheduledPost[];
+  readonly pageInfo: PageInfoPayload;
+}>("ScheduledPostConnection", ScheduledPostType);
 
 registerGraphQLOperations({
   AccountConnectionType,
   AccountType,
   AdapterKindEnum,
+  NotificationTypeInputEnum,
   AuthCallbackInput,
   AuthExchangeInput,
   AuthSessionType,
@@ -762,6 +1070,7 @@ registerGraphQLOperations({
   BoostPostInput,
   CapabilitySet,
   CreatePostInput,
+  CreateFilterInput,
   DeletedEntityType,
   DetectInstanceInput,
   Health,
@@ -769,7 +1078,11 @@ registerGraphQLOperations({
   InstanceType,
   JsonInput,
   ListConnectionType,
+  CreateListInput,
   ListType,
+  ListAccountInput,
+  FilterConnectionType,
+  FilterType,
   MediaAttachmentType,
   MuteAccountInput,
   NotificationConnectionType,
@@ -778,12 +1091,20 @@ registerGraphQLOperations({
   PollType,
   PostConnectionType,
   PostContextType,
+  PostRevisionType,
   PostType,
   ReactPostInput,
   RelationshipType,
   SearchInput,
   SearchResultType,
   TimelineConnectionType,
+  SchedulePostInput,
+  ScheduledPostConnectionType,
+  ScheduledPostType,
+  UpdateFilterInput,
+  UpdateListInput,
+  UpdatePostInput,
+  UpdateScheduledPostInput,
   UploadMediaInput,
   VotePollInput,
   accountActionResolver,
@@ -805,17 +1126,26 @@ registerGraphQLOperations({
   normalizeVotePollInput,
   postActionResolver,
   serializeAccount,
+  serializeAccountConnection,
   serializeAuthSession,
   serializeAuthStart,
   serializeCapabilitySetPayload,
   serializeDeletedEntity,
+  serializeFilter,
+  serializeFilterConnection,
   serializeInstanceProfile,
   serializeMediaAttachment,
+  serializeList,
+  serializeListConnection,
+  serializeNotificationConnection,
   serializeParsedAuthCallback,
   serializePoll,
   serializePost,
   serializePostConnection,
+  serializePostRevision,
   serializeRelationship,
+  serializeScheduledPost,
+  serializeScheduledPostConnection,
   serializeSearchResult,
   unsupportedGraphQLField,
   unsupportedGraphQLResolver,

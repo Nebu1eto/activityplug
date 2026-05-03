@@ -11,7 +11,7 @@ import {
   type OAuthCallbackInput,
   type OAuthClientRegistration,
   type Post,
-  type PostVisibility,
+  type PostVisibilityInput,
   type Relationship,
   type SearchResult,
 } from "@activityplug/core";
@@ -115,14 +115,22 @@ export interface ExchangedAuth {
     query: string,
     type: "accounts" | "posts" | "hashtags",
   ) => Promise<SearchResult>;
-  readonly compose: (content: string, visibility?: PostVisibility) => Promise<Post>;
-  readonly reply: (postId: string, content: string, visibility?: PostVisibility) => Promise<Post>;
-  readonly quote: (postId: string, content: string, visibility?: PostVisibility) => Promise<Post>;
+  readonly compose: (content: string, visibility?: PostVisibilityInput) => Promise<Post>;
+  readonly reply: (
+    postId: string,
+    content: string,
+    visibility?: PostVisibilityInput,
+  ) => Promise<Post>;
+  readonly quote: (
+    postId: string,
+    content: string,
+    visibility?: PostVisibilityInput,
+  ) => Promise<Post>;
   readonly uploadMedia: (file: Blob, filename?: string) => Promise<string>;
   readonly composeWithMedia: (
     content: string,
     mediaIds: readonly string[],
-    visibility?: PostVisibility,
+    visibility?: PostVisibilityInput,
   ) => Promise<Post>;
   readonly deletePost: (id: string) => Promise<void>;
   readonly follow: (accountId: string) => Promise<Relationship>;

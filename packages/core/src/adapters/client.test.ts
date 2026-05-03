@@ -632,4 +632,57 @@ describe("library-mode clients", () => {
       context: { operation: "media.upload" },
     });
   });
+
+  it("rejects empty notification filters and loose date-time input before adapter calls", async () => {
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet({
+          "auth.tokenInjection": capability("supported"),
+          "notifications.list": capability("supported"),
+          "scheduledPosts.create": capability("supported"),
+        }),
+      },
+      notifications: {
+        list: async () => {
+          throw new Error("adapter should not be called");
+        },
+      },
+      scheduledPosts: {
+        create: async () => {
+          throw new Error("adapter should not be called");
+        },
+      },
+    };
+    const client = createActivityPlugClient({ adapter, origin: "https://social.example" });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    await expect(client.notifications.list({ session, types: [] })).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+      context: { operation: "notification.list" },
+    });
+    await expect(
+      client.scheduledPosts.create({
+        session,
+        content: "later",
+        scheduledAt: "2026-05-02",
+      }),
+    ).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+      context: { operation: "scheduledPost.create" },
+    });
+    await expect(
+      client.scheduledPosts.create({
+        session,
+        content: "later",
+        scheduledAt: "2026-04-31T00:00:00Z",
+      }),
+    ).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+      context: { operation: "scheduledPost.create" },
+    });
+  });
 });

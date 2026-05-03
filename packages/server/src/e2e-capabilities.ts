@@ -51,7 +51,7 @@ async function capabilitiesOverGraphQL(
 ): Promise<CapabilitySet> {
   const result = await postGraphQL(fetch, {
     query:
-      "query($origin: String!, $adapter: AdapterKind) { capabilities(origin: $origin, adapter: $adapter) { auth { name status source reason } instance { name status source reason } accounts { name status source reason } posts { name status source reason } timelines { name status source reason } media { name status source reason } social { name status source reason } search { name status source reason } notifications { name status source reason } polls { name status source reason } lists { name status source reason } streaming { name status source reason } admin { name status source reason } } }",
+      "query($origin: String!, $adapter: AdapterKind) { capabilities(origin: $origin, adapter: $adapter) { auth { name status source reason } instance { name status source reason } accounts { name status source reason } posts { name status source reason } timelines { name status source reason } media { name status source reason } social { name status source reason } search { name status source reason } notifications { name status source reason } polls { name status source reason } lists { name status source reason } followRequests { name status source reason } filters { name status source reason } scheduledPosts { name status source reason } streaming { name status source reason } admin { name status source reason } } }",
     variables: { origin: target.origin, adapter: target.adapter.toUpperCase() },
   });
   const data = result["data"];

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import {
   ActivityPlugError,
   isActivityPlugError,
+  isIsoDateTimeString,
   maxPageLimit,
   type ActivityPlugError as ActivityPlugErrorType,
   type OAuthClientRegistration,
@@ -302,15 +303,7 @@ export function instanceSelectorBody(request: Record<string, unknown>): {
 }
 
 export function optionalVisibility(body: Record<string, unknown>): {
-  readonly visibility?:
-    | "public"
-    | "unlisted"
-    | "followers"
-    | "direct"
-    | "local"
-    | "list"
-    | "none"
-    | "unknown";
+  readonly visibility?: "public" | "unlisted" | "followers" | "direct" | "local" | "list" | "none";
 } {
   const value = body.visibility;
   if (value === undefined) return {};
@@ -321,8 +314,7 @@ export function optionalVisibility(body: Record<string, unknown>): {
     value !== "direct" &&
     value !== "local" &&
     value !== "list" &&
-    value !== "none" &&
-    value !== "unknown"
+    value !== "none"
   ) {
     throw new ActivityPlugError("VALIDATION_FAILED", "Request body visibility is invalid.");
   }
@@ -464,7 +456,7 @@ export function optionalFormBoolean(form: FormData, field: string): Record<strin
 }
 
 export function assertValidDateTime(value: string, field: string): void {
-  if (!Number.isFinite(Date.parse(value))) {
+  if (!isIsoDateTimeString(value)) {
     throw new ActivityPlugError("VALIDATION_FAILED", `${field} must be a valid date-time string.`);
   }
 }

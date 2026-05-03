@@ -95,6 +95,10 @@ export const bearerOnlyPostOperations = new Set([
   "POST /api/v1/posts/{id}/bookmark",
   "POST /api/v1/posts/{id}/unbookmark",
   "POST /api/v1/posts/{id}/unboost",
+  "POST /api/v1/notifications/{id}/dismiss",
+  "POST /api/v1/notifications/clear",
+  "POST /api/v1/follow-requests/{id}/accept",
+  "POST /api/v1/follow-requests/{id}/reject",
 ]);
 
 export function assertDataEnvelope(label: string, response: unknown): void {
@@ -275,6 +279,14 @@ export function nonBlankStringSchema(): unknown {
 export function nonEmptyStringSchema(): unknown {
   return {
     type: "string",
+    minLength: 1,
+  };
+}
+
+export function dateTimeStringSchema(): unknown {
+  return {
+    type: "string",
+    format: "date-time",
     minLength: 1,
   };
 }
@@ -664,6 +676,39 @@ export function openApiComponents(
           expiresInSeconds: { type: "integer", minimum: 1 },
         }),
       }),
+      UpdatePostRequest: objectSchema([], {
+        adapter: adapterSchema(),
+        origin: nonEmptyStringSchema(),
+        content: { type: "string" },
+        visibility: { $ref: "#/components/schemas/PostVisibility" },
+        sensitive: { type: "boolean" },
+        summary: { type: "string" },
+        replyToId: { type: "string" },
+        quoteOfId: { type: "string" },
+        mediaIds: { type: "array", items: { type: "string" } },
+        poll: objectSchema(["options"], {
+          options: { type: "array", minItems: 2, items: nonBlankStringSchema() },
+          multiple: { type: "boolean" },
+          expiresInSeconds: { type: "integer", minimum: 1 },
+        }),
+      }),
+      SchedulePostRequest: objectSchema(["origin", "content", "scheduledAt"], {
+        adapter: adapterSchema(),
+        origin: nonEmptyStringSchema(),
+        content: { type: "string" },
+        scheduledAt: dateTimeStringSchema(),
+        visibility: { $ref: "#/components/schemas/PostVisibility" },
+        sensitive: { type: "boolean" },
+        summary: { type: "string" },
+        replyToId: { type: "string" },
+        quoteOfId: { type: "string" },
+        mediaIds: { type: "array", items: { type: "string" } },
+        poll: objectSchema(["options"], {
+          options: { type: "array", minItems: 2, items: nonBlankStringSchema() },
+          multiple: { type: "boolean" },
+          expiresInSeconds: { type: "integer", minimum: 1 },
+        }),
+      }),
       MuteAccountRequest: objectSchema([], {
         notifications: { type: "boolean" },
         durationSeconds: { type: "integer", minimum: 1 },
@@ -677,11 +722,71 @@ export function openApiComponents(
       SessionRequest: objectSchema(["sessionId"], {
         sessionId: nonEmptyStringSchema(),
       }),
-      Notification: { type: "object", additionalProperties: true },
-      List: { type: "object", additionalProperties: true },
+      Notification: objectSchema(["ref", "type", "createdAt", "account", "raw"], {
+        ref: { $ref: "#/components/schemas/EntityRef" },
+        type: { type: "string" },
+        createdAt: dateTimeStringSchema(),
+        account: { $ref: "#/components/schemas/EntityRef" },
+        post: { $ref: "#/components/schemas/EntityRef" },
+        raw: { type: "object", additionalProperties: true },
+      }),
+      List: objectSchema(["ref", "title", "raw"], {
+        ref: { $ref: "#/components/schemas/EntityRef" },
+        title: { type: "string" },
+        repliesPolicy: { type: "string", enum: ["followed", "list", "none", "unknown"] },
+        exclusive: { type: "boolean" },
+        raw: { type: "object", additionalProperties: true },
+      }),
+      Filter: objectSchema(["ref", "title", "context", "action", "keywords", "raw"], {
+        ref: { $ref: "#/components/schemas/EntityRef" },
+        title: { type: "string" },
+        context: {
+          type: "array",
+          items: {
+            type: "string",
+            enum: ["home", "notifications", "public", "thread", "account", "profile", "unknown"],
+          },
+        },
+        action: { type: "string", enum: ["warn", "hide", "unknown"] },
+        expiresAt: dateTimeStringSchema(),
+        keywords: {
+          type: "array",
+          items: objectSchema(["keyword", "wholeWord", "raw"], {
+            keyword: { type: "string" },
+            wholeWord: { type: "boolean" },
+            raw: { type: "object", additionalProperties: true },
+          }),
+        },
+        raw: { type: "object", additionalProperties: true },
+      }),
+      ScheduledPost: objectSchema(["ref", "scheduledAt", "media", "raw"], {
+        ref: { $ref: "#/components/schemas/EntityRef" },
+        scheduledAt: dateTimeStringSchema(),
+        contentText: { type: "string" },
+        visibility: { $ref: "#/components/schemas/PostVisibility" },
+        sensitive: { type: "boolean" },
+        summary: { type: "string" },
+        media: { type: "array", items: { $ref: "#/components/schemas/MediaAttachment" } },
+        poll: { $ref: "#/components/schemas/Poll" },
+        replyTo: { $ref: "#/components/schemas/EntityRef" },
+        raw: { type: "object", additionalProperties: true },
+      }),
+      PostRevision: objectSchema(["ref", "createdAt", "media", "raw"], {
+        ref: { $ref: "#/components/schemas/EntityRef" },
+        contentHtml: { type: "string" },
+        contentText: { type: "string" },
+        sensitive: { type: "boolean" },
+        summary: { type: "string" },
+        createdAt: { type: "string", format: "date-time" },
+        media: { type: "array", items: { $ref: "#/components/schemas/MediaAttachment" } },
+        poll: { $ref: "#/components/schemas/Poll" },
+        raw: { type: "object", additionalProperties: true },
+      }),
       TimelineConnection: connectionSchema({ type: "object", additionalProperties: true }),
       NotificationConnection: connectionSchema({ type: "object", additionalProperties: true }),
       ListConnection: connectionSchema({ type: "object", additionalProperties: true }),
+      FilterConnection: connectionSchema({ type: "object", additionalProperties: true }),
+      ScheduledPostConnection: connectionSchema({ type: "object", additionalProperties: true }),
       AuthSession: objectSchema(["id", "adapter", "origin", "scopes", "capabilities"], {
         id: nonEmptyStringSchema(),
         adapter: adapterSchema(),
@@ -795,6 +900,9 @@ export function openApiComponents(
           "notifications",
           "polls",
           "lists",
+          "followRequests",
+          "filters",
+          "scheduledPosts",
           "streaming",
           "admin",
         ],
@@ -810,6 +918,9 @@ export function openApiComponents(
           notifications: capabilityGroupSchema(),
           polls: capabilityGroupSchema(),
           lists: capabilityGroupSchema(),
+          followRequests: capabilityGroupSchema(),
+          filters: capabilityGroupSchema(),
+          scheduledPosts: capabilityGroupSchema(),
           streaming: capabilityGroupSchema(),
           admin: capabilityGroupSchema(),
         },

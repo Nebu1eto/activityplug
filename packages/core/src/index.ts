@@ -9,3 +9,4 @@ export * from "./capabilities/capability.js";
 export * from "./errors/error.js";
 export * from "./ids/opaque-id.js";
 export * from "./types/entities.js";
+export * from "./types/datetime.js";

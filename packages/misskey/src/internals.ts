@@ -20,6 +20,7 @@ import {
   isRecord,
   nonEmptyString,
   optionalBoolean,
+  optionalDateTimeString,
   optionalNonEmptyString,
   optionalObject,
   optionalString,
@@ -142,11 +143,12 @@ export function accountFromResponse(
 export function noteFromResponse(
   response: MisskeyNoteResponse,
   context: AdapterOperationContext,
+  operation = "posts.read",
 ): Post {
   if (!isRecord(response)) {
     throw invalidRemoteResponse("Misskey note response is missing required fields.", {
       context,
-      operation: "posts.read",
+      operation,
       raw: response,
     });
   }
@@ -158,7 +160,7 @@ export function noteFromResponse(
   ) {
     throw invalidRemoteResponse("Misskey note response is missing required fields.", {
       context,
-      operation: "posts.read",
+      operation,
       raw: response,
     });
   }
@@ -170,16 +172,16 @@ export function noteFromResponse(
   if (note.files !== undefined && !Array.isArray(note.files)) {
     throw invalidRemoteResponse("Misskey note files response must be an array.", {
       context,
-      operation: "posts.read",
+      operation,
       raw: note.files,
     });
   }
-  assertOptionalString(note.replyId, "replyId", note, context);
-  assertOptionalString(note.renoteId, "renoteId", note, context);
-  const noteUrl = optionalString(note.url, "url", note, context, "posts.read");
-  const noteUri = optionalString(note.uri, "uri", note, context, "posts.read");
-  const text = optionalString(note.text, "text", note, context, "posts.read");
-  const cw = optionalString(note.cw, "cw", note, context, "posts.read");
+  assertOptionalString(note.replyId, "replyId", note, context, operation);
+  assertOptionalString(note.renoteId, "renoteId", note, context, operation);
+  const noteUrl = optionalString(note.url, "url", note, context, operation);
+  const noteUri = optionalString(note.uri, "uri", note, context, operation);
+  const text = optionalString(note.text, "text", note, context, operation);
+  const cw = optionalString(note.cw, "cw", note, context, operation);
   return {
     ref: createEntityRef({
       adapter: context.adapterId,
@@ -188,19 +190,20 @@ export function noteFromResponse(
       id: note.id,
       rawUrl: noteUrl ?? noteUri,
     }),
-    author: accountFromResponse(note.user, context, "posts.read"),
+    author: accountFromResponse(note.user, context, operation),
     ...(noteUrl === undefined ? {} : { url: noteUrl }),
     contentHtml: escapeHtml(text ?? ""),
     ...(text === undefined ? {} : { contentText: text }),
     createdAt: note.createdAt,
     visibility: misskeyVisibility(
-      optionalString(note.visibility, "visibility", note, context, "posts.read"),
-      optionalBoolean(note.localOnly, "localOnly", note, context, "posts.read"),
+      optionalString(note.visibility, "visibility", note, context, operation),
+      optionalBoolean(note.localOnly, "localOnly", note, context, operation),
     ),
     sensitive: false,
     ...(cw === undefined ? {} : { summary: cw }),
-    media: note.files?.flatMap((file) => mediaAttachmentFromResponse(file, context)) ?? [],
-    ...pollFromResponse(note.poll, note.id, context),
+    media:
+      note.files?.flatMap((file) => mediaAttachmentFromResponse(file, context, operation)) ?? [],
+    ...pollFromResponse(note.poll, note.id, context, operation),
     ...(note.replyId === null || note.replyId === undefined
       ? {}
       : {
@@ -208,10 +211,10 @@ export function noteFromResponse(
             adapter: context.adapterId,
             origin: context.origin,
             type: "post",
-            id: requiredNonEmptyString(note.replyId, "replyId", note, context, "posts.read"),
+            id: requiredNonEmptyString(note.replyId, "replyId", note, context, operation),
           }),
         }),
-    ...renoteReferenceFromResponse(note, context),
+    ...renoteReferenceFromResponse(note, context, operation),
     counts: {
       ...renamedOptionalNumber(
         note.repliesCount,
@@ -219,7 +222,7 @@ export function noteFromResponse(
         "replies",
         note,
         context,
-        "posts.read",
+        operation,
       ),
       ...renamedOptionalNumber(
         note.renoteCount,
@@ -227,11 +230,11 @@ export function noteFromResponse(
         "reblogs",
         note,
         context,
-        "posts.read",
+        operation,
       ),
       ...(note.reactions === undefined
         ? {}
-        : { favourites: reactionCount(note.reactions, note, context) }),
+        : { favourites: reactionCount(note.reactions, note, context, operation) }),
     },
     raw: note,
   };
@@ -303,9 +306,10 @@ export function decodeOperationCursor(
 function renoteReferenceFromResponse(
   note: MisskeyNoteResponse,
   context: AdapterOperationContext,
+  operation: string,
 ): Pick<Post, "boostOf" | "quoteOf"> {
   if (note.renote === null || note.renote === undefined) return {};
-  const ref = noteFromResponse(note.renote, context).ref;
+  const ref = noteFromResponse(note.renote, context, operation).ref;
   if (isMisskeyQuote(note)) return { quoteOf: ref };
   return { boostOf: ref };
 }
@@ -338,9 +342,9 @@ export function mediaAttachmentFromResponse(
     readonly id: string;
     readonly url: string;
   };
-  assertOptionalString(file.thumbnailUrl, "thumbnailUrl", file, context);
-  assertOptionalString(file.comment, "comment", file, context);
-  assertOptionalString(file.blurhash, "blurhash", file, context);
+  assertOptionalString(file.thumbnailUrl, "thumbnailUrl", file, context, operation);
+  assertOptionalString(file.comment, "comment", file, context, operation);
+  assertOptionalString(file.blurhash, "blurhash", file, context, operation);
   return [
     {
       ref: createEntityRef({
@@ -382,6 +386,7 @@ export function pollFromResponse(
   response: MisskeyPollResponse | null | undefined,
   noteId: string,
   context: AdapterOperationContext,
+  operation = "posts.read",
 ): { readonly poll?: import("@activityplug/core").Poll } {
   if (response === null || response === undefined) return {};
   if (
@@ -391,7 +396,7 @@ export function pollFromResponse(
   ) {
     throw invalidRemoteResponse("Misskey poll response is missing required fields.", {
       context,
-      operation: "posts.read",
+      operation,
       raw: response,
     });
   }
@@ -408,25 +413,25 @@ export function pollFromResponse(
         id: `${noteId}:poll`,
       }),
       ...renamedOptionalString(
-        poll.expiresAt,
+        optionalDateTimeString(poll.expiresAt, "expiresAt", poll, context, operation),
         "expiresAt",
         "expiresAt",
         poll,
         context,
-        "posts.read",
+        operation,
       ),
       expired:
-        optionalString(poll.expiresAt, "expiresAt", poll, context, "posts.read") === undefined
+        optionalDateTimeString(poll.expiresAt, "expiresAt", poll, context, operation) === undefined
           ? false
           : Date.parse(
-              optionalString(poll.expiresAt, "expiresAt", poll, context, "posts.read") ?? "",
+              optionalDateTimeString(poll.expiresAt, "expiresAt", poll, context, operation) ?? "",
             ) <= Date.now(),
       multiple: poll.multiple,
       options: poll.choices.map((choice) => {
         if (!isRecord(choice) || typeof choice.text !== "string") {
           throw invalidRemoteResponse("Misskey poll choice response is missing required fields.", {
             context,
-            operation: "posts.read",
+            operation,
             raw: choice,
           });
         }
@@ -439,7 +444,7 @@ export function pollFromResponse(
             "votesCount",
             pollChoice,
             context,
-            "posts.read",
+            operation,
           ),
         };
       }),
@@ -452,11 +457,12 @@ export function reactionCount(
   reactions: Readonly<Record<string, number>>,
   raw: unknown,
   context: AdapterOperationContext,
+  operation = "posts.read",
 ): number {
   if (!isRecord(reactions)) {
     throw invalidRemoteResponse("Misskey reactions response must be an object.", {
       context,
-      operation: "posts.read",
+      operation,
       raw,
     });
   }
@@ -464,7 +470,7 @@ export function reactionCount(
     if (typeof count !== "number") {
       throw invalidRemoteResponse("Misskey reaction count must be numeric.", {
         context,
-        operation: "posts.read",
+        operation,
         raw,
       });
     }

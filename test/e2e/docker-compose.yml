@@ -7,6 +7,7 @@ networks:
 volumes:
   mastodon-postgres:
   mastodon-redis:
+  mastodon-elasticsearch:
   misskey-postgres:
   misskey-redis:
   misskey-meilisearch:
@@ -51,6 +52,21 @@ services:
       <<: *redis-healthcheck
       test: ["CMD", "redis-cli", "ping"]
 
+  mastodon-elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.25
+    profiles: ["mastodon", "fediverse"]
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    volumes:
+      - mastodon-elasticsearch:/usr/share/elasticsearch/data
+    networks: [fediverse]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health >/dev/null"]
+      interval: 10s
+      retries: 30
+
   mastodon-web-backend:
     image: ghcr.io/mastodon/mastodon:v4.3.9
     profiles: ["mastodon", "fediverse"]
@@ -61,6 +77,7 @@ services:
     depends_on:
       mastodon-db: { condition: service_healthy }
       mastodon-redis: { condition: service_healthy }
+      mastodon-elasticsearch: { condition: service_healthy }
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:3000/health | grep -q OK"]
       interval: 10s

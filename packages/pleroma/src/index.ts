@@ -45,15 +45,39 @@ export function createPleromaAdapter(options: PleromaAdapterOptions = {}): Activ
         "social.reaction": capability("supported"),
         "social.bookmarkFolders": capability(
           "unknown",
-          "Pleroma bookmark folders are not exposed by the current public API surface.",
+          "Pleroma bookmark folders are not exposed by the current public API.",
         ),
         "notifications.pleromaEmojiReaction": capability(
-          "unknown",
-          "Pleroma notification listing is reserved for a later ActivityPlug surface.",
+          "supported",
+          "Pleroma emoji reaction notifications are normalized by this adapter.",
         ),
         "notifications.pleromaChatMention": capability(
-          "unknown",
-          "Pleroma notification listing is reserved for a later ActivityPlug surface.",
+          "supported",
+          "Pleroma chat mention notifications are normalized by this adapter.",
+        ),
+        "notifications.pleromaReport": capability(
+          "supported",
+          "Pleroma report notifications are normalized by this adapter.",
+        ),
+        "notifications.unreadCount": capability(
+          "unsupported",
+          "Pleroma does not expose the Mastodon unread-count endpoint.",
+        ),
+        "filters.read": capability(
+          "unsupported",
+          "Pleroma filter v1 mapping is not implemented by this adapter yet.",
+        ),
+        "filters.create": capability(
+          "unsupported",
+          "Pleroma filter v1 mapping is not implemented by this adapter yet.",
+        ),
+        "filters.update": capability(
+          "unsupported",
+          "Pleroma filter v1 mapping is not implemented by this adapter yet.",
+        ),
+        "filters.delete": capability(
+          "unsupported",
+          "Pleroma filter v1 mapping is not implemented by this adapter yet.",
         ),
       }),
     },

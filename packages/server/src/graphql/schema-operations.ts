@@ -1,18 +1,38 @@
 import {
+  type serializeAccountConnection,
   type serializeAccount,
   type serializeAuthSession,
   type serializeAuthStart,
   type serializeCapabilitySetPayload,
   type serializeDeletedEntity,
+  type serializeFilter,
+  type serializeFilterConnection,
   type serializeInstanceProfile,
   type serializeMediaAttachment,
+  type serializeList,
+  type serializeListConnection,
+  type serializeNotificationConnection,
   type serializeParsedAuthCallback,
   type serializePoll,
   type serializePost,
   type serializePostConnection,
+  type serializePostRevision,
   type serializeRelationship,
+  type serializeScheduledPost,
+  type serializeScheduledPostConnection,
   type serializeSearchResult,
 } from "../api/service.js";
+import {
+  filterInput,
+  listAccountInput,
+  listInput,
+  notificationTypeInput,
+  postUpdateInput,
+  schedulePostInput,
+  updateFilterInput,
+  updateListInput,
+  updateScheduledPostInput,
+} from "./schema-inputs.js";
 import {
   type accountActionResolver,
   type normalizeAuthExchange,
@@ -48,6 +68,7 @@ type ArgBuilder = ((options: FieldOptions) => unknown) & {
   readonly field: (options: FieldOptions) => unknown;
   readonly id: (options?: FieldOptions) => unknown;
   readonly string: (options?: FieldOptions) => unknown;
+  readonly stringList: (options?: FieldOptions) => unknown;
 };
 type FieldBuilder = {
   readonly arg: ArgBuilder;
@@ -70,28 +91,42 @@ type SchemaOperationDeps = {
   readonly AuthStartPayloadType: unknown;
   readonly BoostPostInput: unknown;
   readonly CapabilitySet: unknown;
+  readonly CreateFilterInput: unknown;
+  readonly CreateListInput: unknown;
   readonly CreatePostInput: unknown;
   readonly DeletedEntityType: unknown;
   readonly DetectInstanceInput: unknown;
+  readonly FilterConnectionType: unknown;
+  readonly FilterType: unknown;
   readonly Health: unknown;
   readonly InstanceType: unknown;
   readonly JsonInput: unknown;
   readonly ListConnectionType: unknown;
+  readonly ListAccountInput: unknown;
   readonly ListType: unknown;
   readonly MediaAttachmentType: unknown;
   readonly MuteAccountInput: unknown;
   readonly NotificationConnectionType: unknown;
+  readonly NotificationTypeInputEnum: unknown;
   readonly PageInput: unknown;
   readonly ParsedAuthCallbackType: unknown;
   readonly PollType: unknown;
   readonly PostConnectionType: unknown;
   readonly PostContextType: unknown;
+  readonly PostRevisionType: unknown;
   readonly PostType: unknown;
   readonly ReactPostInput: unknown;
   readonly RelationshipType: unknown;
   readonly SearchInput: unknown;
   readonly SearchResultType: unknown;
+  readonly SchedulePostInput: unknown;
+  readonly ScheduledPostConnectionType: unknown;
+  readonly ScheduledPostType: unknown;
   readonly TimelineConnectionType: unknown;
+  readonly UpdateFilterInput: unknown;
+  readonly UpdateListInput: unknown;
+  readonly UpdatePostInput: unknown;
+  readonly UpdateScheduledPostInput: unknown;
   readonly UploadMediaInput: unknown;
   readonly VotePollInput: unknown;
   readonly activityPlugApiVersion: string;
@@ -112,17 +147,26 @@ type SchemaOperationDeps = {
   readonly normalizeUploadMediaInput: typeof normalizeUploadMediaInput;
   readonly normalizeVotePollInput: typeof normalizeVotePollInput;
   readonly serializeAccount: typeof serializeAccount;
+  readonly serializeAccountConnection: typeof serializeAccountConnection;
   readonly serializeAuthSession: typeof serializeAuthSession;
   readonly serializeAuthStart: typeof serializeAuthStart;
   readonly serializeCapabilitySetPayload: typeof serializeCapabilitySetPayload;
   readonly serializeDeletedEntity: typeof serializeDeletedEntity;
+  readonly serializeFilter: typeof serializeFilter;
+  readonly serializeFilterConnection: typeof serializeFilterConnection;
   readonly serializeInstanceProfile: typeof serializeInstanceProfile;
   readonly serializeMediaAttachment: typeof serializeMediaAttachment;
+  readonly serializeList: typeof serializeList;
+  readonly serializeListConnection: typeof serializeListConnection;
+  readonly serializeNotificationConnection: typeof serializeNotificationConnection;
   readonly serializeParsedAuthCallback: typeof serializeParsedAuthCallback;
   readonly serializePoll: typeof serializePoll;
   readonly serializePost: typeof serializePost;
   readonly serializePostConnection: typeof serializePostConnection;
+  readonly serializePostRevision: typeof serializePostRevision;
   readonly serializeRelationship: typeof serializeRelationship;
+  readonly serializeScheduledPost: typeof serializeScheduledPost;
+  readonly serializeScheduledPostConnection: typeof serializeScheduledPostConnection;
   readonly serializeSearchResult: typeof serializeSearchResult;
   readonly unsupportedGraphQLField: typeof unsupportedGraphQLField;
   readonly unsupportedGraphQLResolver: typeof unsupportedGraphQLResolver;
@@ -143,27 +187,41 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
     AuthStartPayloadType,
     BoostPostInput,
     CapabilitySet,
+    CreateFilterInput,
+    CreateListInput,
     CreatePostInput,
     DeletedEntityType,
     DetectInstanceInput,
+    FilterConnectionType,
+    FilterType,
     Health,
     InstanceType,
     JsonInput,
     ListConnectionType,
+    ListAccountInput,
     ListType,
     MediaAttachmentType,
     MuteAccountInput,
     NotificationConnectionType,
+    NotificationTypeInputEnum,
     ParsedAuthCallbackType,
     PollType,
     PostConnectionType,
     PostContextType,
+    PostRevisionType,
     PostType,
     ReactPostInput,
     RelationshipType,
     SearchInput,
     SearchResultType,
+    SchedulePostInput,
+    ScheduledPostConnectionType,
+    ScheduledPostType,
     TimelineConnectionType,
+    UpdateFilterInput,
+    UpdateListInput,
+    UpdatePostInput,
+    UpdateScheduledPostInput,
     UploadMediaInput,
     VotePollInput,
     activityPlugApiVersion,
@@ -186,20 +244,28 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
     normalizeUploadMediaInput,
     normalizeVotePollInput,
     serializeAccount,
+    serializeAccountConnection,
     serializeAuthSession,
     serializeAuthStart,
     serializeCapabilitySetPayload,
     serializeDeletedEntity,
+    serializeFilter,
+    serializeFilterConnection,
     serializeInstanceProfile,
     serializeMediaAttachment,
+    serializeList,
+    serializeListConnection,
+    serializeNotificationConnection,
     serializeParsedAuthCallback,
     serializePoll,
     serializePost,
     serializePostConnection,
+    serializePostRevision,
     serializeRelationship,
+    serializeScheduledPost,
+    serializeScheduledPostConnection,
     serializeSearchResult,
     unsupportedGraphQLField,
-    unsupportedGraphQLResolver,
     withGraphQLErrorContract,
     accountActionResolver,
     postActionResolver,
@@ -391,6 +457,27 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         operation: "post.context",
         args: { id: t.arg.id({ required: true }) },
       }),
+      postHistory: unsupportedGraphQLField(t, {
+        type: [PostRevisionType],
+        nullable: true,
+        operation: "post.history",
+        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id() },
+        resolve: async (
+          _parent: unknown,
+          args: { readonly id: string; readonly sessionId?: string | null },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            (
+              await context.service.posts.history({
+                id: args.id,
+                ...(args.sessionId === null || args.sessionId === undefined
+                  ? {}
+                  : { sessionId: args.sessionId }),
+              })
+            ).map((revision) => serializePostRevision(revision)),
+          ),
+      }),
       postQuotes: unsupportedGraphQLField(t, {
         type: PostConnectionType,
         operation: "post.quotes",
@@ -495,7 +582,29 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
       listTimeline: unsupportedGraphQLField(t, {
         type: TimelineConnectionType,
         operation: "timeline.list",
-        args: { listId: t.arg.id({ required: true }), page: t.arg({ type: PageInput }) },
+        args: {
+          listId: t.arg.id({ required: true }),
+          sessionId: t.arg.id({ required: true }),
+          page: t.arg({ type: PageInput }),
+        },
+        resolve: async (
+          _parent: unknown,
+          args: {
+            readonly listId: string;
+            readonly sessionId: string;
+            readonly page?: PageInputValue | null;
+          },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializePostConnection(
+              await context.service.lists.timeline({
+                id: args.listId,
+                sessionId: args.sessionId,
+                page: normalizePageInput(args.page),
+              }),
+            ),
+          ),
       }),
       search: unsupportedGraphQLField(t, {
         type: SearchResultType,
@@ -517,22 +626,94 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         operation: "notification.list",
         args: {
           origin: t.arg.string({ required: true }),
+          adapter: t.arg({ type: AdapterKindEnum }),
           sessionId: t.arg.id({ required: true }),
+          types: t.arg({ type: [NotificationTypeInputEnum] }),
           page: t.arg({ type: PageInput }),
         },
+        resolve: async (
+          _parent: unknown,
+          args: {
+            readonly adapter?: AdapterKind | null;
+            readonly origin: string;
+            readonly sessionId: string;
+            readonly types?: readonly string[] | null;
+            readonly page?: PageInputValue | null;
+          },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeNotificationConnection(
+              await context.service.notifications.list({
+                origin: args.origin,
+                ...(args.adapter === null || args.adapter === undefined
+                  ? {}
+                  : { adapter: args.adapter }),
+                sessionId: args.sessionId,
+                ...(args.types === null || args.types === undefined
+                  ? {}
+                  : { types: args.types.map((type) => notificationTypeInput(type)) }),
+                page: normalizePageInput(args.page),
+              }),
+            ),
+          ),
       }),
       notificationUnreadCount: t.int({
-        args: { origin: t.arg.string({ required: true }), sessionId: t.arg.id({ required: true }) },
-        resolve: unsupportedGraphQLResolver("notification.unreadCount"),
+        args: {
+          origin: t.arg.string({ required: true }),
+          adapter: t.arg({ type: AdapterKindEnum }),
+          sessionId: t.arg.id({ required: true }),
+        },
+        resolve: async (
+          _parent,
+          args: {
+            readonly adapter?: AdapterKind | null;
+            readonly origin: string;
+            readonly sessionId: string;
+          },
+          context,
+        ) =>
+          withGraphQLErrorContract(() =>
+            context.service.notifications.unreadCount({
+              origin: args.origin,
+              ...(args.adapter === null || args.adapter === undefined
+                ? {}
+                : { adapter: args.adapter }),
+              sessionId: args.sessionId,
+            }),
+          ),
       }),
       followRequests: unsupportedGraphQLField(t, {
         type: AccountConnectionType,
         operation: "followRequest.list",
         args: {
           origin: t.arg.string({ required: true }),
+          adapter: t.arg({ type: AdapterKindEnum }),
           sessionId: t.arg.id({ required: true }),
           page: t.arg({ type: PageInput }),
         },
+        resolve: async (
+          _parent: unknown,
+          args: {
+            readonly adapter?: AdapterKind | null;
+            readonly origin: string;
+            readonly sessionId: string;
+            readonly page?: PageInputValue | null;
+          },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeAccountConnection(
+              await context.service.followRequests.list({
+                origin: args.origin,
+                ...(args.adapter === null || args.adapter === undefined
+                  ? {}
+                  : { adapter: args.adapter }),
+                sessionId: args.sessionId,
+                page: normalizePageInput(args.page),
+              }),
+            ),
+          ),
       }),
       poll: unsupportedGraphQLField(t, {
         type: PollType,
@@ -559,19 +740,168 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         operation: "list.list",
         args: {
           origin: t.arg.string({ required: true }),
+          adapter: t.arg({ type: AdapterKindEnum }),
           sessionId: t.arg.id({ required: true }),
           page: t.arg({ type: PageInput }),
         },
+        resolve: async (
+          _parent: unknown,
+          args: {
+            readonly adapter?: AdapterKind | null;
+            readonly origin: string;
+            readonly sessionId: string;
+            readonly page?: PageInputValue | null;
+          },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeListConnection(
+              await context.service.lists.list({
+                origin: args.origin,
+                ...(args.adapter === null || args.adapter === undefined
+                  ? {}
+                  : { adapter: args.adapter }),
+                sessionId: args.sessionId,
+                page: normalizePageInput(args.page),
+              }),
+            ),
+          ),
       }),
       list: unsupportedGraphQLField(t, {
         type: ListType,
         operation: "list.get",
-        args: { id: t.arg.id({ required: true }) },
+        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        resolve: async (
+          _parent: unknown,
+          args: { readonly id: string; readonly sessionId: string },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeList(
+              await context.service.lists.get({ id: args.id, sessionId: args.sessionId }),
+            ),
+          ),
       }),
       listAccounts: unsupportedGraphQLField(t, {
         type: AccountConnectionType,
         operation: "list.accounts",
-        args: { id: t.arg.id({ required: true }), page: t.arg({ type: PageInput }) },
+        args: {
+          id: t.arg.id({ required: true }),
+          sessionId: t.arg.id({ required: true }),
+          page: t.arg({ type: PageInput }),
+        },
+        resolve: async (
+          _parent: unknown,
+          args: {
+            readonly id: string;
+            readonly sessionId: string;
+            readonly page?: PageInputValue | null;
+          },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeAccountConnection(
+              await context.service.lists.accounts({
+                id: args.id,
+                sessionId: args.sessionId,
+                page: normalizePageInput(args.page),
+              }),
+            ),
+          ),
+      }),
+      filters: unsupportedGraphQLField(t, {
+        type: FilterConnectionType,
+        operation: "filter.list",
+        args: {
+          origin: t.arg.string({ required: true }),
+          adapter: t.arg({ type: AdapterKindEnum }),
+          sessionId: t.arg.id({ required: true }),
+          page: t.arg({ type: PageInput }),
+        },
+        resolve: async (
+          _parent: unknown,
+          args: {
+            readonly adapter?: AdapterKind | null;
+            readonly origin: string;
+            readonly sessionId: string;
+            readonly page?: PageInputValue | null;
+          },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeFilterConnection(
+              await context.service.filters.list({
+                origin: args.origin,
+                ...(args.adapter === null || args.adapter === undefined
+                  ? {}
+                  : { adapter: args.adapter }),
+                sessionId: args.sessionId,
+                page: normalizePageInput(args.page),
+              }),
+            ),
+          ),
+      }),
+      filter: unsupportedGraphQLField(t, {
+        type: FilterType,
+        operation: "filter.get",
+        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        resolve: async (
+          _parent: unknown,
+          args: { readonly id: string; readonly sessionId: string },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeFilter(
+              await context.service.filters.get({ id: args.id, sessionId: args.sessionId }),
+            ),
+          ),
+      }),
+      scheduledPosts: unsupportedGraphQLField(t, {
+        type: ScheduledPostConnectionType,
+        operation: "scheduledPost.list",
+        args: {
+          origin: t.arg.string({ required: true }),
+          adapter: t.arg({ type: AdapterKindEnum }),
+          sessionId: t.arg.id({ required: true }),
+          page: t.arg({ type: PageInput }),
+        },
+        resolve: async (
+          _parent: unknown,
+          args: {
+            readonly adapter?: AdapterKind | null;
+            readonly origin: string;
+            readonly sessionId: string;
+            readonly page?: PageInputValue | null;
+          },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeScheduledPostConnection(
+              await context.service.scheduledPosts.list({
+                origin: args.origin,
+                ...(args.adapter === null || args.adapter === undefined
+                  ? {}
+                  : { adapter: args.adapter }),
+                sessionId: args.sessionId,
+                page: normalizePageInput(args.page),
+              }),
+            ),
+          ),
+      }),
+      scheduledPost: unsupportedGraphQLField(t, {
+        type: ScheduledPostType,
+        operation: "scheduledPost.get",
+        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        resolve: async (
+          _parent: unknown,
+          args: { readonly id: string; readonly sessionId: string },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeScheduledPost(
+              await context.service.scheduledPosts.get({ id: args.id, sessionId: args.sessionId }),
+            ),
+          ),
       }),
     }),
   });
@@ -683,7 +1013,63 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
       updatePost: unsupportedGraphQLField(t, {
         type: PostType,
         operation: "post.update",
-        args: { input: t.arg({ type: JsonInput, required: true }) },
+        args: { input: t.arg({ type: UpdatePostInput, required: true }) },
+        resolve: async (
+          _parent: unknown,
+          args: { readonly input: unknown },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializePost(await context.service.posts.update(postUpdateInput(args.input))),
+          ),
+      }),
+      schedulePost: unsupportedGraphQLField(t, {
+        type: ScheduledPostType,
+        operation: "scheduledPost.create",
+        args: { input: t.arg({ type: SchedulePostInput, required: true }) },
+        resolve: async (
+          _parent: unknown,
+          args: { readonly input: unknown },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeScheduledPost(
+              await context.service.scheduledPosts.create(schedulePostInput(args.input)),
+            ),
+          ),
+      }),
+      updateScheduledPost: unsupportedGraphQLField(t, {
+        type: ScheduledPostType,
+        operation: "scheduledPost.update",
+        args: { input: t.arg({ type: UpdateScheduledPostInput, required: true }) },
+        resolve: async (
+          _parent: unknown,
+          args: { readonly input: unknown },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeScheduledPost(
+              await context.service.scheduledPosts.update(updateScheduledPostInput(args.input)),
+            ),
+          ),
+      }),
+      deleteScheduledPost: unsupportedGraphQLField(t, {
+        type: DeletedEntityType,
+        operation: "scheduledPost.delete",
+        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        resolve: async (
+          _parent: unknown,
+          args: { readonly id: string; readonly sessionId: string },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeDeletedEntity(
+              await context.service.scheduledPosts.delete({
+                id: args.id,
+                sessionId: args.sessionId,
+              }),
+            ),
+          ),
       }),
       deletePost: unsupportedGraphQLField(t, {
         type: DeletedEntityType,
@@ -831,44 +1217,181 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         type: RelationshipType,
         operation: "followRequest.accept",
         args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        resolve: async (
+          _parent: unknown,
+          args: { readonly id: string; readonly sessionId: string },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeRelationship(
+              await context.service.followRequests.accept({
+                accountId: args.id,
+                sessionId: args.sessionId,
+              }),
+            ),
+          ),
       }),
       rejectFollowRequest: unsupportedGraphQLField(t, {
         type: RelationshipType,
         operation: "followRequest.reject",
         args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        resolve: async (
+          _parent: unknown,
+          args: { readonly id: string; readonly sessionId: string },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeRelationship(
+              await context.service.followRequests.reject({
+                accountId: args.id,
+                sessionId: args.sessionId,
+              }),
+            ),
+          ),
       }),
       createList: unsupportedGraphQLField(t, {
         type: ListType,
         operation: "list.create",
-        args: { input: t.arg({ type: JsonInput, required: true }) },
+        args: { input: t.arg({ type: CreateListInput, required: true }) },
+        resolve: async (
+          _parent: unknown,
+          args: { readonly input: unknown },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeList(await context.service.lists.create(listInput(args.input))),
+          ),
       }),
       updateList: unsupportedGraphQLField(t, {
         type: ListType,
         operation: "list.update",
-        args: { input: t.arg({ type: JsonInput, required: true }) },
+        args: { input: t.arg({ type: UpdateListInput, required: true }) },
+        resolve: async (
+          _parent: unknown,
+          args: { readonly input: unknown },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeList(await context.service.lists.update(updateListInput(args.input))),
+          ),
       }),
       deleteList: unsupportedGraphQLField(t, {
-        type: ListType,
+        type: DeletedEntityType,
         operation: "list.delete",
         args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        resolve: async (
+          _parent: unknown,
+          args: { readonly id: string; readonly sessionId: string },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeDeletedEntity(
+              await context.service.lists.delete({ id: args.id, sessionId: args.sessionId }),
+            ),
+          ),
       }),
       addListAccount: unsupportedGraphQLField(t, {
         type: ListType,
         operation: "list.account.add",
-        args: { input: t.arg({ type: JsonInput, required: true }) },
+        args: { input: t.arg({ type: ListAccountInput, required: true }) },
+        resolve: async (
+          _parent: unknown,
+          args: { readonly input: unknown },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeList(await context.service.lists.addAccount(listAccountInput(args.input))),
+          ),
       }),
       removeListAccount: unsupportedGraphQLField(t, {
         type: ListType,
         operation: "list.account.remove",
-        args: { input: t.arg({ type: JsonInput, required: true }) },
+        args: { input: t.arg({ type: ListAccountInput, required: true }) },
+        resolve: async (
+          _parent: unknown,
+          args: { readonly input: unknown },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeList(await context.service.lists.removeAccount(listAccountInput(args.input))),
+          ),
       }),
-      dismissNotification: t.boolean({
+      createFilter: unsupportedGraphQLField(t, {
+        type: FilterType,
+        operation: "filter.create",
+        args: { input: t.arg({ type: CreateFilterInput, required: true }) },
+        resolve: async (
+          _parent: unknown,
+          args: { readonly input: unknown },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeFilter(await context.service.filters.create(filterInput(args.input))),
+          ),
+      }),
+      updateFilter: unsupportedGraphQLField(t, {
+        type: FilterType,
+        operation: "filter.update",
+        args: { input: t.arg({ type: UpdateFilterInput, required: true }) },
+        resolve: async (
+          _parent: unknown,
+          args: { readonly input: unknown },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeFilter(await context.service.filters.update(updateFilterInput(args.input))),
+          ),
+      }),
+      deleteFilter: unsupportedGraphQLField(t, {
+        type: DeletedEntityType,
+        operation: "filter.delete",
         args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
-        resolve: unsupportedGraphQLResolver("notification.dismiss"),
+        resolve: async (
+          _parent: unknown,
+          args: { readonly id: string; readonly sessionId: string },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeDeletedEntity(
+              await context.service.filters.delete({ id: args.id, sessionId: args.sessionId }),
+            ),
+          ),
+      }),
+      dismissNotification: unsupportedGraphQLField(t, {
+        type: DeletedEntityType,
+        operation: "notification.dismiss",
+        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        resolve: async (
+          _parent: unknown,
+          args: { readonly id: string; readonly sessionId: string },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeDeletedEntity(
+              await context.service.notifications.dismiss({
+                id: args.id,
+                sessionId: args.sessionId,
+              }),
+            ),
+          ),
       }),
       clearNotifications: t.boolean({
-        args: { origin: t.arg.string({ required: true }), sessionId: t.arg.id({ required: true }) },
-        resolve: unsupportedGraphQLResolver("notification.clear"),
+        args: {
+          origin: t.arg.string({ required: true }),
+          adapter: t.arg({ type: AdapterKindEnum }),
+          sessionId: t.arg.id({ required: true }),
+        },
+        resolve: async (_parent, args, context) =>
+          withGraphQLErrorContract(async () => {
+            await context.service.notifications.clear({
+              origin: args.origin,
+              ...(args.adapter === null || args.adapter === undefined
+                ? {}
+                : { adapter: args.adapter }),
+              sessionId: args.sessionId,
+            });
+            return true;
+          }),
       }),
     }),
   });

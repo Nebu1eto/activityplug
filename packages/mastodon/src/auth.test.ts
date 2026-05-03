@@ -518,6 +518,92 @@ describe("Mastodon auth adapter", () => {
       context: { capability: "auth.oauth.refreshToken", operation: "auth.oauth.refresh" },
     });
   });
+
+  it("rejects malformed Mastodon M10 optional fields and poll readback", async () => {
+    const client = createActivityPlugClient({
+      adapter: createMastodonAdapter({
+        fetch: mockFetch(async (request) => {
+          const url = new URL(request.url);
+          if (url.pathname === "/api/v1/lists") {
+            return jsonResponse([{ id: "list-1", title: "Friends", exclusive: "yes" }]);
+          }
+          if (url.pathname === "/api/v1/notifications") {
+            return jsonResponse([
+              {
+                id: "notification-1",
+                type: "mention",
+                created_at: "2026-04-31T00:00:00Z",
+                account: mastodonAccountBody(),
+              },
+            ]);
+          }
+          if (url.pathname === "/api/v2/filters") {
+            return jsonResponse([
+              {
+                id: "filter-1",
+                title: "Muted words",
+                context: ["home"],
+                filter_action: "warn",
+                expires_at: 12,
+              },
+            ]);
+          }
+          if (url.pathname === "/api/v1/scheduled_statuses") {
+            return jsonResponse([
+              {
+                id: "scheduled-1",
+                scheduled_at: "2026-05-03T00:00:00.000Z",
+                params: { text: "", poll: { options: ["yes", " "], multiple: false } },
+              },
+            ]);
+          }
+          if (url.pathname === "/api/v1/polls/poll-1") {
+            return jsonResponse({
+              id: "poll-1",
+              expired: false,
+              multiple: false,
+              expires_at: "not-a-date",
+              options: [{ title: "Yes" }, { title: "No" }],
+            });
+          }
+          return jsonResponse({ error: "unexpected request" }, 404);
+        }),
+      }),
+      origin: "https://mastodon.example",
+    });
+    const session = await client.auth.injectToken({ accessToken: "token", scopes: ["read"] });
+
+    await expect(client.lists.list({ session })).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { operation: "list.list" },
+    });
+    await expect(client.filters.list({ session })).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { operation: "filter.list" },
+    });
+    await expect(client.scheduledPosts.list({ session })).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { operation: "scheduledPost.list" },
+    });
+    await expect(client.notifications.list({ session })).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { operation: "notification.list" },
+    });
+    await expect(
+      client.polls.get({
+        id: createEntityRef({
+          adapter: "mastodon",
+          origin: "https://mastodon.example",
+          type: "poll",
+          id: "poll-1",
+        }).id,
+        session,
+      }),
+    ).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { operation: "poll.get" },
+    });
+  });
 });
 
 function mockFetch(handler: (request: Request) => Promise<Response>): typeof fetch {

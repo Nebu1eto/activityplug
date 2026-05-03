@@ -13,16 +13,20 @@ import {
   type DeletedEntity,
   type Connection,
   type InstanceProfile,
+  type ListTimelineInput,
   type MediaAttachment,
   type MuteAccountInput,
   type PageInput,
   type Poll,
   type Post,
+  type PostHistoryInput,
+  type PostRevision,
   type PublicTimelineInput,
   type Relationship,
   type RelationshipInput,
   type SearchInput,
   type SearchResult,
+  type UpdatePostInput,
   type UploadMediaInput,
   type VotePollInput,
 } from "@activityplug/core";
@@ -49,6 +53,7 @@ import {
   normalizeHandle,
   optionalArray,
   optionalBoolean,
+  optionalDateTimeString,
   optionalNonEmptyString,
   optionalObject,
   optionalString,
@@ -62,10 +67,37 @@ import {
   relationshipFromResponse,
   requestJson,
   requestResponse,
+  requestVoid,
   revokeToken,
   tokenHeader,
   verifyCredentials,
 } from "./internals.js";
+import {
+  addListAccount,
+  clearNotifications,
+  createFilter,
+  createList,
+  deleteFilter,
+  deleteList,
+  deleteScheduledPost,
+  dismissNotification,
+  followRequestAction,
+  getFilter,
+  getList,
+  getScheduledPost,
+  listFilters,
+  listFollowRequests,
+  listListAccounts,
+  listLists,
+  listNotifications,
+  listScheduledPosts,
+  notificationUnreadCount,
+  removeListAccount,
+  schedulePost,
+  updateFilter,
+  updateList,
+  updateScheduledPost,
+} from "./milestone10.js";
 import {
   type MastodonAccountResponse,
   type MastodonBaseAdapterOptions,
@@ -74,6 +106,7 @@ import {
   type MastodonPollResponse,
   type MastodonRelationshipResponse,
   type MastodonSearchResponse,
+  type MastodonStatusEditResponse,
   type MastodonStatusResponse,
   type NodeInfoLinksResponse,
   type NodeInfoResponse,
@@ -109,19 +142,49 @@ export function createMastodonBaseAdapter(
         "posts.read": capability("supported"),
         "posts.create": capability("supported"),
         "posts.delete": capability("supported"),
+        "posts.update": capability("supported"),
         "posts.reply": capability("supported"),
         "posts.quote": capability(
           "unsupported",
           "This adapter does not expose a stable quote-post API.",
         ),
+        "posts.history": capability("supported"),
         "timelines.home": capability("supported"),
         "timelines.public": capability("supported"),
         "timelines.local": capability("supported"),
         "timelines.hashtag": capability("supported"),
+        "timelines.list": capability("supported"),
         "media.upload": capability("supported"),
+        "notifications.list": capability("supported"),
+        "notifications.grouped": capability(
+          "unsupported",
+          "Grouped notifications are not mapped by this adapter.",
+        ),
+        "notifications.dismiss": capability("supported"),
+        "notifications.clear": capability("supported"),
+        "notifications.unreadCount": capability("supported"),
         "polls.create": capability("supported"),
         "polls.read": capability("supported"),
         "polls.vote": capability("supported"),
+        "lists.read": capability("supported"),
+        "lists.create": capability("supported"),
+        "lists.update": capability("supported"),
+        "lists.delete": capability("supported"),
+        "lists.members": capability("supported"),
+        "followRequests.list": capability("supported"),
+        "followRequests.accept": capability("supported"),
+        "followRequests.reject": capability("supported"),
+        "filters.read": capability("supported"),
+        "filters.create": capability("supported"),
+        "filters.update": capability(
+          "unsupported",
+          "Mastodon v2 filter keyword replacement is not mapped by this adapter yet.",
+        ),
+        "filters.delete": capability("supported"),
+        "scheduledPosts.read": capability("supported"),
+        "scheduledPosts.create": capability("supported"),
+        "scheduledPosts.update": capability("supported"),
+        "scheduledPosts.delete": capability("supported"),
         "search.accounts": capability("supported"),
         "search.posts": capability("supported"),
         "search.hashtags": capability("supported"),
@@ -153,6 +216,8 @@ export function createMastodonBaseAdapter(
     posts: {
       get: async (input, context) => getPost(input.id, context, options),
       create: async (input, context) => createPost(input, context, options),
+      update: async (input, context) => updatePost(input, context, options),
+      history: async (input, context) => postHistory(input, context, options),
       delete: async (input, context) => deletePost(input, context, options),
     },
     timelines: {
@@ -160,6 +225,7 @@ export function createMastodonBaseAdapter(
       public: async (input, context) => listPublicTimeline(input, context, options),
       hashtag: async (input, context) =>
         listHashtagTimeline(input.tag, input.page, context, options),
+      list: async (input, context) => listTimeline(input, context, options),
     },
     search: {
       search: async (input, context) => search(input, context, options),
@@ -170,6 +236,41 @@ export function createMastodonBaseAdapter(
     polls: {
       get: async (input, context) => getPoll(input, context, options),
       vote: async (input, context) => votePoll(input, context, options),
+    },
+    notifications: {
+      list: async (input, context) => listNotifications(input, context, options),
+      unreadCount: async (input, context) => notificationUnreadCount(input, context, options),
+      dismiss: async (input, context) => dismissNotification(input, context, options),
+      clear: async (input, context) => clearNotifications(input, context, options),
+    },
+    lists: {
+      list: async (input, context) => listLists(input, context, options),
+      get: async (input, context) => getList(input, context, options),
+      create: async (input, context) => createList(input, context, options),
+      update: async (input, context) => updateList(input, context, options),
+      delete: async (input, context) => deleteList(input, context, options),
+      listAccounts: async (input, context) => listListAccounts(input, context, options),
+      addAccount: async (input, context) => addListAccount(input, context, options),
+      removeAccount: async (input, context) => removeListAccount(input, context, options),
+    },
+    followRequests: {
+      list: async (input, context) => listFollowRequests(input, context, options),
+      accept: async (input, context) => followRequestAction(input, "authorize", context, options),
+      reject: async (input, context) => followRequestAction(input, "reject", context, options),
+    },
+    filters: {
+      list: async (input, context) => listFilters(input, context, options),
+      get: async (input, context) => getFilter(input, context, options),
+      create: async (input, context) => createFilter(input, context, options),
+      update: async (input, context) => updateFilter(input, context, options),
+      delete: async (input, context) => deleteFilter(input, context, options),
+    },
+    scheduledPosts: {
+      list: async (input, context) => listScheduledPosts(input, context, options),
+      get: async (input, context) => getScheduledPost(input, context, options),
+      create: async (input, context) => schedulePost(input, context, options),
+      update: async (input, context) => updateScheduledPost(input, context, options),
+      delete: async (input, context) => deleteScheduledPost(input, context, options),
     },
     social: {
       relationship: async (input, context) => relationship(input, context, options),
@@ -564,7 +665,7 @@ async function listAccountPosts(
     context,
   );
   return {
-    nodes: response.map((status) => postFromResponse(status, context)),
+    nodes: response.map((status) => postFromResponse(status, context, "account.posts")),
     pageInfo: mastodonPageInfo(response, remoteResponse.headers, context),
   };
 }
@@ -581,7 +682,7 @@ async function getPost(
     "post.get",
     context,
   );
-  return postFromResponse(response, context);
+  return postFromResponse(response, context, "post.get");
 }
 
 async function listHomeTimeline(
@@ -590,7 +691,7 @@ async function listHomeTimeline(
   context: AdapterOperationContext,
   options: MastodonBaseAdapterOptions,
 ): Promise<Connection<Post>> {
-  return listTimeline(
+  return listStatusTimeline(
     "api/v1/timelines/home",
     page,
     context,
@@ -606,7 +707,7 @@ async function listPublicTimeline(
   options: MastodonBaseAdapterOptions,
 ): Promise<Connection<Post>> {
   const operation = input.local === true ? "timeline.local" : "timeline.public";
-  return listTimeline(
+  return listStatusTimeline(
     "api/v1/timelines/public",
     input.page,
     context,
@@ -628,7 +729,7 @@ async function listHashtagTimeline(
       ...errorContext(context, "timeline.hashtag"),
     });
   }
-  return listTimeline(
+  return listStatusTimeline(
     `api/v1/timelines/tag/${encodeURIComponent(tag)}`,
     page,
     context,
@@ -637,7 +738,7 @@ async function listHashtagTimeline(
   );
 }
 
-async function listTimeline(
+async function listStatusTimeline(
   path: string,
   page: PageInput | undefined,
   context: AdapterOperationContext,
@@ -659,9 +760,24 @@ async function listTimeline(
   );
   const response = await parseJsonArray<MastodonStatusResponse>(remoteResponse, operation, context);
   return {
-    nodes: response.map((status) => postFromResponse(status, context)),
+    nodes: response.map((status) => postFromResponse(status, context, operation)),
     pageInfo: mastodonPageInfoForOperation(response, remoteResponse.headers, context, operation),
   };
+}
+
+async function listTimeline(
+  input: ListTimelineInput,
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+): Promise<Connection<Post>> {
+  return listStatusTimeline(
+    `api/v1/timelines/list/${encodeURIComponent(input.listId)}`,
+    input.page,
+    context,
+    options,
+    "timeline.list",
+    await tokenHeader(input.session, context, "timeline.list"),
+  );
 }
 
 async function search(
@@ -701,7 +817,7 @@ async function search(
       (account) => accountFromResponse(account as MastodonAccountResponse, context, "search"),
     ),
     posts: (optionalArray(response.statuses, "statuses", response, context, "search") ?? []).map(
-      (status) => postFromResponse(status as MastodonStatusResponse, context),
+      (status) => postFromResponse(status as MastodonStatusResponse, context, "account.posts"),
     ),
     hashtags: (optionalArray(response.hashtags, "hashtags", response, context, "search") ?? []).map(
       (hashtag) => hashtagFromResponse(hashtag, context),
@@ -762,40 +878,17 @@ async function createPost(
       { ...errorContext(context, "post.create"), capability: "posts.quote" },
     );
   }
-  const json = {
-    status: input.content,
-    ...(input.visibility === undefined
-      ? {}
-      : {
-          visibility: mastodonVisibilityInput(input.visibility, context, options, "post.create"),
-        }),
-    ...(input.sensitive === undefined ? {} : { sensitive: input.sensitive }),
-    ...(input.summary === undefined ? {} : { spoiler_text: input.summary }),
-    ...(input.replyToId === undefined ? {} : { in_reply_to_id: input.replyToId }),
-    ...(input.mediaIds === undefined ? {} : { media_ids: input.mediaIds }),
-    ...(input.poll === undefined
-      ? {}
-      : {
-          poll: {
-            options: input.poll.options,
-            multiple: input.poll.multiple ?? false,
-            ...(input.poll.expiresInSeconds === undefined
-              ? {}
-              : { expires_in: input.poll.expiresInSeconds }),
-          },
-        }),
-  };
   const response = await requestJson<MastodonStatusResponse>(
     clientFor(context, options)
       .post("api/v1/statuses", {
         headers: await tokenHeader(input.session, context, "post.create"),
-        json,
+        json: statusJson(input, context, options, "post.create"),
       })
       .json(),
     "post.create",
     context,
   );
-  return postFromResponse(response, context);
+  return postFromResponse(response, context, "post.create");
 }
 
 async function deletePost(
@@ -824,6 +917,189 @@ async function deletePost(
   };
 }
 
+async function updatePost(
+  input: UpdatePostInput,
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+): Promise<Post> {
+  if (
+    input.replyToId !== undefined ||
+    input.quoteOfId !== undefined ||
+    input.mediaIds !== undefined ||
+    input.poll !== undefined
+  ) {
+    throw new ActivityPlugError(
+      "UNSUPPORTED_OPERATION",
+      "Mastodon-compatible post editing does not support this ActivityPlug input.",
+      {
+        adapter: context.adapterId,
+        origin: context.origin,
+        operation: "post.update",
+        capability: "posts.update",
+      },
+    );
+  }
+  const response = await requestJson<MastodonStatusResponse>(
+    clientFor(context, options)
+      .put(`api/v1/statuses/${encodeURIComponent(input.id)}`, {
+        headers: await tokenHeader(input.session, context, "post.update"),
+        json: statusJson(input, context, options, "post.update"),
+      })
+      .json(),
+    "post.update",
+    context,
+  );
+  return postFromResponse(response, context, "post.update");
+}
+
+async function postHistory(
+  input: PostHistoryInput,
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+): Promise<readonly PostRevision[]> {
+  const response = await requestJson<readonly MastodonStatusEditResponse[]>(
+    clientFor(context, options)
+      .get(`api/v1/statuses/${encodeURIComponent(input.id)}/history`, {
+        headers:
+          input.session === undefined
+            ? {}
+            : await tokenHeader(input.session, context, "post.history"),
+      })
+      .json(),
+    "post.history",
+    context,
+  );
+  if (!Array.isArray(response)) {
+    throw invalidRemoteResponse("Mastodon status edit history response is malformed.", {
+      context,
+      operation: "post.history",
+      raw: response,
+    });
+  }
+  return response.map((revision) => postRevisionFromResponse(revision, input.id, context));
+}
+
+function postRevisionFromResponse(
+  response: MastodonStatusEditResponse,
+  statusId: string,
+  context: AdapterOperationContext,
+): PostRevision {
+  if (!isRecord(response)) {
+    throw invalidRemoteResponse("Mastodon status edit response is malformed.", {
+      context,
+      operation: "post.history",
+      raw: response,
+    });
+  }
+  const revision = response as unknown as MastodonStatusEditResponse;
+  const createdAt = optionalDateTimeString(
+    revision.created_at,
+    "created_at",
+    revision,
+    context,
+    "post.history",
+  );
+  if (createdAt === undefined) {
+    throw invalidRemoteResponse("Mastodon status edit response is missing created_at.", {
+      context,
+      operation: "post.history",
+      raw: revision,
+    });
+  }
+  return {
+    ref: createEntityRef({
+      adapter: context.adapterId,
+      origin: context.origin,
+      type: "postRevision",
+      id: `${statusId}:${createdAt}`,
+    }),
+    ...(optionalString(revision.content, "content", revision, context, "post.history") === undefined
+      ? {}
+      : {
+          contentHtml: optionalString(
+            revision.content,
+            "content",
+            revision,
+            context,
+            "post.history",
+          ),
+        }),
+    ...(optionalString(revision.spoiler_text, "spoiler_text", revision, context, "post.history") ===
+    undefined
+      ? {}
+      : {
+          summary: optionalString(
+            revision.spoiler_text,
+            "spoiler_text",
+            revision,
+            context,
+            "post.history",
+          ),
+        }),
+    ...(optionalBoolean(revision.sensitive, "sensitive", revision, context, "post.history") ===
+    undefined
+      ? {}
+      : {
+          sensitive: optionalBoolean(
+            revision.sensitive,
+            "sensitive",
+            revision,
+            context,
+            "post.history",
+          ),
+        }),
+    media: (
+      optionalArray(
+        revision.media_attachments,
+        "media_attachments",
+        revision,
+        context,
+        "post.history",
+      ) ?? []
+    ).map((media) =>
+      mediaAttachmentFromResponse(
+        media as MastodonMediaAttachmentResponse,
+        context,
+        "post.history",
+      ),
+    ),
+    ...pollFromResponse(revision.poll, statusId, context, "post.history"),
+    createdAt,
+    raw: revision,
+  };
+}
+
+function statusJson(
+  input: CreatePostInput | UpdatePostInput,
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+  operation: string,
+) {
+  return {
+    ...(input.content === undefined ? {} : { status: input.content }),
+    ...(input.visibility === undefined
+      ? {}
+      : {
+          visibility: mastodonVisibilityInput(input.visibility, context, options, operation),
+        }),
+    ...(input.sensitive === undefined ? {} : { sensitive: input.sensitive }),
+    ...(input.summary === undefined ? {} : { spoiler_text: input.summary }),
+    ...(input.replyToId === undefined ? {} : { in_reply_to_id: input.replyToId }),
+    ...(input.mediaIds === undefined ? {} : { media_ids: input.mediaIds }),
+    ...(input.poll === undefined
+      ? {}
+      : {
+          poll: {
+            options: input.poll.options,
+            multiple: input.poll.multiple ?? false,
+            ...(input.poll.expiresInSeconds === undefined
+              ? {}
+              : { expires_in: input.poll.expiresInSeconds }),
+          },
+        }),
+  };
+}
+
 async function getPoll(
   input: { readonly id: string; readonly session?: AuthSession },
   context: AdapterOperationContext,
@@ -839,7 +1115,7 @@ async function getPoll(
     "poll.get",
     context,
   );
-  const poll = pollFromResponse(response, input.id, context).poll;
+  const poll = pollFromResponse(response, input.id, context, "poll.get").poll;
   if (poll === undefined) {
     throw invalidRemoteResponse("Mastodon poll response is missing required fields.", {
       context,
@@ -865,7 +1141,7 @@ async function votePoll(
     "poll.vote",
     context,
   );
-  const poll = pollFromResponse(response, input.pollId, context).poll;
+  const poll = pollFromResponse(response, input.pollId, context, "poll.vote").poll;
   if (poll === undefined) {
     throw invalidRemoteResponse("Mastodon poll response is missing required fields.", {
       context,

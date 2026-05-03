@@ -39,6 +39,7 @@ import {
   nonEmptyString,
   optionalArray,
   optionalBoolean,
+  optionalDateTimeString,
   optionalNonEmptyString,
   optionalNumber,
   optionalNumberArray,
@@ -83,6 +84,7 @@ export {
   nonEmptyString,
   optionalArray,
   optionalBoolean,
+  optionalDateTimeString,
   optionalNonEmptyString,
   optionalNumber,
   optionalNumberArray,
@@ -123,7 +125,7 @@ export async function postAction(
     operation,
     context,
   );
-  return postFromResponse(response, context);
+  return postFromResponse(response, context, operation);
 }
 
 export async function boostPost(
@@ -151,7 +153,7 @@ export async function boostPost(
     "social.boost",
     context,
   );
-  return postFromResponse(response, context);
+  return postFromResponse(response, context, "social.boost");
 }
 
 export async function registerOAuthClient(
@@ -391,11 +393,12 @@ export function accountFromResponse(
 export function postFromResponse(
   response: MastodonStatusResponse,
   context: AdapterOperationContext,
+  operation = "posts.read",
 ): Post {
   if (!isRecord(response)) {
     throw invalidRemoteResponse("Mastodon status response is missing required fields.", {
       context,
-      operation: "posts.read",
+      operation,
       raw: response,
     });
   }
@@ -430,7 +433,7 @@ export function postFromResponse(
   if (status.media_attachments !== undefined && !Array.isArray(status.media_attachments)) {
     throw invalidRemoteResponse("Mastodon media attachments response must be an array.", {
       context,
-      operation: "posts.read",
+      operation,
       raw: status.media_attachments,
     });
   }
@@ -442,18 +445,17 @@ export function postFromResponse(
       id: status.id,
       rawUrl: statusUrl ?? statusUri,
     }),
-    author: accountFromResponse(status.account, context, "posts.read"),
+    author: accountFromResponse(status.account, context, operation),
     ...(statusUrl === undefined ? {} : { url: statusUrl }),
-    contentHtml: optionalString(status.content, "content", status, context, "posts.read") ?? "",
+    contentHtml: optionalString(status.content, "content", status, context, operation) ?? "",
     createdAt: status.created_at,
     visibility: mastodonVisibility(
-      optionalString(status.visibility, "visibility", status, context, "posts.read"),
+      optionalString(status.visibility, "visibility", status, context, operation),
     ),
-    sensitive:
-      optionalBoolean(status.sensitive, "sensitive", status, context, "posts.read") ?? false,
+    sensitive: optionalBoolean(status.sensitive, "sensitive", status, context, operation) ?? false,
     ...(summary === undefined || summary.length === 0 ? {} : { summary }),
-    media: mediaAttachmentsFromResponse(status.media_attachments, context),
-    ...pollFromResponse(status.poll, status.id, context),
+    media: mediaAttachmentsFromResponse(status.media_attachments, context, operation),
+    ...pollFromResponse(status.poll, status.id, context, operation),
     ...(status.in_reply_to_id === null || status.in_reply_to_id === undefined
       ? {}
       : {
@@ -466,13 +468,13 @@ export function postFromResponse(
               "in_reply_to_id",
               status,
               context,
-              "posts.read",
+              operation,
             ),
           }),
         }),
     ...(status.reblog === null || status.reblog === undefined
       ? {}
-      : { boostOf: postFromResponse(status.reblog, context).ref }),
+      : { boostOf: postFromResponse(status.reblog, context, operation).ref }),
     counts: {
       ...renamedOptionalNumber(
         status.replies_count,
@@ -480,7 +482,7 @@ export function postFromResponse(
         "replies",
         status,
         context,
-        "posts.read",
+        operation,
       ),
       ...renamedOptionalNumber(
         status.reblogs_count,
@@ -488,7 +490,7 @@ export function postFromResponse(
         "reblogs",
         status,
         context,
-        "posts.read",
+        operation,
       ),
       ...renamedOptionalNumber(
         status.favourites_count,
@@ -496,7 +498,7 @@ export function postFromResponse(
         "favourites",
         status,
         context,
-        "posts.read",
+        operation,
       ),
     },
     ...(status.pleroma === undefined ? {} : { extensions: { pleroma: status.pleroma } }),
@@ -520,9 +522,9 @@ export function mediaAttachmentFromResponse(
     readonly id: string;
     readonly url: string;
   };
-  assertOptionalString(attachment.preview_url, "preview_url", attachment, context);
-  assertOptionalString(attachment.description, "description", attachment, context);
-  assertOptionalString(attachment.blurhash, "blurhash", attachment, context);
+  assertOptionalString(attachment.preview_url, "preview_url", attachment, context, operation);
+  assertOptionalString(attachment.description, "description", attachment, context, operation);
+  assertOptionalString(attachment.blurhash, "blurhash", attachment, context, operation);
   const meta = optionalObject(attachment.meta, "meta", attachment, context, operation);
   const original = optionalObject(meta?.original, "meta.original", attachment, context, operation);
   return {
@@ -569,22 +571,24 @@ export function mediaAttachmentFromResponse(
 export function mediaAttachmentsFromResponse(
   response: readonly MastodonMediaAttachmentResponse[] | undefined,
   context: AdapterOperationContext,
+  operation = "posts.read",
 ): readonly MediaAttachment[] {
   if (response === undefined) return [];
   if (!Array.isArray(response)) {
     throw invalidRemoteResponse("Mastodon media attachments response must be an array.", {
       context,
-      operation: "posts.read",
+      operation,
       raw: response,
     });
   }
-  return response.map((attachment) => mediaAttachmentFromResponse(attachment, context));
+  return response.map((attachment) => mediaAttachmentFromResponse(attachment, context, operation));
 }
 
 export function pollFromResponse(
   response: MastodonPollResponse | null | undefined,
   statusId: string,
   context: AdapterOperationContext,
+  operation = "posts.read",
 ): { readonly poll?: import("@activityplug/core").Poll } {
   if (response === null || response === undefined) return {};
   if (
@@ -596,7 +600,7 @@ export function pollFromResponse(
   ) {
     throw invalidRemoteResponse("Mastodon poll response is missing required fields.", {
       context,
-      operation: "posts.read",
+      operation,
       raw: response,
     });
   }
@@ -606,7 +610,7 @@ export function pollFromResponse(
     readonly multiple: boolean;
     readonly options: readonly NonNullable<MastodonPollResponse["options"]>[number][];
   };
-  const ownVotes = optionalNumberArray(poll.own_votes, "own_votes", poll, context, "posts.read");
+  const ownVotes = optionalNumberArray(poll.own_votes, "own_votes", poll, context, operation);
   return {
     poll: {
       ref: createEntityRef({
@@ -616,12 +620,12 @@ export function pollFromResponse(
         id: poll.id.length === 0 ? `${statusId}:poll` : poll.id,
       }),
       ...renamedOptionalString(
-        poll.expires_at,
+        optionalDateTimeString(poll.expires_at, "expires_at", poll, context, operation),
         "expires_at",
         "expiresAt",
         poll,
         context,
-        "posts.read",
+        operation,
       ),
       expired: poll.expired,
       multiple: poll.multiple,
@@ -631,7 +635,7 @@ export function pollFromResponse(
         "votesCount",
         poll,
         context,
-        "posts.read",
+        operation,
       ),
       ...renamedOptionalNumber(
         poll.voters_count,
@@ -639,17 +643,17 @@ export function pollFromResponse(
         "votersCount",
         poll,
         context,
-        "posts.read",
+        operation,
       ),
-      ...(optionalBoolean(poll.voted, "voted", poll, context, "posts.read") === undefined
+      ...(optionalBoolean(poll.voted, "voted", poll, context, operation) === undefined
         ? {}
-        : { voted: optionalBoolean(poll.voted, "voted", poll, context, "posts.read") }),
+        : { voted: optionalBoolean(poll.voted, "voted", poll, context, operation) }),
       ...(ownVotes === undefined ? {} : { ownVotes }),
       options: poll.options.map((option) => {
         if (!isRecord(option) || typeof option.title !== "string") {
           throw invalidRemoteResponse("Mastodon poll option response is missing required fields.", {
             context,
-            operation: "posts.read",
+            operation,
             raw: option,
           });
         }
@@ -664,7 +668,7 @@ export function pollFromResponse(
             "votes_count",
             pollOption,
             context,
-            "posts.read",
+            operation,
           ) === undefined
             ? {}
             : {
@@ -673,7 +677,7 @@ export function pollFromResponse(
                   "votes_count",
                   pollOption,
                   context,
-                  "posts.read",
+                  operation,
                 ),
               }),
         };

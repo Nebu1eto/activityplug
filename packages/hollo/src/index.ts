@@ -54,6 +54,40 @@ export function createHolloAdapter(options: HolloAdapterOptions = {}): ActivityP
           "unsupported",
           "Hollo quote creation is not mapped by this adapter yet.",
         ),
+        "posts.update": capability(
+          "supported",
+          "Hollo exposes Mastodon-compatible status editing.",
+        ),
+        "posts.history": capability("unsupported", "Hollo does not expose status edit history."),
+        "notifications.dismiss": capability(
+          "unsupported",
+          "Hollo does not expose Mastodon v1 notification dismiss.",
+        ),
+        "notifications.clear": capability(
+          "unsupported",
+          "Hollo does not expose Mastodon v1 notification clearing.",
+        ),
+        "notifications.unreadCount": capability(
+          "unsupported",
+          "Hollo grouped notification unread counts are not mapped by this adapter yet.",
+        ),
+        "filters.read": capability("unsupported", "Hollo does not expose filters."),
+        "filters.create": capability("unsupported", "Hollo does not expose filters."),
+        "filters.update": capability("unsupported", "Hollo does not expose filters."),
+        "filters.delete": capability("unsupported", "Hollo does not expose filters."),
+        "scheduledPosts.read": capability("unsupported", "Hollo does not expose scheduled posts."),
+        "scheduledPosts.create": capability(
+          "unsupported",
+          "Hollo does not expose scheduled posts.",
+        ),
+        "scheduledPosts.update": capability(
+          "unsupported",
+          "Hollo does not expose scheduled posts.",
+        ),
+        "scheduledPosts.delete": capability(
+          "unsupported",
+          "Hollo does not expose scheduled posts.",
+        ),
         "search.hashtags": capability(
           "unsupported",
           "Hollo hashtag search returns an empty upstream result set.",

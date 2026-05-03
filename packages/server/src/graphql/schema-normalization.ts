@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 
-import { ActivityPlugError, isActivityPlugError, maxPageLimit } from "@activityplug/core";
+import {
+  ActivityPlugError,
+  isActivityPlugError,
+  isIsoDateTimeString,
+  maxPageLimit,
+} from "@activityplug/core";
 import { GraphQLError } from "graphql";
 
 import { serializeActivityPlugError } from "../api/errors.js";
@@ -106,7 +111,7 @@ export function normalizeImportToken(input: {
 }
 
 export function assertValidDateTime(value: string, field: string): void {
-  if (!Number.isFinite(Date.parse(value))) {
+  if (!isIsoDateTimeString(value)) {
     throw new ActivityPlugError("VALIDATION_FAILED", `${field} must be a valid date-time string.`);
   }
 }
@@ -480,15 +485,7 @@ export function optionalSearchType(body: Record<string, unknown>): {
 }
 
 export function optionalVisibility(body: Record<string, unknown>): {
-  readonly visibility?:
-    | "public"
-    | "unlisted"
-    | "followers"
-    | "direct"
-    | "local"
-    | "list"
-    | "none"
-    | "unknown";
+  readonly visibility?: "public" | "unlisted" | "followers" | "direct" | "local" | "list" | "none";
 } {
   const value = body.visibility;
   if (value === undefined || value === null) return {};
@@ -499,8 +496,7 @@ export function optionalVisibility(body: Record<string, unknown>): {
     value !== "direct" &&
     value !== "local" &&
     value !== "list" &&
-    value !== "none" &&
-    value !== "unknown"
+    value !== "none"
   ) {
     throw new ActivityPlugError("VALIDATION_FAILED", "GraphQL post visibility is invalid.");
   }

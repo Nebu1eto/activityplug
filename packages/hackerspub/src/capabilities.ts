@@ -22,11 +22,79 @@ export function createHackersPubStaticCapabilities() {
     "posts.read": capability("supported"),
     "posts.create": capability("supported"),
     "posts.delete": capability("supported"),
+    "posts.update": capability("supported", "HackersPub article editing is supported."),
     "posts.reply": capability("supported"),
     "posts.quote": capability("supported"),
+    "posts.history": capability("unsupported", "HackersPub does not expose edit history."),
     "polls.create": capability("unsupported", "HackersPub poll creation is not mapped yet."),
     "polls.read": capability("supported"),
     "polls.vote": capability("supported"),
+    "notifications.list": capability(
+      "unsupported",
+      "HackersPub notifications are not mapped by this adapter yet.",
+    ),
+    "notifications.grouped": capability(
+      "unsupported",
+      "HackersPub notifications are not mapped by this adapter yet.",
+    ),
+    "notifications.dismiss": capability(
+      "unsupported",
+      "HackersPub notifications are not mapped by this adapter yet.",
+    ),
+    "notifications.clear": capability(
+      "unsupported",
+      "HackersPub notifications are not mapped by this adapter yet.",
+    ),
+    "notifications.unreadCount": capability(
+      "unsupported",
+      "HackersPub notifications are not mapped by this adapter yet.",
+    ),
+    "lists.read": capability("unsupported", "HackersPub lists are not mapped by this adapter."),
+    "lists.create": capability("unsupported", "HackersPub lists are not mapped by this adapter."),
+    "lists.update": capability("unsupported", "HackersPub lists are not mapped by this adapter."),
+    "lists.delete": capability("unsupported", "HackersPub lists are not mapped by this adapter."),
+    "lists.members": capability("unsupported", "HackersPub lists are not mapped by this adapter."),
+    "followRequests.list": capability(
+      "unsupported",
+      "HackersPub follow requests are not mapped by this adapter.",
+    ),
+    "followRequests.accept": capability(
+      "unsupported",
+      "HackersPub follow requests are not mapped by this adapter.",
+    ),
+    "followRequests.reject": capability(
+      "unsupported",
+      "HackersPub follow requests are not mapped by this adapter.",
+    ),
+    "filters.read": capability("unsupported", "HackersPub filters are not mapped by this adapter."),
+    "filters.create": capability(
+      "unsupported",
+      "HackersPub filters are not mapped by this adapter.",
+    ),
+    "filters.update": capability(
+      "unsupported",
+      "HackersPub filters are not mapped by this adapter.",
+    ),
+    "filters.delete": capability(
+      "unsupported",
+      "HackersPub filters are not mapped by this adapter.",
+    ),
+    "scheduledPosts.read": capability(
+      "unsupported",
+      "HackersPub scheduled posts are not mapped by this adapter.",
+    ),
+    "scheduledPosts.create": capability(
+      "unsupported",
+      "HackersPub scheduled posts are not mapped by this adapter.",
+    ),
+    "scheduledPosts.update": capability(
+      "unsupported",
+      "HackersPub scheduled posts are not mapped by this adapter.",
+    ),
+    "scheduledPosts.delete": capability(
+      "unsupported",
+      "HackersPub scheduled posts are not mapped by this adapter.",
+    ),
     "timelines.home": capability("supported"),
     "timelines.public": capability("supported"),
     "timelines.local": capability("supported"),

@@ -132,6 +132,31 @@ export interface PollOption {
   readonly votesCount?: number;
 }
 
+export interface PostRevision {
+  readonly ref: EntityRef<"postRevision">;
+  readonly contentHtml?: string;
+  readonly contentText?: string;
+  readonly summary?: string;
+  readonly sensitive?: boolean;
+  readonly media: readonly MediaAttachment[];
+  readonly poll?: Poll;
+  readonly createdAt: ISODateTimeString;
+  readonly raw: unknown;
+}
+
+export interface ScheduledPost {
+  readonly ref: EntityRef<"scheduledPost">;
+  readonly scheduledAt: ISODateTimeString;
+  readonly contentText?: string;
+  readonly visibility?: PostVisibility;
+  readonly sensitive?: boolean;
+  readonly summary?: string;
+  readonly media: readonly MediaAttachment[];
+  readonly poll?: Poll;
+  readonly replyTo?: EntityRef<"post">;
+  readonly raw: unknown;
+}
+
 export interface Notification {
   readonly ref: EntityRef<"notification">;
   readonly type: NotificationType;
@@ -145,16 +170,57 @@ export type NotificationType =
   | "mention"
   | "status"
   | "reblog"
+  | "quote"
+  | "quoted_update"
   | "follow"
   | "follow_request"
   | "favourite"
+  | "emoji_reaction"
   | "poll"
   | "update"
+  | "move"
+  | "moderation_warning"
+  | "severed_relationships"
+  | "annual_report"
   | "admin.sign_up"
   | "admin.report"
   | "pleroma.emoji_reaction"
   | "pleroma.chat_mention"
+  | "pleroma.report"
   | "unknown";
+
+export interface AccountList {
+  readonly ref: EntityRef<"list">;
+  readonly title: string;
+  readonly repliesPolicy?: "followed" | "list" | "none" | "unknown";
+  readonly exclusive?: boolean;
+  readonly raw: unknown;
+}
+
+export interface Filter {
+  readonly ref: EntityRef<"filter">;
+  readonly title: string;
+  readonly context: readonly FilterContext[];
+  readonly action: "warn" | "hide" | "unknown";
+  readonly expiresAt?: ISODateTimeString;
+  readonly keywords: readonly FilterKeyword[];
+  readonly raw: unknown;
+}
+
+export type FilterContext =
+  | "home"
+  | "notifications"
+  | "public"
+  | "thread"
+  | "account"
+  | "profile"
+  | "unknown";
+
+export interface FilterKeyword {
+  readonly keyword: string;
+  readonly wholeWord: boolean;
+  readonly raw: unknown;
+}
 
 export interface Relationship {
   readonly account: EntityRef<"account">;

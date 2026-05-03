@@ -6,6 +6,7 @@ import {
   booleanQueryParameter,
   dataRef,
   dataSchema,
+  dateTimeStringSchema,
   disabledOperation,
   idPathParameter,
   instancePageQueryParameters,
@@ -296,12 +297,30 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
       },
       "/api/v1/posts/{id}": {
         get: operation("getPost", "posts", [idPathParameter()], dataRef("Post")),
-        patch: unsupportedOperation("updatePost", "posts", [idPathParameter()], true),
+        patch: authenticatedOperation(
+          "updatePost",
+          "posts",
+          [idPathParameter()],
+          dataRef("Post"),
+          requestBodyRef("UpdatePostRequest"),
+        ),
         delete: authenticatedOperation(
           "deletePost",
           "posts",
           [idPathParameter()],
           dataRef("DeletedEntity"),
+        ),
+      },
+      "/api/v1/posts/{id}/history": {
+        get: optionallyAuthenticatedOperation(
+          "getPostHistory",
+          "posts",
+          [idPathParameter(), stringQueryParameter("sessionId")],
+          dataSchema(
+            objectSchema(["revisions"], {
+              revisions: { type: "array", items: { $ref: "#/components/schemas/PostRevision" } },
+            }),
+          ),
         ),
       },
       "/api/v1/posts/{id}/context": {
@@ -420,11 +439,10 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         ),
       },
       "/api/v1/timelines/lists/{id}": {
-        get: unsupportedOperation(
+        get: authenticatedOperation(
           "getListTimeline",
           "timelines",
-          [idPathParameter()],
-          true,
+          [idPathParameter(), ...pageQueryParameters()],
           listRef("Post"),
         ),
       },
@@ -519,71 +537,253 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         ),
       },
       "/api/v1/notifications": {
-        get: unsupportedOperation(
+        get: authenticatedOperation(
           "getNotifications",
           "notifications",
-          undefined,
-          true,
+          [
+            ...instancePageQueryParameters(),
+            {
+              name: "type",
+              in: "query",
+              required: false,
+              description: "Repeat this parameter or use comma-separated values.",
+              schema: { type: "array", items: notificationTypeQuerySchema() },
+              style: "form",
+              explode: true,
+            },
+            {
+              name: "types",
+              in: "query",
+              required: false,
+              description: "Repeat this parameter or use comma-separated values.",
+              schema: { type: "array", items: notificationTypeQuerySchema() },
+              style: "form",
+              explode: true,
+            },
+          ],
           listRef("Notification"),
         ),
       },
       "/api/v1/notifications/unread-count": {
-        get: unsupportedOperation("getNotificationUnreadCount", "notifications", undefined, true),
+        get: authenticatedOperation(
+          "getNotificationUnreadCount",
+          "notifications",
+          instanceQueryParameters(),
+          dataSchema(objectSchema(["count"], { count: { type: "integer", minimum: 0 } })),
+        ),
       },
       "/api/v1/notifications/{id}/dismiss": {
-        post: unsupportedOperation(
+        post: authenticatedOperation(
           "dismissNotification",
           "notifications",
           [idPathParameter()],
-          true,
+          dataRef("DeletedEntity"),
         ),
       },
       "/api/v1/notifications/clear": {
-        post: unsupportedOperation("clearNotifications", "notifications", undefined, true),
+        post: authenticatedOperation(
+          "clearNotifications",
+          "notifications",
+          instanceQueryParameters(),
+          dataSchema(objectSchema(["ok"], { ok: { type: "boolean" } })),
+        ),
       },
       "/api/v1/lists": {
-        get: unsupportedOperation("getLists", "lists", undefined, true, listRef("List")),
-        post: unsupportedOperation("createList", "lists", undefined, true),
+        get: authenticatedOperation(
+          "getLists",
+          "lists",
+          instancePageQueryParameters(),
+          listRef("List"),
+        ),
+        post: authenticatedOperation(
+          "createList",
+          "lists",
+          undefined,
+          dataRef("List"),
+          requestBodySchema(
+            objectSchema(["origin", "title"], {
+              adapter: adapterSchema(),
+              origin: nonEmptyStringSchema(),
+              title: nonEmptyStringSchema(),
+              repliesPolicy: { type: "string", enum: ["followed", "list", "none"] },
+              exclusive: { type: "boolean" },
+            }),
+          ),
+        ),
       },
       "/api/v1/lists/{id}": {
-        get: unsupportedOperation("getList", "lists", [idPathParameter()], true),
-        patch: unsupportedOperation("updateList", "lists", [idPathParameter()], true),
-        delete: unsupportedOperation("deleteList", "lists", [idPathParameter()], true),
-      },
-      "/api/v1/lists/{id}/accounts": {
-        get: unsupportedOperation(
-          "getListAccounts",
+        get: authenticatedOperation("getList", "lists", [idPathParameter()], dataRef("List")),
+        patch: authenticatedOperation(
+          "updateList",
           "lists",
           [idPathParameter()],
-          true,
+          dataRef("List"),
+          requestBodySchema(
+            objectSchema(["title"], {
+              adapter: adapterSchema(),
+              origin: nonEmptyStringSchema(),
+              title: nonEmptyStringSchema(),
+              repliesPolicy: { type: "string", enum: ["followed", "list", "none"] },
+              exclusive: { type: "boolean" },
+            }),
+          ),
+        ),
+        delete: authenticatedOperation(
+          "deleteList",
+          "lists",
+          [idPathParameter()],
+          dataRef("DeletedEntity"),
+        ),
+      },
+      "/api/v1/lists/{id}/accounts": {
+        get: authenticatedOperation(
+          "getListAccounts",
+          "lists",
+          [idPathParameter(), ...pageQueryParameters()],
           listRef("Account"),
         ),
-        post: unsupportedOperation("addListAccount", "lists", [idPathParameter()], true),
-        delete: unsupportedOperation("removeListAccount", "lists", [idPathParameter()], true),
+        post: authenticatedOperation(
+          "addListAccount",
+          "lists",
+          [idPathParameter()],
+          dataRef("List"),
+          requestBodySchema(objectSchema(["accountId"], { accountId: nonEmptyStringSchema() })),
+        ),
+        delete: authenticatedOperation(
+          "removeListAccount",
+          "lists",
+          [idPathParameter()],
+          dataRef("List"),
+          requestBodySchema(objectSchema(["accountId"], { accountId: nonEmptyStringSchema() })),
+        ),
       },
       "/api/v1/follow-requests": {
-        get: unsupportedOperation(
+        get: authenticatedOperation(
           "getFollowRequests",
           "follow-requests",
-          undefined,
-          true,
+          instancePageQueryParameters(),
           listRef("Account"),
         ),
       },
       "/api/v1/follow-requests/{id}/accept": {
-        post: unsupportedOperation(
+        post: authenticatedOperation(
           "acceptFollowRequest",
           "follow-requests",
           [idPathParameter()],
-          true,
+          dataRef("Relationship"),
         ),
       },
       "/api/v1/follow-requests/{id}/reject": {
-        post: unsupportedOperation(
+        post: authenticatedOperation(
           "rejectFollowRequest",
           "follow-requests",
           [idPathParameter()],
-          true,
+          dataRef("Relationship"),
+        ),
+      },
+      "/api/v1/filters": {
+        get: authenticatedOperation(
+          "getFilters",
+          "filters",
+          instancePageQueryParameters(),
+          listRef("Filter"),
+        ),
+        post: authenticatedOperation(
+          "createFilter",
+          "filters",
+          undefined,
+          dataRef("Filter"),
+          requestBodySchema(
+            objectSchema(["origin", "title", "context", "keywords"], {
+              adapter: adapterSchema(),
+              origin: nonEmptyStringSchema(),
+              title: nonEmptyStringSchema(),
+              context: { type: "array", minItems: 1, items: filterContextInputSchema() },
+              action: { type: "string", enum: ["warn", "hide"] },
+              expiresInSeconds: { type: "integer", minimum: 1 },
+              keywords: {
+                type: "array",
+                minItems: 1,
+                items: objectSchema(["keyword"], {
+                  keyword: nonEmptyStringSchema(),
+                  wholeWord: { type: "boolean" },
+                }),
+              },
+            }),
+          ),
+        ),
+      },
+      "/api/v1/filters/{id}": {
+        get: authenticatedOperation("getFilter", "filters", [idPathParameter()], dataRef("Filter")),
+        patch: authenticatedOperation(
+          "updateFilter",
+          "filters",
+          [idPathParameter()],
+          dataRef("Filter"),
+          requestBodySchema(
+            objectSchema(["title", "context", "keywords"], {
+              adapter: adapterSchema(),
+              origin: nonEmptyStringSchema(),
+              title: nonEmptyStringSchema(),
+              context: { type: "array", minItems: 1, items: filterContextInputSchema() },
+              action: { type: "string", enum: ["warn", "hide"] },
+              expiresInSeconds: { type: "integer", minimum: 1 },
+              keywords: {
+                type: "array",
+                minItems: 1,
+                items: objectSchema(["keyword"], {
+                  keyword: nonEmptyStringSchema(),
+                  wholeWord: { type: "boolean" },
+                }),
+              },
+            }),
+          ),
+        ),
+        delete: authenticatedOperation(
+          "deleteFilter",
+          "filters",
+          [idPathParameter()],
+          dataRef("DeletedEntity"),
+        ),
+      },
+      "/api/v1/scheduled-posts": {
+        get: authenticatedOperation(
+          "getScheduledPosts",
+          "scheduled-posts",
+          instancePageQueryParameters(),
+          listRef("ScheduledPost"),
+        ),
+        post: authenticatedOperation(
+          "createScheduledPost",
+          "scheduled-posts",
+          undefined,
+          dataRef("ScheduledPost"),
+          requestBodyRef("SchedulePostRequest"),
+        ),
+      },
+      "/api/v1/scheduled-posts/{id}": {
+        get: authenticatedOperation(
+          "getScheduledPost",
+          "scheduled-posts",
+          [idPathParameter()],
+          dataRef("ScheduledPost"),
+        ),
+        patch: authenticatedOperation(
+          "updateScheduledPost",
+          "scheduled-posts",
+          [idPathParameter()],
+          dataRef("ScheduledPost"),
+          requestBodySchema(
+            objectSchema(["scheduledAt"], {
+              scheduledAt: dateTimeStringSchema(),
+            }),
+          ),
+        ),
+        delete: authenticatedOperation(
+          "deleteScheduledPost",
+          "scheduled-posts",
+          [idPathParameter()],
+          dataRef("DeletedEntity"),
         ),
       },
       "/api/v1/streams": {
@@ -602,5 +802,41 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         }),
       },
     },
+  };
+}
+
+function notificationTypeQuerySchema(): unknown {
+  return {
+    type: "string",
+    minLength: 1,
+    enum: [
+      "mention",
+      "status",
+      "reblog",
+      "quote",
+      "quoted_update",
+      "follow",
+      "follow_request",
+      "favourite",
+      "emoji_reaction",
+      "poll",
+      "update",
+      "move",
+      "moderation_warning",
+      "severed_relationships",
+      "annual_report",
+      "admin.sign_up",
+      "admin.report",
+      "pleroma.emoji_reaction",
+      "pleroma.chat_mention",
+      "pleroma.report",
+    ],
+  };
+}
+
+function filterContextInputSchema(): unknown {
+  return {
+    type: "string",
+    enum: ["home", "notifications", "public", "thread", "account", "profile"],
   };
 }

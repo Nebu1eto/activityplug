@@ -38,6 +38,9 @@ export type CapabilityName =
   | "notifications.dismiss"
   | "notifications.clear"
   | "notifications.unreadCount"
+  | "followRequests.list"
+  | "followRequests.accept"
+  | "followRequests.reject"
   | "polls.read"
   | "polls.create"
   | "polls.vote"
@@ -46,6 +49,14 @@ export type CapabilityName =
   | "lists.update"
   | "lists.delete"
   | "lists.members"
+  | "filters.read"
+  | "filters.create"
+  | "filters.update"
+  | "filters.delete"
+  | "scheduledPosts.read"
+  | "scheduledPosts.create"
+  | "scheduledPosts.update"
+  | "scheduledPosts.delete"
   | "search.accounts"
   | "search.posts"
   | "search.hashtags"
@@ -59,6 +70,7 @@ export type CapabilityName =
   | "social.reaction"
   | "notifications.pleromaEmojiReaction"
   | "notifications.pleromaChatMention"
+  | "notifications.pleromaReport"
   | "streaming.timeline"
   | "streaming.notifications"
   | "streaming.conversations";
@@ -130,6 +142,9 @@ export const capabilityNames = [
   "notifications.dismiss",
   "notifications.clear",
   "notifications.unreadCount",
+  "followRequests.list",
+  "followRequests.accept",
+  "followRequests.reject",
   "polls.read",
   "polls.create",
   "polls.vote",
@@ -138,6 +153,14 @@ export const capabilityNames = [
   "lists.update",
   "lists.delete",
   "lists.members",
+  "filters.read",
+  "filters.create",
+  "filters.update",
+  "filters.delete",
+  "scheduledPosts.read",
+  "scheduledPosts.create",
+  "scheduledPosts.update",
+  "scheduledPosts.delete",
   "search.accounts",
   "search.posts",
   "search.hashtags",
@@ -151,6 +174,7 @@ export const capabilityNames = [
   "social.reaction",
   "notifications.pleromaEmojiReaction",
   "notifications.pleromaChatMention",
+  "notifications.pleromaReport",
   "streaming.timeline",
   "streaming.notifications",
   "streaming.conversations",

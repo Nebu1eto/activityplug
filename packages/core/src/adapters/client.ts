@@ -6,27 +6,40 @@ import {
 } from "../capabilities/capability.js";
 import { ActivityPlugError, unsupportedOperation } from "../errors/error.js";
 import { decodeOpaqueId } from "../ids/opaque-id.js";
+import { isIsoDateTimeString } from "../types/datetime.js";
 import {
   type ActivityPlugClient,
   type ActivityPlugClientOptions,
   type AdapterOperationContext,
   type AccountService,
   type BoostPostInput,
+  type CreateFilterInput,
+  type CreateListInput,
   type CreatePostInput,
   type InstanceService,
+  type FilterService,
+  type FollowRequestService,
+  type ListService,
+  type ListAccountInput,
+  type ListAccountsInput,
   type MediaService,
   type MuteAccountInput,
+  type NotificationService,
   type PageInput,
   type PollService,
   type PostActionInput,
   type PostService,
   type ReactPostInput,
   type RelationshipInput,
+  type ScheduledPostService,
   type SearchInput,
   type SearchPageInput,
   type SearchService,
   type SocialService,
   type TimelineService,
+  type UpdateFilterInput,
+  type UpdateListInput,
+  type UpdatePostInput,
 } from "./client-types.js";
 import { maxPageLimit } from "./page.js";
 
@@ -59,6 +72,11 @@ export function createActivityPlugClient(options: ActivityPlugClientOptions): Ac
     media: createMediaService(client),
     polls: createPollService(client),
     social: createSocialService(client),
+    notifications: createNotificationService(client),
+    lists: createListService(client),
+    followRequests: createFollowRequestService(client),
+    filters: createFilterService(client),
+    scheduledPosts: createScheduledPostService(client),
   };
 }
 
@@ -172,6 +190,34 @@ function createPostService(client: RequiredClientContext): PostService {
       };
       return operation(normalized, context(client));
     },
+    update: async (input) => {
+      const operation = client.adapter.posts?.update;
+      if (operation === undefined) {
+        throw unsupportedOperation("post.update", capabilityContext(client, "posts.update"));
+      }
+      requireClientCapability(client, "posts.update", "post.update");
+      assertUpdatePostPayload(input, client, "post.update");
+      requirePostFeatureCapabilities(input, client, "post.update");
+      const normalized = {
+        ...input,
+        id: decodeRawRef(input.id, client, "post", "post.update"),
+        ...decodeOptionalPostRef(input.replyToId, client, "post.update", "replyToId"),
+        ...decodeOptionalPostRef(input.quoteOfId, client, "post.update", "quoteOfId"),
+        mediaIds: input.mediaIds?.map((id) => decodeRawRef(id, client, "media", "post.update")),
+      };
+      return operation(normalized, context(client));
+    },
+    history: async (input) => {
+      const operation = client.adapter.posts?.history;
+      if (operation === undefined) {
+        throw unsupportedOperation("post.history", capabilityContext(client, "posts.history"));
+      }
+      requireClientCapability(client, "posts.history", "post.history");
+      return operation(
+        { ...input, id: decodeRawRef(input.id, client, "post", "post.history") },
+        context(client),
+      );
+    },
     delete: async (input) => {
       const operation = client.adapter.posts?.delete;
       if (operation === undefined) {
@@ -184,19 +230,23 @@ function createPostService(client: RequiredClientContext): PostService {
   };
 }
 
-function assertCreatePostPayload(input: CreatePostInput, client: RequiredClientContext): void {
+function assertCreatePostPayload(
+  input: CreatePostInput,
+  client: RequiredClientContext,
+  operation = "post.create",
+): void {
   if (typeof input.content !== "string") {
-    throwValidation("Post content must be a string.", "post.create", client);
+    throwValidation("Post content must be a string.", operation, client);
   }
-  assertOptionalPostVisibility(input.visibility, "visibility", "post.create", client);
-  assertOptionalBoolean(input.sensitive, "sensitive", "post.create", client);
-  assertOptionalString(input.summary, "summary", "post.create", client);
+  assertOptionalPostVisibility(input.visibility, "visibility", operation, client);
+  assertOptionalBoolean(input.sensitive, "sensitive", operation, client);
+  assertOptionalString(input.summary, "summary", operation, client);
   if (input.mediaIds !== undefined) {
     if (!Array.isArray(input.mediaIds) || input.mediaIds.some((id) => typeof id !== "string")) {
-      throwValidation("Post mediaIds must be an array of opaque media IDs.", "post.create", client);
+      throwValidation("Post mediaIds must be an array of opaque media IDs.", operation, client);
     }
   }
-  if (input.poll !== undefined) validateCreatePollInput(input.poll, client);
+  if (input.poll !== undefined) validateCreatePollInput(input.poll, client, operation);
   if (
     input.content.trim().length > 0 ||
     (input.mediaIds !== undefined && input.mediaIds.length > 0) ||
@@ -209,29 +259,93 @@ function assertCreatePostPayload(input: CreatePostInput, client: RequiredClientC
   throw new ActivityPlugError(
     "VALIDATION_FAILED",
     "Post creation requires text, media, a poll, or a reply/quote target.",
-    { adapter: client.adapter.metadata.id, origin: client.origin, operation: "post.create" },
+    { adapter: client.adapter.metadata.id, origin: client.origin, operation },
   );
+}
+
+function requireCreatePostFeatureCapabilities(
+  input: CreatePostInput,
+  client: RequiredClientContext,
+  operation: string,
+): void {
+  requirePostFeatureCapabilities(input, client, operation);
+}
+
+function assertUpdatePostPayload(
+  input: UpdatePostInput,
+  client: RequiredClientContext,
+  operation = "post.update",
+): void {
+  if (input.content !== undefined && typeof input.content !== "string") {
+    throwValidation("Post content must be a string.", operation, client);
+  }
+  assertOptionalPostVisibility(input.visibility, "visibility", operation, client);
+  assertOptionalBoolean(input.sensitive, "sensitive", operation, client);
+  assertOptionalString(input.summary, "summary", operation, client);
+  if (input.mediaIds !== undefined) {
+    if (!Array.isArray(input.mediaIds) || input.mediaIds.some((id) => typeof id !== "string")) {
+      throwValidation("Post mediaIds must be an array of opaque media IDs.", operation, client);
+    }
+  }
+  if (input.poll !== undefined) validateCreatePollInput(input.poll, client, operation);
+  if (
+    input.content !== undefined ||
+    input.visibility !== undefined ||
+    input.sensitive !== undefined ||
+    input.summary !== undefined ||
+    input.replyToId !== undefined ||
+    input.quoteOfId !== undefined ||
+    input.mediaIds !== undefined ||
+    input.poll !== undefined
+  ) {
+    return;
+  }
+  throw new ActivityPlugError(
+    "VALIDATION_FAILED",
+    "Post editing requires at least one editable field.",
+    { adapter: client.adapter.metadata.id, origin: client.origin, operation },
+  );
+}
+
+function requirePostFeatureCapabilities(
+  input: CreatePostInput | UpdatePostInput,
+  client: RequiredClientContext,
+  operation: string,
+): void {
+  if (input.replyToId !== undefined) {
+    requireClientCapability(client, "posts.reply", operation);
+  }
+  if (input.quoteOfId !== undefined) {
+    requireClientCapability(client, "posts.quote", operation);
+  }
+  if (input.poll !== undefined) {
+    requireClientCapability(client, "polls.create", operation);
+  }
+  if (input.mediaIds !== undefined && input.mediaIds.length > 0) {
+    requireClientCapability(client, "media.upload", operation);
+  }
 }
 
 function validateCreatePollInput(
   poll: CreatePostInput["poll"],
   client: RequiredClientContext,
+  operation = "post.create",
 ): void {
   if (typeof poll !== "object" || poll === null || Array.isArray(poll)) {
-    throwValidation("Post poll must be an object.", "post.create", client);
+    throwValidation("Post poll must be an object.", operation, client);
   }
   if (!Array.isArray(poll.options) || poll.options.length < 2) {
-    throwValidation("Post poll requires at least two options.", "post.create", client);
+    throwValidation("Post poll requires at least two options.", operation, client);
   }
   if (poll.options.some((option) => typeof option !== "string" || option.trim().length === 0)) {
-    throwValidation("Post poll options must be non-empty strings.", "post.create", client);
+    throwValidation("Post poll options must be non-empty strings.", operation, client);
   }
-  assertOptionalBoolean(poll.multiple, "poll.multiple", "post.create", client);
+  assertOptionalBoolean(poll.multiple, "poll.multiple", operation, client);
   if (
     poll.expiresInSeconds !== undefined &&
     (!Number.isInteger(poll.expiresInSeconds) || poll.expiresInSeconds < 1)
   ) {
-    throwValidation("Post poll expiration must be a positive integer.", "post.create", client);
+    throwValidation("Post poll expiration must be a positive integer.", operation, client);
   }
 }
 
@@ -295,8 +409,7 @@ function assertOptionalPostVisibility(
     value !== "direct" &&
     value !== "local" &&
     value !== "list" &&
-    value !== "none" &&
-    value !== "unknown"
+    value !== "none"
   ) {
     throwValidation(`${field} is not a supported visibility value.`, operation, client);
   }
@@ -371,6 +484,21 @@ function createTimelineService(client: RequiredClientContext): TimelineService {
       requireClientCapability(client, "timelines.hashtag", "timeline.hashtag");
       return operation(
         { ...input, page: normalizePageInput(input.page, "timeline.hashtag", client) },
+        context(client),
+      );
+    },
+    list: async (input) => {
+      const operation = client.adapter.timelines?.list;
+      if (operation === undefined) {
+        throw unsupportedOperation("timeline.list", capabilityContext(client, "timelines.list"));
+      }
+      requireClientCapability(client, "timelines.list", "timeline.list");
+      return operation(
+        {
+          ...input,
+          listId: decodeRawRef(input.listId, client, "list", "timeline.list"),
+          page: normalizePageInput(input.page, "timeline.list", client),
+        },
         context(client),
       );
     },
@@ -548,6 +676,499 @@ function createSocialService(client: RequiredClientContext): SocialService {
     unreact: (input) =>
       postAction(input, "social.unreaction", "social.reaction", client.adapter.social?.unreact),
   };
+}
+
+function createNotificationService(client: RequiredClientContext): NotificationService {
+  return {
+    list: async (input) => {
+      const operation = client.adapter.notifications?.list;
+      if (operation === undefined) {
+        throw unsupportedOperation(
+          "notification.list",
+          capabilityContext(client, "notifications.list"),
+        );
+      }
+      requireClientCapability(client, "notifications.list", "notification.list");
+      if (input.types !== undefined && !Array.isArray(input.types)) {
+        throwValidation("Notification types must be an array.", "notification.list", client);
+      }
+      validateNotificationTypes(input.types, client, "notification.list");
+      return operation(
+        { ...input, page: normalizePageInput(input.page, "notification.list", client) },
+        context(client),
+      );
+    },
+    unreadCount: async (input) => {
+      const operation = client.adapter.notifications?.unreadCount;
+      if (operation === undefined) {
+        throw unsupportedOperation(
+          "notification.unreadCount",
+          capabilityContext(client, "notifications.unreadCount"),
+        );
+      }
+      requireClientCapability(client, "notifications.unreadCount", "notification.unreadCount");
+      return operation(input, context(client));
+    },
+    dismiss: async (input) => {
+      const operation = client.adapter.notifications?.dismiss;
+      if (operation === undefined) {
+        throw unsupportedOperation(
+          "notification.dismiss",
+          capabilityContext(client, "notifications.dismiss"),
+        );
+      }
+      requireClientCapability(client, "notifications.dismiss", "notification.dismiss");
+      return operation(
+        { ...input, id: decodeRawRef(input.id, client, "notification", "notification.dismiss") },
+        context(client),
+      );
+    },
+    clear: async (input) => {
+      const operation = client.adapter.notifications?.clear;
+      if (operation === undefined) {
+        throw unsupportedOperation(
+          "notification.clear",
+          capabilityContext(client, "notifications.clear"),
+        );
+      }
+      requireClientCapability(client, "notifications.clear", "notification.clear");
+      await operation(input, context(client));
+    },
+  };
+}
+
+function createListService(client: RequiredClientContext): ListService {
+  return {
+    list: async (input) => {
+      const operation = client.adapter.lists?.list;
+      if (operation === undefined) {
+        throw unsupportedOperation("list.list", capabilityContext(client, "lists.read"));
+      }
+      requireClientCapability(client, "lists.read", "list.list");
+      return operation(
+        { ...input, page: normalizePageInput(input.page, "list.list", client) },
+        context(client),
+      );
+    },
+    get: async (input) => {
+      const operation = client.adapter.lists?.get;
+      if (operation === undefined) {
+        throw unsupportedOperation("list.get", capabilityContext(client, "lists.read"));
+      }
+      requireClientCapability(client, "lists.read", "list.get");
+      return operation(
+        { ...input, id: decodeRawRef(input.id, client, "list", "list.get") },
+        context(client),
+      );
+    },
+    create: async (input) => {
+      const operation = client.adapter.lists?.create;
+      if (operation === undefined) {
+        throw unsupportedOperation("list.create", capabilityContext(client, "lists.create"));
+      }
+      requireClientCapability(client, "lists.create", "list.create");
+      validateListInput(input, "list.create", client);
+      return operation(input, context(client));
+    },
+    update: async (input) => {
+      const operation = client.adapter.lists?.update;
+      if (operation === undefined) {
+        throw unsupportedOperation("list.update", capabilityContext(client, "lists.update"));
+      }
+      requireClientCapability(client, "lists.update", "list.update");
+      validateListInput(input, "list.update", client);
+      return operation(
+        { ...input, id: decodeRawRef(input.id, client, "list", "list.update") },
+        context(client),
+      );
+    },
+    delete: async (input) => {
+      const operation = client.adapter.lists?.delete;
+      if (operation === undefined) {
+        throw unsupportedOperation("list.delete", capabilityContext(client, "lists.delete"));
+      }
+      requireClientCapability(client, "lists.delete", "list.delete");
+      return operation(
+        { ...input, id: decodeRawRef(input.id, client, "list", "list.delete") },
+        context(client),
+      );
+    },
+    listAccounts: async (input) => {
+      const operation = client.adapter.lists?.listAccounts;
+      if (operation === undefined) {
+        throw unsupportedOperation("list.accounts", capabilityContext(client, "lists.members"));
+      }
+      requireClientCapability(client, "lists.members", "list.accounts");
+      return operation(decodeListAccountInput(input, client, "list.accounts"), context(client));
+    },
+    addAccount: async (input) =>
+      listAccountAction(input, "list.account.add", client, client.adapter.lists?.addAccount),
+    removeAccount: async (input) =>
+      listAccountAction(input, "list.account.remove", client, client.adapter.lists?.removeAccount),
+  };
+}
+
+function validateNotificationTypes(
+  types: readonly string[] | undefined,
+  client: RequiredClientContext,
+  operation: string,
+): void {
+  if (types === undefined) return;
+  if (types.length === 0) {
+    throwValidation(
+      "Notification types must be a non-empty array when provided.",
+      operation,
+      client,
+    );
+  }
+  for (const type of types) {
+    if (!notificationTypeInputs.has(type)) {
+      throwValidation(`Unsupported notification type: ${type}`, operation, client);
+    }
+    if (type === "pleroma.emoji_reaction") {
+      requireClientCapability(client, "notifications.pleromaEmojiReaction", operation);
+    }
+    if (type === "pleroma.chat_mention") {
+      requireClientCapability(client, "notifications.pleromaChatMention", operation);
+    }
+    if (type === "pleroma.report") {
+      requireClientCapability(client, "notifications.pleromaReport", operation);
+    }
+  }
+}
+
+const notificationTypeInputs = new Set([
+  "mention",
+  "status",
+  "reblog",
+  "quote",
+  "quoted_update",
+  "follow",
+  "follow_request",
+  "favourite",
+  "emoji_reaction",
+  "poll",
+  "update",
+  "move",
+  "moderation_warning",
+  "severed_relationships",
+  "annual_report",
+  "admin.sign_up",
+  "admin.report",
+  "pleroma.emoji_reaction",
+  "pleroma.chat_mention",
+  "pleroma.report",
+]);
+
+function createFollowRequestService(client: RequiredClientContext): FollowRequestService {
+  return {
+    list: async (input) => {
+      const operation = client.adapter.followRequests?.list;
+      if (operation === undefined) {
+        throw unsupportedOperation(
+          "followRequest.list",
+          capabilityContext(client, "followRequests.list"),
+        );
+      }
+      requireClientCapability(client, "followRequests.list", "followRequest.list");
+      return operation(
+        { ...input, page: normalizePageInput(input.page, "followRequest.list", client) },
+        context(client),
+      );
+    },
+    accept: async (input) =>
+      followRequestAction(
+        input,
+        "followRequest.accept",
+        "followRequests.accept",
+        client,
+        client.adapter.followRequests?.accept,
+      ),
+    reject: async (input) =>
+      followRequestAction(
+        input,
+        "followRequest.reject",
+        "followRequests.reject",
+        client,
+        client.adapter.followRequests?.reject,
+      ),
+  };
+}
+
+function createFilterService(client: RequiredClientContext): FilterService {
+  return {
+    list: async (input) => {
+      const operation = client.adapter.filters?.list;
+      if (operation === undefined) {
+        throw unsupportedOperation("filter.list", capabilityContext(client, "filters.read"));
+      }
+      requireClientCapability(client, "filters.read", "filter.list");
+      return operation(
+        { ...input, page: normalizePageInput(input.page, "filter.list", client) },
+        context(client),
+      );
+    },
+    get: async (input) => {
+      const operation = client.adapter.filters?.get;
+      if (operation === undefined) {
+        throw unsupportedOperation("filter.get", capabilityContext(client, "filters.read"));
+      }
+      requireClientCapability(client, "filters.read", "filter.get");
+      return operation(
+        { ...input, id: decodeRawRef(input.id, client, "filter", "filter.get") },
+        context(client),
+      );
+    },
+    create: async (input) => {
+      const operation = client.adapter.filters?.create;
+      if (operation === undefined) {
+        throw unsupportedOperation("filter.create", capabilityContext(client, "filters.create"));
+      }
+      requireClientCapability(client, "filters.create", "filter.create");
+      validateFilterInput(input, "filter.create", client);
+      return operation(input, context(client));
+    },
+    update: async (input) => {
+      const operation = client.adapter.filters?.update;
+      if (operation === undefined) {
+        throw unsupportedOperation("filter.update", capabilityContext(client, "filters.update"));
+      }
+      requireClientCapability(client, "filters.update", "filter.update");
+      validateFilterInput(input, "filter.update", client);
+      return operation(
+        { ...input, id: decodeRawRef(input.id, client, "filter", "filter.update") },
+        context(client),
+      );
+    },
+    delete: async (input) => {
+      const operation = client.adapter.filters?.delete;
+      if (operation === undefined) {
+        throw unsupportedOperation("filter.delete", capabilityContext(client, "filters.delete"));
+      }
+      requireClientCapability(client, "filters.delete", "filter.delete");
+      return operation(
+        { ...input, id: decodeRawRef(input.id, client, "filter", "filter.delete") },
+        context(client),
+      );
+    },
+  };
+}
+
+function createScheduledPostService(client: RequiredClientContext): ScheduledPostService {
+  return {
+    list: async (input) => {
+      const operation = client.adapter.scheduledPosts?.list;
+      if (operation === undefined) {
+        throw unsupportedOperation(
+          "scheduledPost.list",
+          capabilityContext(client, "scheduledPosts.read"),
+        );
+      }
+      requireClientCapability(client, "scheduledPosts.read", "scheduledPost.list");
+      return operation(
+        { ...input, page: normalizePageInput(input.page, "scheduledPost.list", client) },
+        context(client),
+      );
+    },
+    get: async (input) => {
+      const operation = client.adapter.scheduledPosts?.get;
+      if (operation === undefined) {
+        throw unsupportedOperation(
+          "scheduledPost.get",
+          capabilityContext(client, "scheduledPosts.read"),
+        );
+      }
+      requireClientCapability(client, "scheduledPosts.read", "scheduledPost.get");
+      return operation(
+        { ...input, id: decodeRawRef(input.id, client, "scheduledPost", "scheduledPost.get") },
+        context(client),
+      );
+    },
+    create: async (input) => {
+      const operation = client.adapter.scheduledPosts?.create;
+      if (operation === undefined) {
+        throw unsupportedOperation(
+          "scheduledPost.create",
+          capabilityContext(client, "scheduledPosts.create"),
+        );
+      }
+      requireClientCapability(client, "scheduledPosts.create", "scheduledPost.create");
+      validateScheduledAt(input.scheduledAt, "scheduledPost.create", client);
+      assertCreatePostPayload(input, client, "scheduledPost.create");
+      requireCreatePostFeatureCapabilities(input, client, "scheduledPost.create");
+      return operation(
+        {
+          ...input,
+          ...decodeOptionalPostRef(input.replyToId, client, "scheduledPost.create", "replyToId"),
+          ...decodeOptionalPostRef(input.quoteOfId, client, "scheduledPost.create", "quoteOfId"),
+          mediaIds: input.mediaIds?.map((id) =>
+            decodeRawRef(id, client, "media", "scheduledPost.create"),
+          ),
+        },
+        context(client),
+      );
+    },
+    update: async (input) => {
+      const operation = client.adapter.scheduledPosts?.update;
+      if (operation === undefined) {
+        throw unsupportedOperation(
+          "scheduledPost.update",
+          capabilityContext(client, "scheduledPosts.update"),
+        );
+      }
+      requireClientCapability(client, "scheduledPosts.update", "scheduledPost.update");
+      validateScheduledAt(input.scheduledAt, "scheduledPost.update", client);
+      return operation(
+        {
+          ...input,
+          id: decodeRawRef(input.id, client, "scheduledPost", "scheduledPost.update"),
+        },
+        context(client),
+      );
+    },
+    delete: async (input) => {
+      const operation = client.adapter.scheduledPosts?.delete;
+      if (operation === undefined) {
+        throw unsupportedOperation(
+          "scheduledPost.delete",
+          capabilityContext(client, "scheduledPosts.delete"),
+        );
+      }
+      requireClientCapability(client, "scheduledPosts.delete", "scheduledPost.delete");
+      return operation(
+        {
+          ...input,
+          id: decodeRawRef(input.id, client, "scheduledPost", "scheduledPost.delete"),
+        },
+        context(client),
+      );
+    },
+  };
+}
+
+function validateListInput(
+  input: CreateListInput | UpdateListInput,
+  operation: string,
+  client: RequiredClientContext,
+): void {
+  if (typeof input.title !== "string" || input.title.trim().length === 0) {
+    throwValidation("List title must be a non-empty string.", operation, client);
+  }
+  if (
+    input.repliesPolicy !== undefined &&
+    input.repliesPolicy !== "followed" &&
+    input.repliesPolicy !== "list" &&
+    input.repliesPolicy !== "none"
+  ) {
+    throwValidation("List repliesPolicy is not supported.", operation, client);
+  }
+  assertOptionalBoolean(input.exclusive, "exclusive", operation, client);
+}
+
+function decodeListAccountInput(
+  input: ListAccountsInput,
+  client: RequiredClientContext,
+  operation: string,
+): ListAccountsInput {
+  return {
+    ...input,
+    listId: decodeRawRef(input.listId, client, "list", operation),
+    page: normalizePageInput(input.page, operation, client),
+  };
+}
+
+function listAccountAction<Output>(
+  input: ListAccountInput,
+  operationName: string,
+  client: RequiredClientContext,
+  operation:
+    | ((input: ListAccountInput, context: AdapterOperationContext) => Promise<Output>)
+    | undefined,
+): Promise<Output> {
+  if (operation === undefined) {
+    throw unsupportedOperation(operationName, capabilityContext(client, "lists.members"));
+  }
+  requireClientCapability(client, "lists.members", operationName);
+  return operation(
+    {
+      ...input,
+      listId: decodeRawRef(input.listId, client, "list", operationName),
+      accountId: decodeRawRef(input.accountId, client, "account", operationName),
+    },
+    context(client),
+  );
+}
+
+function followRequestAction<Output>(
+  input: RelationshipInput,
+  operationName: string,
+  capabilityName: CapabilityName,
+  client: RequiredClientContext,
+  operation:
+    | ((input: RelationshipInput, context: AdapterOperationContext) => Promise<Output>)
+    | undefined,
+): Promise<Output> {
+  if (operation === undefined) {
+    throw unsupportedOperation(operationName, capabilityContext(client, capabilityName));
+  }
+  requireClientCapability(client, capabilityName, operationName);
+  return operation(
+    { ...input, accountId: decodeRawRef(input.accountId, client, "account", operationName) },
+    context(client),
+  );
+}
+
+function validateFilterInput(
+  input: CreateFilterInput | UpdateFilterInput,
+  operation: string,
+  client: RequiredClientContext,
+): void {
+  if (typeof input.title !== "string" || input.title.trim().length === 0) {
+    throwValidation("Filter title must be a non-empty string.", operation, client);
+  }
+  if (!Array.isArray(input.context) || input.context.length === 0) {
+    throwValidation("Filter context must be a non-empty array.", operation, client);
+  }
+  for (const filterContext of input.context) {
+    if (
+      filterContext !== "home" &&
+      filterContext !== "notifications" &&
+      filterContext !== "public" &&
+      filterContext !== "thread" &&
+      filterContext !== "account" &&
+      filterContext !== "profile"
+    ) {
+      throwValidation("Filter context is not supported.", operation, client);
+    }
+  }
+  if (!Array.isArray(input.keywords) || input.keywords.length === 0) {
+    throwValidation("Filter keywords must be a non-empty array.", operation, client);
+  }
+  for (const keyword of input.keywords) {
+    if (typeof keyword.keyword !== "string" || keyword.keyword.trim().length === 0) {
+      throwValidation("Filter keyword must be a non-empty string.", operation, client);
+    }
+    assertOptionalBoolean(keyword.wholeWord, "keyword.wholeWord", operation, client);
+  }
+  if (input.action !== undefined && input.action !== "warn" && input.action !== "hide") {
+    throwValidation("Filter action is not supported.", operation, client);
+  }
+  if (
+    input.expiresInSeconds !== undefined &&
+    (!Number.isInteger(input.expiresInSeconds) || input.expiresInSeconds < 1)
+  ) {
+    throwValidation("Filter expiration must be a positive integer.", operation, client);
+  }
+}
+
+function validateScheduledAt(
+  value: string,
+  operation: string,
+  client: RequiredClientContext,
+): void {
+  if (typeof value !== "string" || value.length === 0 || !isIsoDateTimeString(value)) {
+    throwValidation("Scheduled post time must be an ISO date-time string.", operation, client);
+  }
 }
 
 function normalizePageInput(

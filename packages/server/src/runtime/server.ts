@@ -226,6 +226,42 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
           session: toPublicSession(session),
         });
       },
+      update: async (input) => {
+        const { adapter: _adapter, origin: _origin, sessionId, ...update } = input;
+        const session = await requireSession(sessionId, sessions, "post.update");
+        const ref = decodeOpaqueIdForOperation(input.id, "post.update");
+        assertInputTarget(input, ref, "post.update");
+        await originPolicy({ origin: ref.origin, operation: "post.update" });
+        assertSessionTarget(session, { adapter: ref.adapter, origin: ref.origin }, "post.update");
+        return resolveClient(
+          { adapter: ref.adapter, origin: ref.origin },
+          options.adapters,
+          sessions,
+        ).posts.update({ ...update, session: toPublicSession(session) });
+      },
+      history: async (input) => {
+        const ref = decodeOpaqueIdForOperation(input.id, "post.history");
+        await originPolicy({ origin: ref.origin, operation: "post.history" });
+        const session =
+          input.sessionId === undefined
+            ? undefined
+            : await requireSession(input.sessionId, sessions, "post.history");
+        if (session !== undefined) {
+          assertSessionTarget(
+            session,
+            { adapter: ref.adapter, origin: ref.origin },
+            "post.history",
+          );
+        }
+        return resolveClient(
+          { adapter: ref.adapter, origin: ref.origin },
+          options.adapters,
+          sessions,
+        ).posts.history({
+          id: input.id,
+          ...(session === undefined ? {} : { session: toPublicSession(session) }),
+        });
+      },
       delete: async (input) => {
         const session = await requireSession(input.sessionId, sessions, "post.delete");
         const ref = decodeOpaqueIdForOperation(input.id, "post.delete");
@@ -293,6 +329,21 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
         await originPolicy({ origin: selector.origin, operation: "timeline.hashtag" });
         return resolveClient(selector, options.adapters, sessions).timelines.hashtag({
           tag: input.tag,
+          ...(input.page === undefined ? {} : { page: input.page }),
+        });
+      },
+      list: async (input) => {
+        const session = await requireSession(input.sessionId, sessions, "timeline.list");
+        const ref = decodeOpaqueIdForOperation(input.id, "timeline.list");
+        await originPolicy({ origin: ref.origin, operation: "timeline.list" });
+        assertSessionTarget(session, { adapter: ref.adapter, origin: ref.origin }, "timeline.list");
+        return resolveClient(
+          { adapter: ref.adapter, origin: ref.origin },
+          options.adapters,
+          sessions,
+        ).timelines.list({
+          listId: input.id,
+          session: toPublicSession(session),
           ...(input.page === undefined ? {} : { page: input.page }),
         });
       },
@@ -457,6 +508,258 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
       unreact: (input) =>
         socialPostAction(input, "social.unreaction", sessions, options, (client, session, postId) =>
           client.social.unreact({ session, postId, emoji: input.emoji }),
+        ),
+    },
+    notifications: {
+      list: async (input) => {
+        const session = await requireSession(input.sessionId, sessions, "notification.list");
+        const selector = selectorForSessionInput(input, session, "notification.list");
+        await originPolicy({ origin: selector.origin, operation: "notification.list" });
+        assertSessionTarget(session, selector, "notification.list");
+        return resolveClient(selector, options.adapters, sessions).notifications.list({
+          session: toPublicSession(session),
+          ...(input.page === undefined ? {} : { page: input.page }),
+          ...(input.types === undefined ? {} : { types: input.types }),
+        });
+      },
+      unreadCount: async (input) => {
+        const session = await requireSession(input.sessionId, sessions, "notification.unreadCount");
+        const selector = selectorForSessionInput(input, session, "notification.unreadCount");
+        await originPolicy({ origin: selector.origin, operation: "notification.unreadCount" });
+        assertSessionTarget(session, selector, "notification.unreadCount");
+        return resolveClient(selector, options.adapters, sessions).notifications.unreadCount({
+          session: toPublicSession(session),
+        });
+      },
+      dismiss: async (input) => {
+        const session = await requireSession(input.sessionId, sessions, "notification.dismiss");
+        const ref = decodeOpaqueIdForOperation(input.id, "notification.dismiss");
+        await originPolicy({ origin: ref.origin, operation: "notification.dismiss" });
+        assertSessionTarget(
+          session,
+          { adapter: ref.adapter, origin: ref.origin },
+          "notification.dismiss",
+        );
+        return resolveClient(
+          { adapter: ref.adapter, origin: ref.origin },
+          options.adapters,
+          sessions,
+        ).notifications.dismiss({ session: toPublicSession(session), id: input.id });
+      },
+      clear: async (input) => {
+        const session = await requireSession(input.sessionId, sessions, "notification.clear");
+        const selector = selectorForSessionInput(input, session, "notification.clear");
+        await originPolicy({ origin: selector.origin, operation: "notification.clear" });
+        assertSessionTarget(session, selector, "notification.clear");
+        await resolveClient(selector, options.adapters, sessions).notifications.clear({
+          session: toPublicSession(session),
+        });
+      },
+    },
+    lists: {
+      list: async (input) => {
+        const session = await requireSession(input.sessionId, sessions, "list.list");
+        const selector = selectorForSessionInput(input, session, "list.list");
+        await originPolicy({ origin: selector.origin, operation: "list.list" });
+        assertSessionTarget(session, selector, "list.list");
+        return resolveClient(selector, options.adapters, sessions).lists.list({
+          session: toPublicSession(session),
+          ...(input.page === undefined ? {} : { page: input.page }),
+        });
+      },
+      get: async (input) => {
+        const session = await requireSession(input.sessionId, sessions, "list.get");
+        const ref = decodeOpaqueIdForOperation(input.id, "list.get");
+        await originPolicy({ origin: ref.origin, operation: "list.get" });
+        assertSessionTarget(session, { adapter: ref.adapter, origin: ref.origin }, "list.get");
+        return resolveClient(
+          { adapter: ref.adapter, origin: ref.origin },
+          options.adapters,
+          sessions,
+        ).lists.get({
+          session: toPublicSession(session),
+          id: input.id,
+        });
+      },
+      create: async (input) => {
+        const { adapter: _adapter, origin: _origin, sessionId, ...create } = input;
+        const session = await requireSession(sessionId, sessions, "list.create");
+        const selector = selectorForSessionInput(input, session, "list.create");
+        await originPolicy({ origin: selector.origin, operation: "list.create" });
+        assertSessionTarget(session, selector, "list.create");
+        return resolveClient(selector, options.adapters, sessions).lists.create({
+          ...create,
+          session: toPublicSession(session),
+        });
+      },
+      update: async (input) => {
+        const { adapter: _adapter, origin: _origin, sessionId, ...update } = input;
+        const session = await requireSession(sessionId, sessions, "list.update");
+        const ref = decodeOpaqueIdForOperation(input.id, "list.update");
+        assertInputTarget(input, ref, "list.update");
+        await originPolicy({ origin: ref.origin, operation: "list.update" });
+        assertSessionTarget(session, { adapter: ref.adapter, origin: ref.origin }, "list.update");
+        return resolveClient(
+          { adapter: ref.adapter, origin: ref.origin },
+          options.adapters,
+          sessions,
+        ).lists.update({
+          ...update,
+          session: toPublicSession(session),
+        });
+      },
+      delete: async (input) =>
+        listIdAction(input, "list.delete", sessions, options, (client, session, id) =>
+          client.lists.delete({ session, id }),
+        ),
+      accounts: async (input) =>
+        listIdAction(input, "list.accounts", sessions, options, (client, session, id) =>
+          client.lists.listAccounts({ session, listId: id, page: input.page }),
+        ),
+      addAccount: async (input) =>
+        listAccountAction(
+          input,
+          "list.account.add",
+          sessions,
+          options,
+          (client, session, listId, accountId) =>
+            client.lists.addAccount({ session, listId, accountId }),
+        ),
+      removeAccount: async (input) =>
+        listAccountAction(
+          input,
+          "list.account.remove",
+          sessions,
+          options,
+          (client, session, listId, accountId) =>
+            client.lists.removeAccount({ session, listId, accountId }),
+        ),
+      timeline: async (input) =>
+        listIdAction(input, "timeline.list", sessions, options, (client, session, id) =>
+          client.timelines.list({ session, listId: id, page: input.page }),
+        ),
+    },
+    followRequests: {
+      list: async (input) => {
+        const session = await requireSession(input.sessionId, sessions, "followRequest.list");
+        const selector = selectorForSessionInput(input, session, "followRequest.list");
+        await originPolicy({ origin: selector.origin, operation: "followRequest.list" });
+        assertSessionTarget(session, selector, "followRequest.list");
+        return resolveClient(selector, options.adapters, sessions).followRequests.list({
+          session: toPublicSession(session),
+          ...(input.page === undefined ? {} : { page: input.page }),
+        });
+      },
+      accept: (input) =>
+        socialAccountAction(
+          input,
+          "followRequest.accept",
+          sessions,
+          options,
+          (client, session, accountId) => client.followRequests.accept({ session, accountId }),
+        ),
+      reject: (input) =>
+        socialAccountAction(
+          input,
+          "followRequest.reject",
+          sessions,
+          options,
+          (client, session, accountId) => client.followRequests.reject({ session, accountId }),
+        ),
+    },
+    filters: {
+      list: async (input) => {
+        const session = await requireSession(input.sessionId, sessions, "filter.list");
+        const selector = selectorForSessionInput(input, session, "filter.list");
+        await originPolicy({ origin: selector.origin, operation: "filter.list" });
+        assertSessionTarget(session, selector, "filter.list");
+        return resolveClient(selector, options.adapters, sessions).filters.list({
+          session: toPublicSession(session),
+          ...(input.page === undefined ? {} : { page: input.page }),
+        });
+      },
+      get: async (input) =>
+        filterIdAction(input, "filter.get", sessions, options, (client, session, id) =>
+          client.filters.get({ session, id }),
+        ),
+      create: async (input) => {
+        const { adapter: _adapter, origin: _origin, sessionId, ...create } = input;
+        const session = await requireSession(sessionId, sessions, "filter.create");
+        const selector = selectorForSessionInput(input, session, "filter.create");
+        await originPolicy({ origin: selector.origin, operation: "filter.create" });
+        assertSessionTarget(session, selector, "filter.create");
+        return resolveClient(selector, options.adapters, sessions).filters.create({
+          ...create,
+          session: toPublicSession(session),
+        });
+      },
+      update: async (input) => {
+        const { adapter: _adapter, origin: _origin, sessionId, ...update } = input;
+        const session = await requireSession(sessionId, sessions, "filter.update");
+        const ref = decodeOpaqueIdForOperation(input.id, "filter.update");
+        assertInputTarget(input, ref, "filter.update");
+        await originPolicy({ origin: ref.origin, operation: "filter.update" });
+        assertSessionTarget(session, { adapter: ref.adapter, origin: ref.origin }, "filter.update");
+        return resolveClient(
+          { adapter: ref.adapter, origin: ref.origin },
+          options.adapters,
+          sessions,
+        ).filters.update({
+          ...update,
+          session: toPublicSession(session),
+        });
+      },
+      delete: async (input) =>
+        filterIdAction(input, "filter.delete", sessions, options, (client, session, id) =>
+          client.filters.delete({ session, id }),
+        ),
+    },
+    scheduledPosts: {
+      list: async (input) => {
+        const session = await requireSession(input.sessionId, sessions, "scheduledPost.list");
+        const selector = selectorForSessionInput(input, session, "scheduledPost.list");
+        await originPolicy({ origin: selector.origin, operation: "scheduledPost.list" });
+        assertSessionTarget(session, selector, "scheduledPost.list");
+        return resolveClient(selector, options.adapters, sessions).scheduledPosts.list({
+          session: toPublicSession(session),
+          ...(input.page === undefined ? {} : { page: input.page }),
+        });
+      },
+      get: async (input) =>
+        scheduledPostIdAction(
+          input,
+          "scheduledPost.get",
+          sessions,
+          options,
+          (client, session, id) => client.scheduledPosts.get({ session, id }),
+        ),
+      create: async (input) => {
+        const { adapter: _adapter, origin: _origin, sessionId, ...create } = input;
+        const session = await requireSession(sessionId, sessions, "scheduledPost.create");
+        const selector = selectorForSessionInput(input, session, "scheduledPost.create");
+        await originPolicy({ origin: selector.origin, operation: "scheduledPost.create" });
+        assertSessionTarget(session, selector, "scheduledPost.create");
+        return resolveClient(selector, options.adapters, sessions).scheduledPosts.create({
+          ...create,
+          session: toPublicSession(session),
+        });
+      },
+      update: async (input) =>
+        scheduledPostIdAction(
+          input,
+          "scheduledPost.update",
+          sessions,
+          options,
+          (client, session, id) =>
+            client.scheduledPosts.update({ session, id, scheduledAt: input.scheduledAt }),
+        ),
+      delete: async (input) =>
+        scheduledPostIdAction(
+          input,
+          "scheduledPost.delete",
+          sessions,
+          options,
+          (client, session, id) => client.scheduledPosts.delete({ session, id }),
         ),
     },
     auth: {
@@ -798,6 +1101,102 @@ async function socialPostAction<Output>(
   );
 }
 
+function selectorForSessionInput(
+  input: { readonly adapter?: string; readonly origin?: string },
+  session: StoredAuthSession,
+  operation: string,
+): InstanceSelector {
+  return normalizeSelector(
+    {
+      adapter: input.adapter ?? session.adapter,
+      origin: input.origin ?? session.origin,
+    },
+    operation,
+  );
+}
+
+async function listIdAction<Output>(
+  input: { readonly id: string; readonly sessionId: string },
+  operation: string,
+  sessions: AuthSessionStore,
+  options: ActivityPlugServerOptions,
+  action: (
+    client: ReturnType<typeof resolveClient>,
+    session: AuthSession,
+    id: string,
+  ) => Promise<Output>,
+): Promise<Output> {
+  const session = await requireSession(input.sessionId, sessions, operation);
+  const ref = decodeOpaqueIdForOperation(input.id, operation);
+  await (options.originPolicy ?? defaultOriginFetchPolicy)({ origin: ref.origin, operation });
+  assertSessionTarget(session, { adapter: ref.adapter, origin: ref.origin }, operation);
+  return action(
+    resolveClient({ adapter: ref.adapter, origin: ref.origin }, options.adapters, sessions),
+    toPublicSession(session),
+    input.id,
+  );
+}
+
+async function filterIdAction<Output>(
+  input: { readonly id: string; readonly sessionId: string },
+  operation: string,
+  sessions: AuthSessionStore,
+  options: ActivityPlugServerOptions,
+  action: (
+    client: ReturnType<typeof resolveClient>,
+    session: AuthSession,
+    id: string,
+  ) => Promise<Output>,
+): Promise<Output> {
+  return listIdAction(input, operation, sessions, options, action);
+}
+
+async function scheduledPostIdAction<Output>(
+  input: { readonly id: string; readonly sessionId: string },
+  operation: string,
+  sessions: AuthSessionStore,
+  options: ActivityPlugServerOptions,
+  action: (
+    client: ReturnType<typeof resolveClient>,
+    session: AuthSession,
+    id: string,
+  ) => Promise<Output>,
+): Promise<Output> {
+  return listIdAction(input, operation, sessions, options, action);
+}
+
+async function listAccountAction<Output>(
+  input: { readonly id: string; readonly accountId: string; readonly sessionId: string },
+  operation: string,
+  sessions: AuthSessionStore,
+  options: ActivityPlugServerOptions,
+  action: (
+    client: ReturnType<typeof resolveClient>,
+    session: AuthSession,
+    listId: string,
+    accountId: string,
+  ) => Promise<Output>,
+): Promise<Output> {
+  const session = await requireSession(input.sessionId, sessions, operation);
+  const list = decodeOpaqueIdForOperation(input.id, operation);
+  const account = decodeOpaqueIdForOperation(input.accountId, operation);
+  if (list.adapter !== account.adapter || list.origin !== account.origin) {
+    throw new ActivityPlugError("VALIDATION_FAILED", "List and account IDs must share a target.", {
+      adapter: list.adapter,
+      origin: list.origin,
+      operation,
+    });
+  }
+  await (options.originPolicy ?? defaultOriginFetchPolicy)({ origin: list.origin, operation });
+  assertSessionTarget(session, { adapter: list.adapter, origin: list.origin }, operation);
+  return action(
+    resolveClient({ adapter: list.adapter, origin: list.origin }, options.adapters, sessions),
+    toPublicSession(session),
+    input.id,
+    input.accountId,
+  );
+}
+
 function assertSessionTarget(
   session: StoredAuthSession,
   selector: InstanceSelector,
@@ -816,6 +1215,40 @@ function assertSessionTarget(
         operation,
       },
     );
+  }
+}
+
+function assertInputTarget(
+  input: { readonly adapter?: string; readonly origin?: string },
+  selector: InstanceSelector,
+  operation: string,
+): void {
+  const inputOrigin =
+    input.origin === undefined ? undefined : normalizeInputOrigin(input.origin, operation);
+  if (
+    (input.adapter !== undefined && input.adapter !== selector.adapter) ||
+    (inputOrigin !== undefined && inputOrigin !== selector.origin)
+  ) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "Input target does not match the entity identifier.",
+      {
+        adapter: selector.adapter,
+        origin: selector.origin,
+        operation,
+      },
+    );
+  }
+}
+
+function normalizeInputOrigin(origin: string, operation: string): string {
+  try {
+    return new URL(origin).origin;
+  } catch {
+    throw new ActivityPlugError("VALIDATION_FAILED", "Input origin must be a valid URL.", {
+      origin,
+      operation,
+    });
   }
 }
 

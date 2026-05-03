@@ -1,4 +1,4 @@
-import { type PostVisibility } from "@activityplug/core";
+import { type PostVisibilityInput } from "@activityplug/core";
 
 import {
   clearPendingHackersPubLogin,
@@ -537,7 +537,7 @@ async function runComposeAction(formData: FormData, submitter: HTMLElement | nul
     const intent =
       submitter instanceof HTMLButtonElement ? submitter.value : formValue(formData, "intent");
     const content = formValue(formData, "content");
-    const visibility = formValue(formData, "visibility") as PostVisibility;
+    const visibility = formValue(formData, "visibility") as PostVisibilityInput;
     const post =
       intent === "reply"
         ? await client.reply(formValue(formData, "replyToId"), content, visibility)
@@ -793,13 +793,13 @@ function updateVisibilityOptions(adapter: WebClientAdapter): void {
   );
 }
 
-function visibilityValues(adapter: WebClientAdapter): readonly PostVisibility[] {
+function visibilityValues(adapter: WebClientAdapter): readonly PostVisibilityInput[] {
   if (adapter === "misskey") return ["public", "unlisted", "followers", "direct", "local"];
   if (adapter === "hackerspub") return ["public", "unlisted", "followers", "direct", "none"];
   return ["public", "unlisted", "followers", "direct"];
 }
 
-function visibilityLabel(value: PostVisibility): string {
+function visibilityLabel(value: PostVisibilityInput): string {
   if (value === "public") return "Public";
   if (value === "unlisted") return "Unlisted";
   if (value === "followers") return "Followers";

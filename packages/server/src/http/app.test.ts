@@ -18,6 +18,8 @@ import {
   operationRequestBody,
   parameterSchema,
   requestSchemaProperty,
+  testPost,
+  testRelationship,
   testSession,
   testViewerAccount,
 } from "./app-test-utils.js";
@@ -74,6 +76,11 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
       minLength: 1,
     });
     expect(parameterSchema(openapi, "/api/v1/search", "get", "sessionId")).toMatchObject({
+      minLength: 1,
+    });
+    expect(
+      parameterSchema(openapi, "/api/v1/posts/{id}/history", "get", "sessionId"),
+    ).toMatchObject({
       minLength: 1,
     });
     expect(requestSchemaProperty(openapi, "/api/v1/posts", "post", "origin")).toMatchObject({
@@ -651,5 +658,167 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
       { limit: 200, sessionId: testSession.id },
       { limit: 200, sessionId: testSession.id },
     ]);
+  });
+
+  it("exposes notification, list, filter, and scheduled post HTTP operations", async () => {
+    const calls: string[] = [];
+    const list = {
+      ref: createEntityRef({
+        adapter: "mastodon",
+        origin: "https://example.test",
+        type: "list",
+        id: "list-1",
+      }),
+      title: "Friends",
+      raw: {},
+    };
+    const filter = {
+      ref: createEntityRef({
+        adapter: "mastodon",
+        origin: "https://example.test",
+        type: "filter",
+        id: "filter-1",
+      }),
+      title: "Spoilers",
+      context: ["home"] as const,
+      action: "warn" as const,
+      keywords: [{ keyword: "spoiler", wholeWord: true, raw: {} }],
+      raw: {},
+    };
+    const scheduledPost = {
+      ref: createEntityRef({
+        adapter: "mastodon",
+        origin: "https://example.test",
+        type: "scheduledPost",
+        id: "scheduled-1",
+      }),
+      scheduledAt: "2026-05-03T00:00:00.000Z",
+      contentText: "Later",
+      media: [],
+      raw: {},
+    };
+    const app = createActivityPlugApp({
+      service: createTestService({
+        notifications: {
+          list: async () => {
+            calls.push("notifications.list");
+            return {
+              nodes: [
+                {
+                  ref: createEntityRef({
+                    adapter: "mastodon",
+                    origin: "https://example.test",
+                    type: "notification",
+                    id: "notification-1",
+                  }),
+                  type: "mention",
+                  createdAt: "2026-05-02T00:00:00.000Z",
+                  account: testViewerAccount.ref,
+                  post: testPost.ref,
+                  raw: {},
+                },
+              ],
+              pageInfo: { hasNextPage: false, hasPreviousPage: false },
+            };
+          },
+          unreadCount: async () => 2,
+          dismiss: async () => ({ ref: testPost.ref, deleted: true }),
+          clear: async () => undefined,
+        },
+        lists: {
+          list: async () => ({
+            nodes: [list],
+            pageInfo: { hasNextPage: false, hasPreviousPage: false },
+          }),
+          get: async () => list,
+          create: async () => list,
+          update: async () => list,
+          delete: async () => ({ ref: list.ref, deleted: true }),
+          accounts: async () => ({
+            nodes: [testViewerAccount],
+            pageInfo: { hasNextPage: false, hasPreviousPage: false },
+          }),
+          addAccount: async () => list,
+          removeAccount: async () => list,
+          timeline: async () => ({
+            nodes: [testPost],
+            pageInfo: { hasNextPage: false, hasPreviousPage: false },
+          }),
+        },
+        followRequests: {
+          list: async () => ({
+            nodes: [testViewerAccount],
+            pageInfo: { hasNextPage: false, hasPreviousPage: false },
+          }),
+          accept: async () => testRelationship,
+          reject: async () => testRelationship,
+        },
+        filters: {
+          list: async () => ({
+            nodes: [filter],
+            pageInfo: { hasNextPage: false, hasPreviousPage: false },
+          }),
+          get: async () => filter,
+          create: async () => filter,
+          update: async () => filter,
+          delete: async () => ({ ref: filter.ref, deleted: true }),
+        },
+        scheduledPosts: {
+          list: async () => ({
+            nodes: [scheduledPost],
+            pageInfo: { hasNextPage: false, hasPreviousPage: false },
+          }),
+          get: async () => scheduledPost,
+          create: async () => scheduledPost,
+          update: async () => scheduledPost,
+          delete: async () => ({ ref: scheduledPost.ref, deleted: true }),
+        },
+      }),
+    });
+
+    const auth = { authorization: `Bearer ${testSession.id}` };
+    await expect(
+      jsonRequest(
+        app.request("/api/v1/notifications?origin=https://example.test", { headers: auth }),
+      ),
+    ).resolves.toMatchObject({
+      data: [{ ref: { rawId: "notification-1" } }],
+      pageInfo: { hasNextPage: false },
+    });
+    await expect(
+      jsonRequest(app.request("/api/v1/lists?origin=https://example.test", { headers: auth })),
+    ).resolves.toMatchObject({
+      data: [{ title: "Friends" }],
+      pageInfo: { hasNextPage: false },
+    });
+    await expect(
+      jsonRequest(
+        app.request("/api/v1/filters", {
+          method: "POST",
+          headers: { ...auth, "content-type": "application/json" },
+          body: JSON.stringify({
+            origin: "https://example.test",
+            title: "Spoilers",
+            context: ["home"],
+            keywords: [{ keyword: "spoiler", wholeWord: true }],
+          }),
+        }),
+      ),
+    ).resolves.toMatchObject({ data: { title: "Spoilers" } });
+    await expect(
+      jsonRequest(
+        app.request("/api/v1/scheduled-posts", {
+          method: "POST",
+          headers: { ...auth, "content-type": "application/json" },
+          body: JSON.stringify({
+            origin: "https://example.test",
+            content: "Later",
+            scheduledAt: "2026-05-03T00:00:00.000Z",
+          }),
+        }),
+      ),
+    ).resolves.toMatchObject({ data: { contentText: "Later" } });
+
+    expect(calls).toEqual(["notifications.list"]);
   });
 });

@@ -160,6 +160,8 @@ export function createTestService(
     posts: {
       get: async () => testPost,
       create: async () => testPost,
+      update: async () => testPost,
+      history: async () => [],
       delete: async () => ({ ref: testPost.ref, deleted: true }),
     },
     timelines: {
@@ -176,6 +178,10 @@ export function createTestService(
         pageInfo: { hasNextPage: false, hasPreviousPage: false },
       }),
       hashtag: async () => ({
+        nodes: [testPost],
+        pageInfo: { hasNextPage: false, hasPreviousPage: false },
+      }),
+      list: async () => ({
         nodes: [testPost],
         pageInfo: { hasNextPage: false, hasPreviousPage: false },
       }),
@@ -221,6 +227,70 @@ export function createTestService(
       unboost: async () => testPost,
       react: async () => testPost,
       unreact: async () => testPost,
+    },
+    notifications: {
+      list: async () => ({ nodes: [], pageInfo: { hasNextPage: false, hasPreviousPage: false } }),
+      unreadCount: async () => 0,
+      dismiss: async () => ({ ref: testPost.ref, deleted: true }),
+      clear: async () => undefined,
+    },
+    lists: {
+      list: async () => ({ nodes: [], pageInfo: { hasNextPage: false, hasPreviousPage: false } }),
+      get: async () => {
+        throw new TypeError("Lists are outside this test.");
+      },
+      create: async () => {
+        throw new TypeError("Lists are outside this test.");
+      },
+      update: async () => {
+        throw new TypeError("Lists are outside this test.");
+      },
+      delete: async () => ({ ref: testPost.ref, deleted: true }),
+      accounts: async () => ({
+        nodes: [],
+        pageInfo: { hasNextPage: false, hasPreviousPage: false },
+      }),
+      addAccount: async () => {
+        throw new TypeError("Lists are outside this test.");
+      },
+      removeAccount: async () => {
+        throw new TypeError("Lists are outside this test.");
+      },
+      timeline: async () => ({
+        nodes: [testPost],
+        pageInfo: { hasNextPage: false, hasPreviousPage: false },
+      }),
+    },
+    followRequests: {
+      list: async () => ({ nodes: [], pageInfo: { hasNextPage: false, hasPreviousPage: false } }),
+      accept: async () => testRelationship,
+      reject: async () => testRelationship,
+    },
+    filters: {
+      list: async () => ({ nodes: [], pageInfo: { hasNextPage: false, hasPreviousPage: false } }),
+      get: async () => {
+        throw new TypeError("Filters are outside this test.");
+      },
+      create: async () => {
+        throw new TypeError("Filters are outside this test.");
+      },
+      update: async () => {
+        throw new TypeError("Filters are outside this test.");
+      },
+      delete: async () => ({ ref: testPost.ref, deleted: true }),
+    },
+    scheduledPosts: {
+      list: async () => ({ nodes: [], pageInfo: { hasNextPage: false, hasPreviousPage: false } }),
+      get: async () => {
+        throw new TypeError("Scheduled posts are outside this test.");
+      },
+      create: async () => {
+        throw new TypeError("Scheduled posts are outside this test.");
+      },
+      update: async () => {
+        throw new TypeError("Scheduled posts are outside this test.");
+      },
+      delete: async () => ({ ref: testPost.ref, deleted: true }),
     },
     auth: {
       importToken: async () => testSession,
@@ -307,6 +377,19 @@ export interface IntrospectionInputType {
 export function typeName(type: IntrospectionTypeRef | undefined): string | undefined {
   if (type === undefined) return undefined;
   return type.name ?? typeName(type.ofType ?? undefined);
+}
+
+export function typeSignature(type: IntrospectionTypeRef | undefined): string | undefined {
+  if (type === undefined) return undefined;
+  if (type.kind === "NON_NULL") {
+    const inner = typeSignature(type.ofType ?? undefined);
+    return inner === undefined ? undefined : `${inner}!`;
+  }
+  if (type.kind === "LIST") {
+    const inner = typeSignature(type.ofType ?? undefined);
+    return inner === undefined ? undefined : `[${inner}]`;
+  }
+  return type.name ?? undefined;
 }
 
 export function inputTypeName(

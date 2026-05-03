@@ -250,6 +250,8 @@ function createService(overrides: ServiceOverrides = {}): ActivityPlugApiService
     posts: {
       get: async () => post,
       create: overrides.createPost ?? (async () => post),
+      update: async () => post,
+      history: async () => [],
       delete: async () => ({ ref: post.ref, deleted: true }),
     },
     timelines: {
@@ -257,6 +259,7 @@ function createService(overrides: ServiceOverrides = {}): ActivityPlugApiService
       public: async () => ({ nodes: [post], pageInfo: pageInfo() }),
       local: async () => ({ nodes: [post], pageInfo: pageInfo() }),
       hashtag: async () => ({ nodes: [post], pageInfo: pageInfo() }),
+      list: async () => ({ nodes: [post], pageInfo: pageInfo() }),
     },
     search: {
       search: async () => ({ accounts: [account], posts: [post], hashtags: [], raw: {} }),
@@ -298,6 +301,64 @@ function createService(overrides: ServiceOverrides = {}): ActivityPlugApiService
       unboost: async () => post,
       react: overrides.react ?? (async () => post),
       unreact: async () => post,
+    },
+    notifications: {
+      list: async () => ({ nodes: [], pageInfo: pageInfo() }),
+      unreadCount: async () => 0,
+      dismiss: async () => ({ ref: post.ref, deleted: true }),
+      clear: async () => undefined,
+    },
+    lists: {
+      list: async () => ({ nodes: [], pageInfo: pageInfo() }),
+      get: async () => {
+        throw new TypeError("Lists are outside this example.");
+      },
+      create: async () => {
+        throw new TypeError("Lists are outside this example.");
+      },
+      update: async () => {
+        throw new TypeError("Lists are outside this example.");
+      },
+      delete: async () => ({ ref: post.ref, deleted: true }),
+      accounts: async () => ({ nodes: [], pageInfo: pageInfo() }),
+      addAccount: async () => {
+        throw new TypeError("Lists are outside this example.");
+      },
+      removeAccount: async () => {
+        throw new TypeError("Lists are outside this example.");
+      },
+      timeline: async () => ({ nodes: [post], pageInfo: pageInfo() }),
+    },
+    followRequests: {
+      list: async () => ({ nodes: [], pageInfo: pageInfo() }),
+      accept: async () => relationship,
+      reject: async () => relationship,
+    },
+    filters: {
+      list: async () => ({ nodes: [], pageInfo: pageInfo() }),
+      get: async () => {
+        throw new TypeError("Filters are outside this example.");
+      },
+      create: async () => {
+        throw new TypeError("Filters are outside this example.");
+      },
+      update: async () => {
+        throw new TypeError("Filters are outside this example.");
+      },
+      delete: async () => ({ ref: post.ref, deleted: true }),
+    },
+    scheduledPosts: {
+      list: async () => ({ nodes: [], pageInfo: pageInfo() }),
+      get: async () => {
+        throw new TypeError("Scheduled posts are outside this example.");
+      },
+      create: async () => {
+        throw new TypeError("Scheduled posts are outside this example.");
+      },
+      update: async () => {
+        throw new TypeError("Scheduled posts are outside this example.");
+      },
+      delete: async () => ({ ref: post.ref, deleted: true }),
     },
     auth: {
       importToken: async () => session,

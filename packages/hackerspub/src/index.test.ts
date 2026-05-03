@@ -487,6 +487,27 @@ describe("HackersPub adapter", () => {
     });
   });
 
+  it("rejects empty media edit requests before sending article mutations", async () => {
+    const client = createClientWithGraphQLResponse({});
+
+    await expect(
+      client.posts.update({
+        id: postId(),
+        session: {
+          id: "session-1",
+          adapter: "hackerspub",
+          origin: "https://hackerspub.example",
+          scopes: [],
+          capabilities: {},
+        },
+        mediaIds: [],
+      }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "media.upload", operation: "post.update" },
+    });
+  });
+
   it("normalizes public timelines, search, and post lookup", async () => {
     const seenOperations: string[] = [];
     const client = createActivityPlugClient({
@@ -776,7 +797,7 @@ describe("HackersPub adapter", () => {
       context: { operation: "post.create" },
     });
     await expect(
-      client.posts.create({ session, content: "Unknown", visibility: "unknown" }),
+      client.posts.create({ session, content: "Unknown", visibility: "unknown" as never }),
     ).rejects.toMatchObject({
       code: "VALIDATION_FAILED",
       context: { operation: "post.create" },

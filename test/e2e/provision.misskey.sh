@@ -69,6 +69,18 @@ if [[ -z "$POST_SEARCH_RAW_ID" ]]; then
   exit 1
 fi
 
+create_poll() {
+  local index="$1"
+  curl -sf -X POST "$BASE_URL/api/notes/create" \
+    -H "Content-Type: application/json" \
+    -d "{\"i\":\"$TOKEN\",\"text\":\"ActivityPlug Misskey E2E poll ${index} $(date +%s)\",\"visibility\":\"public\",\"poll\":{\"choices\":[\"TypeScript\",\"ActivityPub\"],\"multiple\":false,\"expiredAfter\":3600000}}" |
+    jq -r '.createdNote.id + ":poll"'
+}
+POLL_ID=$(create_poll 1)
+HTTP_POLL_ID=$(create_poll 2)
+GRAPHQL_POLL_ID=$(create_poll 3)
+
 jq -nc --arg token "$TOKEN" --arg origin "$PUBLIC_ORIGIN" --arg social "$SOCIAL_USERNAME" \
   --arg postSearchQuery "$SEED_TEXT" --arg postSearchRawId "$POST_SEARCH_RAW_ID" \
-  '{adapter:"misskey",origin:$origin,token:$token,accountHandle:"admin",socialActionHandle:$social,hashtag:"activityplug",postSearchQuery:$postSearchQuery,postSearchRawId:$postSearchRawId}'
+  --arg pollId "$POLL_ID" --arg httpPollId "$HTTP_POLL_ID" --arg graphqlPollId "$GRAPHQL_POLL_ID" \
+  '{adapter:"misskey",origin:$origin,token:$token,accountHandle:"admin",socialActionHandle:$social,hashtag:"activityplug",pollId:$pollId,httpPollId:$httpPollId,graphqlPollId:$graphqlPollId,postSearchQuery:$postSearchQuery,postSearchRawId:$postSearchRawId}'

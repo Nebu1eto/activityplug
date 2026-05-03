@@ -19,6 +19,7 @@ import {
   type SearchInput,
   type SearchResult,
   type ReactPostInput,
+  type UpdatePostInput,
   type VotePollInput,
 } from "@activityplug/core";
 
@@ -102,6 +103,7 @@ export function createHackersPubAdapter(
     posts: {
       get: async (input, context) => getPostById(input.id, context, options),
       create: async (input, context) => createHackersPubPost(input, context, options),
+      update: async (input, context) => updateArticlePost(input, context, options),
       delete: async (input, context) => deletePost(input.id, input.session, context, options),
     },
     polls: {
@@ -518,6 +520,89 @@ async function deletePost(
   });
 }
 
+async function updateArticlePost(
+  input: UpdatePostInput,
+  context: AdapterOperationContext,
+  options: HackersPubAdapterOptions,
+): Promise<Post> {
+  if (input.mediaIds !== undefined) {
+    throw unsupportedPostUpdate(context, "media.upload");
+  }
+  if (input.poll !== undefined) {
+    throw unsupportedPostUpdate(context, "polls.create");
+  }
+  if (input.replyToId !== undefined || input.quoteOfId !== undefined) {
+    throw unsupportedPostUpdate(context, "posts.update");
+  }
+  if (input.visibility !== undefined || input.sensitive !== undefined) {
+    throw unsupportedPostUpdate(context, "posts.update");
+  }
+  const current = await getPostById(input.id, context, options, input.session, "post.update");
+  if (
+    typeof current.raw !== "object" ||
+    current.raw === null ||
+    (current.raw as { readonly __typename?: unknown }).__typename !== "Article"
+  ) {
+    throw unsupportedPostUpdate(context, "posts.update");
+  }
+  const postId = hackersPubGlobalId("Article", input.id);
+  const response = await graphql<Record<string, unknown>>(
+    `
+        mutation ($input: UpdateArticleInput!) {
+          updateArticle(input: $input) {
+            __typename
+            ... on UpdateArticlePayload {
+              article {
+                ${postSelection()}
+              }
+            }
+            ... on InvalidInputError {
+              inputPath
+            }
+            ... on NotAuthenticatedError {
+              __typename
+            }
+          }
+        }
+      `,
+    {
+      input: {
+        articleId: postId,
+        ...(input.content === undefined ? {} : { content: input.content }),
+        ...(input.summary === undefined ? {} : { title: input.summary }),
+      },
+    },
+    context,
+    options,
+    "post.update",
+    input.session,
+  );
+  const post = postFromMutationPayload(
+    response,
+    "updateArticle",
+    "article",
+    context,
+    "post.update",
+  );
+  return postFromResponse(post, context, "post.update");
+}
+
+function unsupportedPostUpdate(
+  context: AdapterOperationContext,
+  capability: "media.upload" | "polls.create" | "posts.update",
+): ActivityPlugError {
+  return new ActivityPlugError(
+    "UNSUPPORTED_OPERATION",
+    "HackersPub article editing does not support this ActivityPlug input.",
+    {
+      adapter: context.adapterId,
+      origin: context.origin,
+      operation: "post.update",
+      capability,
+    },
+  );
+}
+
 async function getPoll(
   id: string,
   context: AdapterOperationContext,
@@ -699,9 +784,11 @@ async function getPostById(
   id: string,
   context: AdapterOperationContext,
   options: HackersPubAdapterOptions,
+  session?: AuthSession,
+  operation = "post.get",
 ): Promise<Post> {
-  return withPostGlobalId(id, context, "post.get", async (postId) => {
-    return getPostByGlobalId(postId, context, options);
+  return withPostGlobalId(id, context, operation, async (postId) => {
+    return getPostByGlobalId(postId, context, options, session, operation);
   });
 }
 
@@ -709,6 +796,8 @@ async function getPostByGlobalId(
   id: string,
   context: AdapterOperationContext,
   options: HackersPubAdapterOptions,
+  session?: AuthSession,
+  operation = "post.get",
 ): Promise<Post> {
   const response = await graphql<{ readonly node?: HackersPubPost | null }>(
     `
@@ -723,21 +812,22 @@ async function getPostByGlobalId(
     { id },
     context,
     options,
-    "post.get",
+    operation,
+    session,
   );
-  assertSelectedField(response, "node", context, "post.get");
+  assertSelectedField(response, "node", context, operation);
   if (response.node === null)
-    throw activityPlugError("NOT_FOUND", "HackersPub post was not found.", context, "post.get");
+    throw activityPlugError("NOT_FOUND", "HackersPub post was not found.", context, operation);
   if (response.node === undefined) {
     throw activityPlugError(
       "REMOTE_ERROR",
       "HackersPub post response is malformed.",
       context,
-      "post.get",
+      operation,
       response,
     );
   }
-  return postFromResponse(response.node, context, "post.get");
+  return postFromResponse(response.node, context, operation);
 }
 
 async function withPostGlobalId<T>(

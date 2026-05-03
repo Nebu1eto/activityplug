@@ -103,3 +103,23 @@ export interface MisskeyFileResponse {
     readonly height?: number;
   };
 }
+
+export interface MisskeyNotificationResponse {
+  readonly id?: string;
+  readonly type?: string;
+  readonly createdAt?: string;
+  readonly user?: MisskeyMeResponse | null;
+  readonly note?: MisskeyNoteResponse | null;
+}
+
+export interface MisskeyFollowRequestResponse {
+  readonly id?: string;
+  readonly follower?: MisskeyMeResponse;
+  readonly followee?: MisskeyMeResponse;
+}
+
+export interface MisskeyUserListResponse {
+  readonly id?: string;
+  readonly name?: string;
+  readonly userIds?: readonly string[];
+}

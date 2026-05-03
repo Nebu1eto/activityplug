@@ -48,10 +48,13 @@ describe("Pleroma adapter", () => {
       status: "unknown",
     });
     expect(client.capabilities["notifications.pleromaEmojiReaction"]).toMatchObject({
-      status: "unknown",
+      status: "supported",
     });
     expect(client.capabilities["notifications.pleromaChatMention"]).toMatchObject({
-      status: "unknown",
+      status: "supported",
+    });
+    expect(client.capabilities["notifications.pleromaReport"]).toMatchObject({
+      status: "supported",
     });
 
     const account = await client.accounts.getByHandle({ handle: "@alice@pleroma.example" });
@@ -206,6 +209,56 @@ describe("Pleroma adapter", () => {
         operation: "social.reaction",
       },
     });
+  });
+
+  it("maps Pleroma notification aliases in both directions", async () => {
+    let notificationQuery = "";
+    const client = createActivityPlugClient({
+      adapter: createPleromaAdapter({
+        fetch: mockFetch(async (request) => {
+          const url = new URL(request.url);
+          notificationQuery = url.search;
+          expect(url.pathname).toBe("/api/v1/notifications");
+          return jsonResponse([
+            {
+              id: "notification-1",
+              type: "pleroma:emoji_reaction",
+              created_at: "2026-04-27T00:00:00.000Z",
+              account: accountMappingFixtures.pleroma.account,
+            },
+            {
+              id: "notification-2",
+              type: "pleroma:chat_mention",
+              created_at: "2026-04-27T00:00:01.000Z",
+              account: accountMappingFixtures.pleroma.account,
+            },
+            {
+              id: "notification-3",
+              type: "pleroma:report",
+              created_at: "2026-04-27T00:00:02.000Z",
+              account: accountMappingFixtures.pleroma.account,
+            },
+          ]);
+        }),
+      }),
+      origin: "https://pleroma.example",
+    });
+    const session = await client.auth.injectToken({ accessToken: "token-1" });
+    const notifications = await client.notifications.list({
+      session,
+      types: ["pleroma.emoji_reaction", "pleroma.chat_mention", "pleroma.report"],
+    });
+
+    expect(new URLSearchParams(notificationQuery).getAll("types[]")).toEqual([
+      "pleroma:emoji_reaction",
+      "pleroma:chat_mention",
+      "pleroma:report",
+    ]);
+    expect(notifications.nodes.map((notification) => notification.type)).toEqual([
+      "pleroma.emoji_reaction",
+      "pleroma.chat_mention",
+      "pleroma.report",
+    ]);
   });
 });
 

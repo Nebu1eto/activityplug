@@ -11,6 +11,8 @@ import {
   type EntityRef,
   type InstanceProfile,
   type MediaAttachment,
+  type Notification,
+  type NotificationTypeInput,
   type InjectTokenInput,
   type OAuthCallbackInput,
   type OAuthCallbackResult,
@@ -22,7 +24,11 @@ import {
   type Poll,
   type PostVisibility,
   type Post,
+  type AccountList,
+  type Filter,
+  type PostRevision,
   type Relationship,
+  type ScheduledPost,
   type SearchResult,
   type VerifyCredentialsResult,
 } from "@activityplug/core";
@@ -52,6 +58,11 @@ export interface ActivityPlugApiService {
   readonly media: ActivityPlugMediaApiService;
   readonly polls: ActivityPlugPollApiService;
   readonly social: ActivityPlugSocialApiService;
+  readonly notifications: ActivityPlugNotificationApiService;
+  readonly lists: ActivityPlugListApiService;
+  readonly followRequests: ActivityPlugFollowRequestApiService;
+  readonly filters: ActivityPlugFilterApiService;
+  readonly scheduledPosts: ActivityPlugScheduledPostApiService;
   readonly auth: ActivityPlugAuthApiService;
   readonly viewer: (input: ViewerInput) => Promise<VerifyCredentialsResult>;
 }
@@ -70,6 +81,8 @@ export interface ActivityPlugAccountApiService {
 export interface ActivityPlugPostApiService {
   readonly get: (input: PostIdRequest) => Promise<Post>;
   readonly create: (input: CreatePostRequest) => Promise<Post>;
+  readonly update: (input: UpdatePostRequest) => Promise<Post>;
+  readonly history: (input: PostHistoryRequest) => Promise<readonly PostRevision[]>;
   readonly delete: (input: DeletePostRequest) => Promise<DeletedEntity>;
 }
 
@@ -78,6 +91,7 @@ export interface ActivityPlugTimelineApiService {
   readonly public: (input: PublicTimelineRequest) => Promise<Connection<Post>>;
   readonly local: (input: PublicTimelineRequest) => Promise<Connection<Post>>;
   readonly hashtag: (input: HashtagTimelineRequest) => Promise<Connection<Post>>;
+  readonly list: (input: ListTimelineRequest) => Promise<Connection<Post>>;
 }
 
 export interface ActivityPlugSearchApiService {
@@ -91,6 +105,47 @@ export interface ActivityPlugMediaApiService {
 export interface ActivityPlugPollApiService {
   readonly get: (input: PollIdRequest) => Promise<Poll>;
   readonly vote: (input: VotePollRequest) => Promise<Poll>;
+}
+
+export interface ActivityPlugNotificationApiService {
+  readonly list: (input: NotificationsRequest) => Promise<Connection<Notification>>;
+  readonly unreadCount: (input: SessionSelectorRequest) => Promise<number>;
+  readonly dismiss: (input: NotificationIdRequest) => Promise<DeletedEntity>;
+  readonly clear: (input: SessionSelectorRequest) => Promise<void>;
+}
+
+export interface ActivityPlugListApiService {
+  readonly list: (input: SessionPageRequest) => Promise<Connection<AccountList>>;
+  readonly get: (input: ListIdRequest) => Promise<AccountList>;
+  readonly create: (input: CreateListRequest) => Promise<AccountList>;
+  readonly update: (input: UpdateListRequest) => Promise<AccountList>;
+  readonly delete: (input: ListIdRequest) => Promise<DeletedEntity>;
+  readonly accounts: (input: ListAccountsRequest) => Promise<Connection<Account>>;
+  readonly addAccount: (input: ListAccountRequest) => Promise<AccountList>;
+  readonly removeAccount: (input: ListAccountRequest) => Promise<AccountList>;
+  readonly timeline: (input: ListTimelineRequest) => Promise<Connection<Post>>;
+}
+
+export interface ActivityPlugFollowRequestApiService {
+  readonly list: (input: SessionPageRequest) => Promise<Connection<Account>>;
+  readonly accept: (input: RelationshipRequest) => Promise<Relationship>;
+  readonly reject: (input: RelationshipRequest) => Promise<Relationship>;
+}
+
+export interface ActivityPlugFilterApiService {
+  readonly list: (input: SessionPageRequest) => Promise<Connection<Filter>>;
+  readonly get: (input: FilterIdRequest) => Promise<Filter>;
+  readonly create: (input: CreateFilterRequest) => Promise<Filter>;
+  readonly update: (input: UpdateFilterRequest) => Promise<Filter>;
+  readonly delete: (input: FilterIdRequest) => Promise<DeletedEntity>;
+}
+
+export interface ActivityPlugScheduledPostApiService {
+  readonly list: (input: SessionPageRequest) => Promise<Connection<ScheduledPost>>;
+  readonly get: (input: ScheduledPostIdRequest) => Promise<ScheduledPost>;
+  readonly create: (input: SchedulePostRequest) => Promise<ScheduledPost>;
+  readonly update: (input: UpdateScheduledPostRequest) => Promise<ScheduledPost>;
+  readonly delete: (input: ScheduledPostIdRequest) => Promise<DeletedEntity>;
 }
 
 export interface ActivityPlugSocialApiService {
@@ -139,6 +194,9 @@ export interface CapabilitySetPayload {
   readonly notifications: readonly CapabilityListItem[];
   readonly polls: readonly CapabilityListItem[];
   readonly lists: readonly CapabilityListItem[];
+  readonly followRequests: readonly CapabilityListItem[];
+  readonly filters: readonly CapabilityListItem[];
+  readonly scheduledPosts: readonly CapabilityListItem[];
   readonly streaming: readonly CapabilityListItem[];
   readonly admin: readonly CapabilityListItem[];
 }
@@ -267,6 +325,36 @@ export interface PublicDeletedEntity {
   readonly ref: PublicEntityRef;
   readonly deleted: true;
   readonly raw?: unknown;
+}
+
+export interface PublicNotification extends Omit<Notification, "account" | "post" | "ref"> {
+  readonly ref: PublicEntityRef;
+  readonly account: PublicEntityRef;
+  readonly post?: PublicEntityRef;
+}
+
+export interface PublicList extends Omit<AccountList, "ref"> {
+  readonly ref: PublicEntityRef;
+}
+
+export interface PublicFilter extends Omit<Filter, "ref"> {
+  readonly ref: PublicEntityRef;
+}
+
+export interface PublicScheduledPost extends Omit<
+  ScheduledPost,
+  "media" | "poll" | "ref" | "replyTo"
+> {
+  readonly ref: PublicEntityRef;
+  readonly media: readonly PublicMediaAttachment[];
+  readonly poll?: PublicPoll;
+  readonly replyTo?: PublicEntityRef;
+}
+
+export interface PublicPostRevision extends Omit<PostRevision, "media" | "poll" | "ref"> {
+  readonly ref: PublicEntityRef;
+  readonly media: readonly PublicMediaAttachment[];
+  readonly poll?: PublicPoll;
 }
 
 export interface PublicRelationship {
@@ -422,7 +510,7 @@ export interface DeletePostRequest extends PostIdRequest {
 export interface CreatePostRequest extends InstanceSelector {
   readonly sessionId: string;
   readonly content: string;
-  readonly visibility?: PostVisibility;
+  readonly visibility?: Exclude<PostVisibility, "unknown">;
   readonly sensitive?: boolean;
   readonly summary?: string;
   readonly replyToId?: string;
@@ -433,6 +521,18 @@ export interface CreatePostRequest extends InstanceSelector {
     readonly multiple?: boolean;
     readonly expiresInSeconds?: number;
   };
+}
+
+export interface UpdatePostRequest extends Partial<
+  Omit<CreatePostRequest, "origin" | "sessionId">
+> {
+  readonly id: string;
+  readonly origin?: string;
+  readonly sessionId: string;
+}
+
+export interface PostHistoryRequest extends PostIdRequest {
+  readonly sessionId?: string;
 }
 
 export interface PublicTimelineRequest extends InstanceSelector {
@@ -472,6 +572,88 @@ export interface VotePollRequest extends PollIdRequest {
   readonly choices: readonly number[];
 }
 
+export interface SessionSelectorRequest extends InstanceSelector {
+  readonly sessionId: string;
+}
+
+export interface NotificationsRequest extends SessionPageRequest {
+  readonly types?: readonly NotificationTypeInput[];
+}
+
+export interface NotificationIdRequest {
+  readonly id: string;
+  readonly sessionId: string;
+}
+
+export interface ListIdRequest {
+  readonly id: string;
+  readonly sessionId: string;
+}
+
+export interface CreateListRequest extends SessionSelectorRequest {
+  readonly title: string;
+  readonly repliesPolicy?: "followed" | "list" | "none";
+  readonly exclusive?: boolean;
+}
+
+export interface UpdateListRequest extends Omit<CreateListRequest, "origin"> {
+  readonly id: string;
+  readonly origin?: string;
+}
+
+export interface ListAccountsRequest extends ListIdRequest {
+  readonly page?: PageRequest;
+}
+
+export interface ListAccountRequest extends ListIdRequest {
+  readonly accountId: string;
+}
+
+export interface ListTimelineRequest extends ListIdRequest {
+  readonly page?: PageRequest;
+}
+
+export interface FilterIdRequest {
+  readonly id: string;
+  readonly sessionId: string;
+}
+
+export interface CreateFilterRequest extends SessionSelectorRequest {
+  readonly title: string;
+  readonly context: readonly (
+    | "account"
+    | "home"
+    | "notifications"
+    | "profile"
+    | "public"
+    | "thread"
+  )[];
+  readonly action?: "hide" | "warn";
+  readonly expiresInSeconds?: number;
+  readonly keywords: readonly {
+    readonly keyword: string;
+    readonly wholeWord?: boolean;
+  }[];
+}
+
+export interface UpdateFilterRequest extends Omit<CreateFilterRequest, "origin"> {
+  readonly id: string;
+  readonly origin?: string;
+}
+
+export interface ScheduledPostIdRequest {
+  readonly id: string;
+  readonly sessionId: string;
+}
+
+export interface SchedulePostRequest extends CreatePostRequest {
+  readonly scheduledAt: string;
+}
+
+export interface UpdateScheduledPostRequest extends ScheduledPostIdRequest {
+  readonly scheduledAt: string;
+}
+
 export interface RelationshipRequest {
   readonly sessionId: string;
   readonly accountId: string;
@@ -488,7 +670,7 @@ export interface PostActionRequest {
 }
 
 export interface BoostPostRequest extends PostActionRequest {
-  readonly visibility?: PostVisibility;
+  readonly visibility?: Exclude<PostVisibility, "unknown">;
 }
 
 export interface ReactPostRequest extends PostActionRequest {
@@ -521,6 +703,8 @@ export function createDefaultApiService(capabilities: CapabilitySet): ActivityPl
     posts: {
       get: unsupportedApiOperation("post.get"),
       create: unsupportedApiOperation("post.create"),
+      update: unsupportedApiOperation("post.update"),
+      history: unsupportedApiOperation("post.history"),
       delete: unsupportedApiOperation("post.delete"),
     },
     timelines: {
@@ -528,6 +712,7 @@ export function createDefaultApiService(capabilities: CapabilitySet): ActivityPl
       public: unsupportedApiOperation("timeline.public"),
       local: unsupportedApiOperation("timeline.local"),
       hashtag: unsupportedApiOperation("timeline.hashtag"),
+      list: unsupportedApiOperation("timeline.list"),
     },
     search: {
       search: unsupportedApiOperation("search"),
@@ -555,6 +740,42 @@ export function createDefaultApiService(capabilities: CapabilitySet): ActivityPl
       unboost: unsupportedApiOperation("social.unboost"),
       react: unsupportedApiOperation("social.reaction"),
       unreact: unsupportedApiOperation("social.unreaction"),
+    },
+    notifications: {
+      list: unsupportedApiOperation("notification.list"),
+      unreadCount: unsupportedApiOperation("notification.unreadCount"),
+      dismiss: unsupportedApiOperation("notification.dismiss"),
+      clear: unsupportedApiOperation("notification.clear"),
+    },
+    lists: {
+      list: unsupportedApiOperation("list.list"),
+      get: unsupportedApiOperation("list.get"),
+      create: unsupportedApiOperation("list.create"),
+      update: unsupportedApiOperation("list.update"),
+      delete: unsupportedApiOperation("list.delete"),
+      accounts: unsupportedApiOperation("list.accounts"),
+      addAccount: unsupportedApiOperation("list.account.add"),
+      removeAccount: unsupportedApiOperation("list.account.remove"),
+      timeline: unsupportedApiOperation("timeline.list"),
+    },
+    followRequests: {
+      list: unsupportedApiOperation("followRequest.list"),
+      accept: unsupportedApiOperation("followRequest.accept"),
+      reject: unsupportedApiOperation("followRequest.reject"),
+    },
+    filters: {
+      list: unsupportedApiOperation("filter.list"),
+      get: unsupportedApiOperation("filter.get"),
+      create: unsupportedApiOperation("filter.create"),
+      update: unsupportedApiOperation("filter.update"),
+      delete: unsupportedApiOperation("filter.delete"),
+    },
+    scheduledPosts: {
+      list: unsupportedApiOperation("scheduledPost.list"),
+      get: unsupportedApiOperation("scheduledPost.get"),
+      create: unsupportedApiOperation("scheduledPost.create"),
+      update: unsupportedApiOperation("scheduledPost.update"),
+      delete: unsupportedApiOperation("scheduledPost.delete"),
     },
     auth: {
       importToken: unsupportedAuth,
@@ -595,6 +816,9 @@ export function serializeCapabilitySetPayload(capabilities: CapabilitySet): Capa
     notifications: [],
     polls: [],
     lists: [],
+    followRequests: [],
+    filters: [],
+    scheduledPosts: [],
     streaming: [],
     admin: [],
   };
@@ -702,6 +926,87 @@ export function serializePostConnection(
   return {
     nodes: connection.nodes.map((post) => serializePost(post)),
     pageInfo: connection.pageInfo,
+  };
+}
+
+export function serializeNotification(notification: Notification): PublicNotification {
+  return {
+    ...notification,
+    ref: serializeEntityRef(notification.ref),
+    account: serializeEntityRef(notification.account),
+    ...(notification.post === undefined ? {} : { post: serializeEntityRef(notification.post) }),
+  };
+}
+
+export function serializeNotificationConnection(
+  connection: Connection<Notification>,
+): PublicConnection<PublicNotification> {
+  return {
+    nodes: connection.nodes.map((notification) => serializeNotification(notification)),
+    pageInfo: connection.pageInfo,
+  };
+}
+
+export function serializeList(list: AccountList): PublicList {
+  return { ...list, ref: serializeEntityRef(list.ref) };
+}
+
+export function serializeListConnection(
+  connection: Connection<AccountList>,
+): PublicConnection<PublicList> {
+  return {
+    nodes: connection.nodes.map((list) => serializeList(list)),
+    pageInfo: connection.pageInfo,
+  };
+}
+
+export function serializeAccountConnection(
+  connection: Connection<Account>,
+): PublicConnection<PublicAccount> {
+  return {
+    nodes: connection.nodes.map((account) => serializeAccount(account)),
+    pageInfo: connection.pageInfo,
+  };
+}
+
+export function serializeFilter(filter: Filter): PublicFilter {
+  return { ...filter, ref: serializeEntityRef(filter.ref) };
+}
+
+export function serializeFilterConnection(
+  connection: Connection<Filter>,
+): PublicConnection<PublicFilter> {
+  return {
+    nodes: connection.nodes.map((filter) => serializeFilter(filter)),
+    pageInfo: connection.pageInfo,
+  };
+}
+
+export function serializeScheduledPost(post: ScheduledPost): PublicScheduledPost {
+  return {
+    ...post,
+    ref: serializeEntityRef(post.ref),
+    media: post.media.map((attachment) => serializeMediaAttachment(attachment)),
+    ...(post.poll === undefined ? {} : { poll: serializePoll(post.poll) }),
+    ...(post.replyTo === undefined ? {} : { replyTo: serializeEntityRef(post.replyTo) }),
+  };
+}
+
+export function serializeScheduledPostConnection(
+  connection: Connection<ScheduledPost>,
+): PublicConnection<PublicScheduledPost> {
+  return {
+    nodes: connection.nodes.map((post) => serializeScheduledPost(post)),
+    pageInfo: connection.pageInfo,
+  };
+}
+
+export function serializePostRevision(revision: PostRevision): PublicPostRevision {
+  return {
+    ...revision,
+    ref: serializeEntityRef(revision.ref),
+    media: revision.media.map((attachment) => serializeMediaAttachment(attachment)),
+    ...(revision.poll === undefined ? {} : { poll: serializePoll(revision.poll) }),
   };
 }
 

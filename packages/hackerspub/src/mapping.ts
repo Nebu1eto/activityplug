@@ -1,6 +1,7 @@
 import {
   ActivityPlugError,
   createEntityRef,
+  isIsoDateTimeString,
   decodePageCursor,
   encodePageCursor,
   type Account,
@@ -222,7 +223,7 @@ export function actorFromMutationPayload(
 export function postFromMutationPayload(
   response: Record<string, unknown>,
   mutation: string,
-  resultField: "note" | "post" | "originalPost" | "share",
+  resultField: "article" | "note" | "post" | "originalPost" | "share",
   context: AdapterOperationContext,
   operation: string,
 ): HackersPubPost {
@@ -307,7 +308,7 @@ export function pollFromResponse(
       response,
     );
   }
-  const ends = optionalString(response.ends, "ends", response, context, operation);
+  const ends = optionalDateTimeString(response.ends, "ends", response, context, operation);
   const options = response.options;
   if (!Array.isArray(options)) {
     throw activityPlugError(
@@ -345,6 +346,25 @@ export function pollFromResponse(
     options: options.map((option) => pollOptionFromResponse(option, context, operation)),
     raw: response,
   };
+}
+
+function optionalDateTimeString(
+  value: unknown,
+  field: string,
+  raw: unknown,
+  context: AdapterOperationContext,
+  operation: string,
+): string | undefined {
+  const parsed = optionalString(value, field, raw, context, operation);
+  if (parsed === undefined) return undefined;
+  if (parsed.length > 0 && isIsoDateTimeString(parsed)) return parsed;
+  throw activityPlugError(
+    "REMOTE_ERROR",
+    `HackersPub response field must be a valid date-time: ${field}.`,
+    context,
+    operation,
+    raw,
+  );
 }
 
 export function pollOptionFromResponse(
@@ -424,6 +444,7 @@ export function actorSelectionWithRelationship(): string {
 
 export function postSelection(): string {
   return `
+    __typename
     id
     uuid
     iri

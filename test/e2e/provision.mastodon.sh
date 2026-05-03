@@ -7,14 +7,16 @@ $COMPOSE exec -T mastodon-web-backend bin/tootctl accounts create \
   activityplug --email=activityplug@gmail.com --confirmed --approve >/dev/null 2>&1 || true
 $COMPOSE exec -T mastodon-web-backend bin/tootctl accounts create \
   activityplug_target --email=activityplug-target@gmail.com --confirmed --approve >/dev/null 2>&1 || true
-$COMPOSE exec -T mastodon-web-backend bin/rails runner - <<'RUBY'
+$COMPOSE exec -T mastodon-web-backend bin/rails runner - <<'RUBY' >/dev/null 2>&1
 account = Account.find_local('activityplug')
 abort 'failed to create local activityplug account' if account.nil?
+account.update!(discoverable: true, indexable: true)
 user = account.user
 user.update!(approved: true, confirmed_at: Time.now.utc)
 user.approve! if user.respond_to?(:approve!)
 target = Account.find_local('activityplug_target')
 abort 'failed to create local activityplug_target account' if target.nil?
+target.update!(discoverable: true, indexable: true)
 target.user.update!(approved: true, confirmed_at: Time.now.utc)
 target.user.approve! if target.user.respond_to?(:approve!)
 PostStatusService.new.call(account, text: 'ActivityPlug Mastodon E2E seed post #activityplug', visibility: :public) if account.statuses.empty?
@@ -41,7 +43,7 @@ token.scopes = 'read write follow push'
 token.token = SecureRandom.hex(32) if token.token.blank?
 token.save!
 RUBY
-TOKEN=$($COMPOSE exec -T mastodon-web-backend bin/rails runner - <<'RUBY'
+TOKEN=$(($COMPOSE exec -T mastodon-web-backend bin/rails runner - <<'RUBY'
 account = Account.find_local('activityplug')
 abort 'failed to find local activityplug account' if account.nil?
 application = Doorkeeper::Application.find_by!(name: 'activityplug-e2e')
@@ -53,31 +55,49 @@ token = Doorkeeper::AccessToken.where(
 abort 'failed to create local activityplug access token' if token.nil?
 puts token.token
 RUBY
-)
-POST_SEARCH_QUERY=$($COMPOSE exec -T mastodon-web-backend bin/rails runner - <<'RUBY'
+) | grep -v '^W, \[')
+POST_SEARCH_QUERY=$(($COMPOSE exec -T mastodon-web-backend bin/rails runner - <<'RUBY'
 account = Account.find_local('activityplug')
 abort 'failed to find local activityplug account' if account.nil?
 status = account.statuses.order(created_at: :desc).first
 abort 'failed to find local activityplug status' if status.nil?
-puts "https://mastodon.127.0.0.1.nip.io:41080/@activityplug/#{status.id}"
+puts "#{status.text} in:library"
 RUBY
-)
-POST_SEARCH_RAW_ID=$($COMPOSE exec -T mastodon-web-backend bin/rails runner - <<'RUBY'
+) | grep -v '^W, \[')
+POST_SEARCH_RAW_ID=$(($COMPOSE exec -T mastodon-web-backend bin/rails runner - <<'RUBY'
 account = Account.find_local('activityplug')
 abort 'failed to find local activityplug account' if account.nil?
 status = account.statuses.order(created_at: :desc).first
 abort 'failed to find local activityplug status' if status.nil?
 puts status.id
 RUBY
-)
-POLL_IDS=$($COMPOSE exec -T mastodon-web-backend bin/rails runner - <<'RUBY'
+) | grep -v '^W, \[')
+$COMPOSE exec -T mastodon-web-backend bin/tootctl search deploy >/dev/null 2>&1
+for _ in $(seq 1 45); do
+  if curl -skG "https://mastodon.127.0.0.1.nip.io:41080/api/v2/search" \
+    -H "Authorization: Bearer $TOKEN" \
+    --data-urlencode "q=$POST_SEARCH_QUERY" \
+    --data-urlencode "type=statuses" \
+    --data-urlencode "limit=5" | jq -e --arg id "$POST_SEARCH_RAW_ID" \
+    'any(.statuses[]; .id == $id)' >/dev/null; then
+    break
+  fi
+  sleep 2
+done
+curl -skG "https://mastodon.127.0.0.1.nip.io:41080/api/v2/search" \
+  -H "Authorization: Bearer $TOKEN" \
+  --data-urlencode "q=$POST_SEARCH_QUERY" \
+  --data-urlencode "type=statuses" \
+  --data-urlencode "limit=5" | jq -e --arg id "$POST_SEARCH_RAW_ID" \
+  'any(.statuses[]; .id == $id)' >/dev/null
+POLL_IDS=$(($COMPOSE exec -T mastodon-web-backend bin/rails runner - <<'RUBY'
 target = Account.find_local('activityplug_target')
 abort 'failed to find local activityplug_target account' if target.nil?
 poll_ids = target.statuses.where.not(poll_id: nil).order(created_at: :desc).limit(3).map(&:poll_id)
 abort 'failed to find local activityplug poll statuses' if poll_ids.length < 3 || poll_ids.any?(&:nil?)
 puts poll_ids.join("\n")
 RUBY
-)
+) | grep -v '^W, \[')
 POLL_ID=$(printf '%s\n' "$POLL_IDS" | sed -n '1p')
 HTTP_POLL_ID=$(printf '%s\n' "$POLL_IDS" | sed -n '2p')
 GRAPHQL_POLL_ID=$(printf '%s\n' "$POLL_IDS" | sed -n '3p')

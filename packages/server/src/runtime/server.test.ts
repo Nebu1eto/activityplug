@@ -639,6 +639,31 @@ describe("createActivityPlugServer", () => {
       }),
     ).not.toThrow();
   });
+
+  it("uses the stored session adapter when origin is supplied without adapter", async () => {
+    const sessions = new InMemoryAuthSessionStore();
+    await sessions.create(storedSession("session-mastodon", "mastodon"));
+    const seen: string[] = [];
+    const server = createActivityPlugServer({
+      adapters: [notificationAdapter("mastodon", seen), notificationAdapter("misskey", seen)],
+      sessions,
+      originPolicy: () => undefined,
+    });
+
+    await expect(
+      server.service.notifications.list({
+        origin: "https://example.test",
+        sessionId: "session-mastodon",
+      }),
+    ).resolves.toMatchObject({ nodes: [] });
+    await expect(
+      server.service.notifications.list({
+        adapter: "misskey",
+        sessionId: "session-mastodon",
+      }),
+    ).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
+    expect(seen).toEqual(["mastodon"]);
+  });
 });
 
 const testAdapter: ActivityPlugAdapter = {
@@ -767,6 +792,44 @@ function durableSecretStore() {
       values.delete(id);
       return value;
     },
+  };
+}
+
+function notificationAdapter(
+  adapterId: "mastodon" | "misskey",
+  seen: string[],
+): ActivityPlugAdapter {
+  return {
+    metadata: {
+      ...testAdapter.metadata,
+      id: adapterId,
+      kind: adapterId,
+      staticCapabilities: createCapabilitySet({
+        "notifications.list": capability("supported"),
+      }),
+    },
+    notifications: {
+      list: async (_input, context) => {
+        seen.push(context.adapterId);
+        return {
+          nodes: [],
+          pageInfo: { hasNextPage: false, hasPreviousPage: false, raw: {} },
+        };
+      },
+    },
+  };
+}
+
+function storedSession(id: string, adapter: "mastodon" | "misskey"): StoredAuthSession {
+  return {
+    id,
+    adapter,
+    origin: "https://example.test",
+    scopes: [],
+    capabilities: createCapabilitySet(),
+    tokenSet: { accessToken: "token" },
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
   };
 }
 

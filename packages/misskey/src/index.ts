@@ -52,6 +52,23 @@ import {
   relationshipFromResponse,
 } from "./internals.js";
 import {
+  addUserListAccount,
+  clearNotifications,
+  createUserList,
+  deleteUserList,
+  followRequestAction,
+  getPoll,
+  getUserList,
+  listFollowRequests,
+  listNotifications,
+  listUserListAccounts,
+  listUserLists,
+  listUserListTimeline,
+  removeUserListAccount,
+  updateUserList,
+  votePoll,
+} from "./milestone10.js";
+import {
   absoluteRemoteUrl,
   assertAccessTokenFresh,
   assertRecordResponse,
@@ -135,12 +152,50 @@ export function createMisskeyAdapter(options: MisskeyAdapterOptions = {}): Activ
         ),
       hashtag: async (input, context) =>
         listHashtagTimeline(input.tag, input.page, context, options),
+      list: async (input, context) => listUserListTimeline(input, context, options),
     },
     search: {
       search: async (input, context) => search(input, context, options),
     },
     media: {
       upload: async (input, context) => uploadMedia(input, context, options),
+    },
+    polls: {
+      get: async (input, context) => getPoll(input.id, input.session, context, options),
+      vote: async (input, context) => votePoll(input, context, options),
+    },
+    notifications: {
+      list: async (input, context) => listNotifications(input, context, options),
+      clear: async (input, context) => clearNotifications(input, context, options),
+    },
+    lists: {
+      list: async (input, context) => listUserLists(input, context, options),
+      get: async (input, context) => getUserList(input, context, options),
+      create: async (input, context) => createUserList(input, context, options),
+      update: async (input, context) => updateUserList(input, context, options),
+      delete: async (input, context) => deleteUserList(input, context, options),
+      listAccounts: async (input, context) => listUserListAccounts(input, context, options),
+      addAccount: async (input, context) => addUserListAccount(input, context, options),
+      removeAccount: async (input, context) => removeUserListAccount(input, context, options),
+    },
+    followRequests: {
+      list: async (input, context) => listFollowRequests(input, context, options),
+      accept: async (input, context) =>
+        followRequestAction(
+          input,
+          "following/requests/accept",
+          "followRequest.accept",
+          context,
+          options,
+        ),
+      reject: async (input, context) =>
+        followRequestAction(
+          input,
+          "following/requests/reject",
+          "followRequest.reject",
+          context,
+          options,
+        ),
     },
     social: {
       relationship: async (input, context) => relationship(input, context, options),
@@ -418,6 +473,7 @@ async function listTimeline(
   context: AdapterOperationContext,
   options: MisskeyAdapterOptions,
   operation: string,
+  extraJson: Record<string, unknown> = {},
 ): Promise<Connection<Post>> {
   const requestedLimit = Math.min(page?.limit ?? 20, 99);
   const response = await requestJson<readonly MisskeyNoteResponse[]>(
@@ -434,6 +490,7 @@ async function listTimeline(
           ...(page?.before === undefined
             ? {}
             : { sinceId: decodeOperationCursor(page.before, context, operation) }),
+          ...extraJson,
         },
       })
       .json(),

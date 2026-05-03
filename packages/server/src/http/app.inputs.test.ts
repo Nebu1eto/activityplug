@@ -104,10 +104,28 @@ describe("ActivityPlug HTTP and GraphQL input contracts", () => {
       error: { code: "VALIDATION_FAILED" },
     });
 
+    const invalidScheduledPostResponse = await app.request("/api/v1/scheduled-posts", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${testSession.id}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        origin: "https://example.test",
+        content: "later",
+        scheduledAt: "2026-04-31T00:00:00Z",
+      }),
+    });
+    expect(invalidScheduledPostResponse.status).toBe(400);
+    await expect(invalidScheduledPostResponse.json()).resolves.toMatchObject({
+      error: { code: "VALIDATION_FAILED" },
+    });
+
     for (const path of [
       "/api/v1/instances/https%3A%2F%2Fexample.test?adapter=",
       "/api/v1/accounts/lookup?origin=https://example.test&handle=alice@example.test&adapter=",
       `/api/v1/accounts/${encodeURIComponent(testViewerAccount.ref.id)}/posts?sessionId=`,
+      `/api/v1/posts/${encodeURIComponent(testPost.ref.id)}/history?sessionId=`,
       "/api/v1/timelines/public?origin=https://example.test&sessionId=",
       "/api/v1/timelines/local?origin=https://example.test&sessionId=",
       "/api/v1/search?origin=https://example.test&q=alice&sessionId=",
@@ -145,6 +163,103 @@ describe("ActivityPlug HTTP and GraphQL input contracts", () => {
     });
     expect(emptyMetadataMediaResponse.status).toBe(200);
     expect(seenMediaInputs.at(-1)).toMatchObject({ filename: "", description: "" });
+
+    const conflictingPollSession = await app.request(
+      `/api/v1/polls/${testPoll.ref.id}?sessionId=other-session`,
+      {
+        headers: { authorization: `Bearer ${testSession.id}` },
+      },
+    );
+    expect(conflictingPollSession.status).toBe(400);
+    await expect(conflictingPollSession.json()).resolves.toMatchObject({
+      error: { code: "VALIDATION_FAILED" },
+    });
+
+    const seenPostHistoryInputs: unknown[] = [];
+    const postHistoryApp = createActivityPlugApp({
+      service: createTestService({
+        posts: {
+          ...createTestService().posts,
+          history: async (input) => {
+            seenPostHistoryInputs.push(input);
+            return [];
+          },
+        },
+      }),
+    });
+    const postHistoryResponse = await postHistoryApp.request(
+      `/api/v1/posts/${encodeURIComponent(testPost.ref.id)}/history?sessionId=${testSession.id}`,
+    );
+    expect(postHistoryResponse.status).toBe(200);
+    expect(seenPostHistoryInputs).toEqual([{ id: testPost.ref.id, sessionId: testSession.id }]);
+    const conflictingPostHistorySession = await postHistoryApp.request(
+      `/api/v1/posts/${encodeURIComponent(testPost.ref.id)}/history?sessionId=other-session`,
+      {
+        headers: { authorization: `Bearer ${testSession.id}` },
+      },
+    );
+    expect(conflictingPostHistorySession.status).toBe(400);
+    await expect(conflictingPostHistorySession.json()).resolves.toMatchObject({
+      error: { code: "VALIDATION_FAILED" },
+    });
+
+    const seenNotificationInputs: unknown[] = [];
+    const notificationApp = createActivityPlugApp({
+      service: createTestService({
+        notifications: {
+          ...createTestService().notifications,
+          list: async (input) => {
+            seenNotificationInputs.push(input);
+            return { nodes: [], pageInfo: { hasNextPage: false, hasPreviousPage: false } };
+          },
+        },
+      }),
+    });
+    const blankNotificationType = await notificationApp.request(
+      "/api/v1/notifications?origin=https://example.test&type=",
+      { headers: { authorization: `Bearer ${testSession.id}` } },
+    );
+    expect(blankNotificationType.status).toBe(400);
+    const mixedNotificationTypes = await notificationApp.request(
+      "/api/v1/notifications?origin=https://example.test&type=mention&types=follow,reblog",
+      { headers: { authorization: `Bearer ${testSession.id}` } },
+    );
+    expect(mixedNotificationTypes.status).toBe(200);
+    expect(seenNotificationInputs).toEqual([
+      {
+        origin: "https://example.test",
+        sessionId: testSession.id,
+        types: ["mention", "follow", "reblog"],
+      },
+    ]);
+
+    for (const body of [
+      {
+        origin: "https://example.test",
+        title: "Muted words",
+        context: [],
+        keywords: [{ keyword: "spoiler" }],
+      },
+      {
+        origin: "https://example.test",
+        title: "Muted words",
+        context: ["home"],
+        keywords: [],
+      },
+    ]) {
+      const invalidFilterResponse = await app.request("/api/v1/filters", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${testSession.id}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+      expect(invalidFilterResponse.status).toBe(400);
+      await expect(invalidFilterResponse.json()).resolves.toMatchObject({
+        error: { code: "VALIDATION_FAILED" },
+      });
+    }
 
     await expect(
       jsonRequest(

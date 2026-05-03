@@ -166,3 +166,58 @@ export interface MastodonMediaAttachmentResponse {
     };
   };
 }
+
+export interface MastodonNotificationResponse {
+  readonly id?: string;
+  readonly type?: string;
+  readonly created_at?: string;
+  readonly account?: MastodonAccountResponse;
+  readonly status?: MastodonStatusResponse | null;
+}
+
+export interface MastodonListResponse {
+  readonly id?: string;
+  readonly title?: string;
+  readonly replies_policy?: string;
+  readonly exclusive?: boolean;
+}
+
+export interface MastodonFilterResponse {
+  readonly id?: string;
+  readonly title?: string;
+  readonly context?: readonly string[];
+  readonly filter_action?: string;
+  readonly expires_at?: string | null;
+  readonly keywords?: readonly {
+    readonly keyword?: string;
+    readonly whole_word?: boolean;
+  }[];
+}
+
+export interface MastodonStatusEditResponse {
+  readonly content?: string;
+  readonly spoiler_text?: string;
+  readonly sensitive?: boolean;
+  readonly created_at?: string;
+  readonly account?: MastodonAccountResponse;
+  readonly media_attachments?: readonly MastodonMediaAttachmentResponse[];
+  readonly poll?: MastodonPollResponse | null;
+}
+
+export interface MastodonScheduledStatusResponse {
+  readonly id?: string;
+  readonly scheduled_at?: string;
+  readonly params?: {
+    readonly text?: string;
+    readonly visibility?: string;
+    readonly sensitive?: boolean;
+    readonly spoiler_text?: string;
+    readonly in_reply_to_id?: string | null;
+    readonly poll?: {
+      readonly options?: readonly string[];
+      readonly multiple?: boolean;
+      readonly expires_in?: number;
+    };
+  };
+  readonly media_attachments?: readonly MastodonMediaAttachmentResponse[];
+}
