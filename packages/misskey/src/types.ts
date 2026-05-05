@@ -3,6 +3,7 @@ import { type KyInstance } from "ky";
 export interface MisskeyAdapterOptions {
   readonly fetch?: typeof globalThis.fetch;
   readonly httpClient?: KyInstance;
+  readonly webSocket?: (url: string, protocols?: string | string[]) => WebSocket;
 }
 
 export interface MisskeyTokenResponse {

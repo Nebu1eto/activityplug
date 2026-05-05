@@ -157,7 +157,7 @@ export async function clearNotifications(
   );
 }
 
-function notificationFromResponse(
+export function notificationFromResponse(
   response: MisskeyNotificationResponse,
   context: AdapterOperationContext,
 ): Notification {

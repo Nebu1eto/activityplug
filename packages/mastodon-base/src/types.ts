@@ -8,6 +8,7 @@ export interface MastodonBaseAdapterOptions {
   readonly kind?: "mastodon" | "mastodon-compatible";
   readonly fetch?: typeof globalThis.fetch;
   readonly httpClient?: KyInstance;
+  readonly webSocket?: (url: string, protocols?: string | string[]) => WebSocket;
   readonly supportsRefreshToken?: boolean;
   readonly instanceEndpointRequired?: boolean;
   readonly supportsLocalVisibility?: boolean;

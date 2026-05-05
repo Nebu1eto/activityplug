@@ -10,3 +10,4 @@ export * from "./errors/error.js";
 export * from "./ids/opaque-id.js";
 export * from "./types/entities.js";
 export * from "./types/datetime.js";
+export * from "./types/streaming.js";

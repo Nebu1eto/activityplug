@@ -37,9 +37,11 @@
     "@optique/core": "^1.0.2",
     "@optique/run": "^1.0.2",
     "@pothos/core": "^4.12.0",
+    "@types/ws": "^8.18.1",
     "graphql": "^16.13.2",
     "graphql-yoga": "^5.21.0",
-    "hono": "^4.12.15"
+    "hono": "^4.12.15",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@activityplug/e2e-fixtures": "workspace:*",

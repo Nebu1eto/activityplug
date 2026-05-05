@@ -11,6 +11,7 @@ export interface Operation {
   readonly requestBody?: unknown;
   readonly security?: readonly unknown[];
   readonly "x-activityplug-reserved"?: true;
+  readonly "x-activityplug-websocket"?: true;
   readonly responses: Record<string, unknown>;
 }
 
@@ -57,6 +58,19 @@ export function validateOperation(
 ): void {
   if (operationDocument.operationId.trim() === "") {
     throw new TypeError(`OpenAPI operation ${label} must include operationId.`);
+  }
+  if (operationDocument["x-activityplug-websocket"] === true) {
+    if (operationDocument.responses["101"] === undefined) {
+      throw new TypeError(`OpenAPI operation ${label} must include a 101 WebSocket response.`);
+    }
+    for (const status of ["400", "401", "404", "409", "429", "500", "502", "504"]) {
+      const response = operationDocument.responses[status];
+      if (!isResponseReference(response, responses)) {
+        throw new TypeError(`OpenAPI operation ${label} must include ${status} error response.`);
+      }
+    }
+    assertRefsResolve(operationDocument, schemas, responses);
+    return;
   }
   const success = operationDocument.responses["200"];
   if (!hasJsonSchema(success)) {
@@ -155,6 +169,27 @@ export function operation(
       "200": {
         description: "Successful response.",
         content: jsonContent(successSchema),
+      },
+      ...standardErrorResponses(),
+    },
+  };
+}
+
+export function websocketOperation(
+  operationId: string,
+  tag: string,
+  parameters: readonly unknown[] | undefined,
+  requiresAuth = false,
+): Operation {
+  return {
+    operationId,
+    tags: [tag],
+    ...(parameters === undefined ? {} : { parameters }),
+    ...(requiresAuth ? { security: [{ bearerAuth: [] }] } : {}),
+    "x-activityplug-websocket": true,
+    responses: {
+      "101": {
+        description: "WebSocket upgrade.",
       },
       ...standardErrorResponses(),
     },
@@ -969,6 +1004,23 @@ export function openApiComponents(
       HealthStatus: objectSchema(["ok", "version"], {
         ok: { type: "boolean" },
         version: { type: "string" },
+      }),
+      StreamingInfo: objectSchema(["protocol", "events"], {
+        protocol: { type: "string", enum: ["websocket"] },
+        events: {
+          type: "array",
+          items: {
+            type: "string",
+            enum: [
+              "timeline.update",
+              "notification",
+              "delete",
+              "edit",
+              "filters.changed",
+              "heartbeat",
+            ],
+          },
+        },
       }),
       OAuthAuthorizationRequest: objectSchema(["url", "state"], {
         url: { type: "string" },

@@ -127,7 +127,7 @@ export async function clearNotifications(
   );
 }
 
-function notificationFromResponse(
+export function notificationFromResponse(
   response: MastodonNotificationResponse,
   context: AdapterOperationContext,
 ): Notification {

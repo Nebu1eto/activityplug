@@ -293,6 +293,80 @@ describe("ActivityPlug HTTP and GraphQL contract edges", () => {
     });
   });
 
+  it("exposes typed GraphQL stream subscriptions", async () => {
+    const app = createActivityPlugApp({
+      service: createTestService(),
+    });
+    const response = await jsonRequest(
+      app.request("/graphql", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query:
+            "{ __schema { subscriptionType { fields { name args { name type { kind name ofType { kind name } } } type { name kind } } } } }",
+        }),
+      }),
+    );
+
+    const subscriptionType = (
+      response as {
+        readonly data: {
+          readonly __schema: {
+            readonly subscriptionType: {
+              readonly fields: readonly {
+                readonly name: string;
+                readonly args: readonly {
+                  readonly name: string;
+                  readonly type: {
+                    readonly kind: string;
+                    readonly name: string | null;
+                    readonly ofType?: { readonly kind: string; readonly name: string | null };
+                  };
+                }[];
+                readonly type: { readonly name: string; readonly kind: string };
+              }[];
+            };
+          };
+        };
+      }
+    ).data.__schema.subscriptionType;
+    expect(
+      subscriptionType.fields
+        .map((field) => ({
+          ...field,
+          args: field.args
+            .map((arg) => ({
+              name: arg.name,
+              type: arg.type.ofType?.name ?? arg.type.name,
+            }))
+            .toSorted((a, b) => a.name.localeCompare(b.name)),
+        }))
+        .toSorted((a, b) => a.name.localeCompare(b.name)),
+    ).toEqual([
+      {
+        name: "notificationStream",
+        args: [
+          { name: "adapter", type: "AdapterKind" },
+          { name: "origin", type: "String" },
+          { name: "sessionId", type: "ID" },
+        ],
+        type: { kind: "NON_NULL", name: null },
+      },
+      {
+        name: "timelineStream",
+        args: [
+          { name: "adapter", type: "AdapterKind" },
+          { name: "listId", type: "ID" },
+          { name: "origin", type: "String" },
+          { name: "sessionId", type: "ID" },
+          { name: "tag", type: "String" },
+          { name: "type", type: "TimelineStreamKind" },
+        ],
+        type: { kind: "NON_NULL", name: null },
+      },
+    ]);
+  });
+
   it("keeps capability groups aligned between payloads and GraphQL", async () => {
     const app = createActivityPlugApp({ service: createTestService() });
     const response = await jsonRequest(

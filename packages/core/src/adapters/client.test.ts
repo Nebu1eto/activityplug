@@ -685,4 +685,68 @@ describe("library-mode clients", () => {
       context: { operation: "scheduledPost.create" },
     });
   });
+
+  it("normalizes stream capability checks and stream-specific inputs", async () => {
+    const calls: unknown[] = [];
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet({
+          "auth.tokenInjection": capability("supported"),
+          "streaming.timeline": capability("supported"),
+          "streaming.notifications": capability("supported"),
+          "timelines.hashtag": capability("supported"),
+          "timelines.list": capability("supported"),
+        }),
+      },
+      streams: {
+        timeline: (input) => {
+          calls.push(input);
+          return emptyStream();
+        },
+        notifications: (input) => {
+          calls.push(input);
+          return emptyStream();
+        },
+      },
+    };
+    const client = createActivityPlugClient({ adapter, origin: "https://social.example" });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    await expect(client.streams.timeline({ type: "hashtag" })).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+      context: { operation: "stream.timeline" },
+    });
+    await expect(client.streams.timeline({ type: "home" })).rejects.toMatchObject({
+      code: "AUTH_REQUIRED",
+      context: { operation: "stream.timeline" },
+    });
+    await client.streams.timeline({ type: "hashtag", tag: "activityplug", page: { limit: 999 } });
+    await client.streams.timeline({
+      type: "list",
+      listId: createEntityRef({
+        adapter: "fake",
+        origin: "https://social.example",
+        type: "list",
+        id: "remote-list",
+      }).id,
+      session,
+    });
+    await client.streams.notifications({ session });
+
+    expect(calls).toMatchObject([
+      { type: "hashtag", tag: "activityplug", page: { limit: 200 } },
+      { type: "list", listId: "remote-list", session },
+      { session },
+    ]);
+  });
 });
+
+function emptyStream() {
+  return {
+    async *[Symbol.asyncIterator]() {},
+  };
+}

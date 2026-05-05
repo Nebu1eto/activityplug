@@ -16,6 +16,7 @@ import { serve, type ServerType } from "@hono/node-server";
 import { getLogger } from "@logtape/logtape";
 import { type Hono } from "hono";
 import { type cors } from "hono/cors";
+import { WebSocketServer } from "ws";
 
 import {
   createDefaultApiService,
@@ -113,6 +114,7 @@ export function startActivityPlugServer(options: StartServerOptions): StartedSer
       fetch: app.fetch,
       hostname: options.hostname,
       port: options.port,
+      websocket: { server: new WebSocketServer({ noServer: true }) },
     },
     (address) => {
       logger.info("ActivityPlug server started on {hostname}:{port}.", {
@@ -823,6 +825,45 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
           options,
           (client, session, id) => client.scheduledPosts.delete({ session, id }),
         ),
+    },
+    streams: {
+      timeline: async (input) => {
+        const selector = normalizeSelector(input, "stream.timeline");
+        await originPolicy({ origin: selector.origin, operation: "stream.timeline" });
+        const session =
+          input.sessionId === undefined
+            ? undefined
+            : await requireSession(input.sessionId, sessions, "stream.timeline");
+        if (session !== undefined) assertSessionTarget(session, selector, "stream.timeline");
+        return resolveClient(selector, options.adapters, sessions).streams.timeline({
+          type: input.type,
+          ...(input.tag === undefined ? {} : { tag: input.tag }),
+          ...(input.listId === undefined ? {} : { listId: input.listId }),
+          ...(input.page === undefined ? {} : { page: input.page }),
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
+          ...(session === undefined ? {} : { session: toPublicSession(session) }),
+        });
+      },
+      notifications: async (input) => {
+        const session = await requireSession(input.sessionId, sessions, "stream.notifications");
+        const selector = selectorForSessionInput(input, session, "stream.notifications");
+        await originPolicy({ origin: selector.origin, operation: "stream.notifications" });
+        assertSessionTarget(session, selector, "stream.notifications");
+        return resolveClient(selector, options.adapters, sessions).streams.notifications({
+          session: toPublicSession(session),
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
+        });
+      },
+      conversations: async (input) => {
+        const session = await requireSession(input.sessionId, sessions, "stream.conversations");
+        const selector = selectorForSessionInput(input, session, "stream.conversations");
+        await originPolicy({ origin: selector.origin, operation: "stream.conversations" });
+        assertSessionTarget(session, selector, "stream.conversations");
+        return resolveClient(selector, options.adapters, sessions).streams.conversations({
+          session: toPublicSession(session),
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
+        });
+      },
     },
     auth: {
       importToken: async (input) => {

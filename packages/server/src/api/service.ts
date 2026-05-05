@@ -30,6 +30,9 @@ import {
   type Relationship,
   type ScheduledPost,
   type SearchResult,
+  type StreamConnection,
+  type StreamEvent,
+  type TimelineStreamKind,
   type VerifyCredentialsResult,
 } from "@activityplug/core";
 
@@ -63,6 +66,7 @@ export interface ActivityPlugApiService {
   readonly followRequests: ActivityPlugFollowRequestApiService;
   readonly filters: ActivityPlugFilterApiService;
   readonly scheduledPosts: ActivityPlugScheduledPostApiService;
+  readonly streams: ActivityPlugStreamApiService;
   readonly auth: ActivityPlugAuthApiService;
   readonly viewer: (input: ViewerInput) => Promise<VerifyCredentialsResult>;
 }
@@ -152,6 +156,12 @@ export interface ActivityPlugScheduledPostApiService {
   readonly create: (input: SchedulePostRequest) => Promise<ScheduledPost>;
   readonly update: (input: UpdateScheduledPostRequest) => Promise<ScheduledPost>;
   readonly delete: (input: ScheduledPostIdRequest) => Promise<DeletedEntity>;
+}
+
+export interface ActivityPlugStreamApiService {
+  readonly timeline: (input: TimelineStreamRequest) => Promise<StreamConnection>;
+  readonly notifications: (input: SessionStreamRequest) => Promise<StreamConnection>;
+  readonly conversations: (input: SessionStreamRequest) => Promise<StreamConnection>;
 }
 
 export interface ActivityPlugSocialApiService {
@@ -343,6 +353,47 @@ export interface PublicNotification extends Omit<Notification, "account" | "post
   readonly account: PublicEntityRef;
   readonly post?: PublicEntityRef;
 }
+
+export type PublicStreamEvent =
+  | {
+      readonly type: "timeline.update";
+      readonly stream: "timeline";
+      readonly id?: string;
+      readonly emittedAt?: string;
+      readonly post: PublicPost;
+      readonly raw?: unknown;
+    }
+  | {
+      readonly type: "notification";
+      readonly stream: "notifications";
+      readonly id?: string;
+      readonly emittedAt?: string;
+      readonly notification: PublicNotification;
+      readonly raw?: unknown;
+    }
+  | {
+      readonly type: "delete";
+      readonly stream: StreamEvent["stream"];
+      readonly id?: string;
+      readonly emittedAt?: string;
+      readonly deleted: PublicDeletedEntity;
+      readonly raw?: unknown;
+    }
+  | {
+      readonly type: "edit";
+      readonly stream: "timeline";
+      readonly id?: string;
+      readonly emittedAt?: string;
+      readonly post: PublicPost;
+      readonly raw?: unknown;
+    }
+  | {
+      readonly type: "filters.changed" | "heartbeat";
+      readonly stream: StreamEvent["stream"];
+      readonly id?: string;
+      readonly emittedAt?: string;
+      readonly raw?: unknown;
+    };
 
 export interface PublicList extends Omit<AccountList, "ref"> {
   readonly ref: PublicEntityRef;
@@ -568,6 +619,19 @@ export interface PublicTimelineRequest extends InstanceSelector {
 export interface HashtagTimelineRequest extends InstanceSelector {
   readonly tag: string;
   readonly page?: PageRequest;
+}
+
+export interface TimelineStreamRequest extends InstanceSelector {
+  readonly sessionId?: string;
+  readonly type: TimelineStreamKind;
+  readonly tag?: string;
+  readonly listId?: string;
+  readonly page?: PageRequest;
+  readonly signal?: AbortSignal;
+}
+
+export interface SessionStreamRequest extends SessionSelectorRequest {
+  readonly signal?: AbortSignal;
 }
 
 export interface SearchRequest extends InstanceSelector {
@@ -826,6 +890,11 @@ export function createDefaultApiService(capabilities: CapabilitySet): ActivityPl
       update: unsupportedApiOperation("scheduledPost.update"),
       delete: unsupportedApiOperation("scheduledPost.delete"),
     },
+    streams: {
+      timeline: unsupportedApiOperation("stream.timeline"),
+      notifications: unsupportedApiOperation("stream.notifications"),
+      conversations: unsupportedApiOperation("stream.conversations"),
+    },
     auth: {
       importToken: unsupportedAuth,
       start: unsupportedAuth,
@@ -993,6 +1062,56 @@ export function serializeNotificationConnection(
   return {
     nodes: connection.nodes.map((notification) => serializeNotification(notification)),
     pageInfo: connection.pageInfo,
+  };
+}
+
+export function serializeStreamEvent(event: StreamEvent): PublicStreamEvent {
+  if (event.type === "timeline.update") {
+    return {
+      type: event.type,
+      stream: event.stream,
+      ...(event.id === undefined ? {} : { id: event.id }),
+      ...(event.emittedAt === undefined ? {} : { emittedAt: event.emittedAt }),
+      post: serializePost(event.post),
+      ...(event.raw === undefined ? {} : { raw: event.raw }),
+    };
+  }
+  if (event.type === "notification") {
+    return {
+      type: event.type,
+      stream: event.stream,
+      ...(event.id === undefined ? {} : { id: event.id }),
+      ...(event.emittedAt === undefined ? {} : { emittedAt: event.emittedAt }),
+      notification: serializeNotification(event.notification),
+      ...(event.raw === undefined ? {} : { raw: event.raw }),
+    };
+  }
+  if (event.type === "delete") {
+    return {
+      type: event.type,
+      stream: event.stream,
+      ...(event.id === undefined ? {} : { id: event.id }),
+      ...(event.emittedAt === undefined ? {} : { emittedAt: event.emittedAt }),
+      deleted: serializeDeletedEntity(event.deleted),
+      ...(event.raw === undefined ? {} : { raw: event.raw }),
+    };
+  }
+  if (event.type === "edit") {
+    return {
+      type: event.type,
+      stream: event.stream,
+      ...(event.id === undefined ? {} : { id: event.id }),
+      ...(event.emittedAt === undefined ? {} : { emittedAt: event.emittedAt }),
+      post: serializePost(event.post),
+      ...(event.raw === undefined ? {} : { raw: event.raw }),
+    };
+  }
+  return {
+    type: event.type,
+    stream: event.stream,
+    ...(event.id === undefined ? {} : { id: event.id }),
+    ...(event.emittedAt === undefined ? {} : { emittedAt: event.emittedAt }),
+    ...(event.raw === undefined ? {} : { raw: event.raw }),
   };
 }
 

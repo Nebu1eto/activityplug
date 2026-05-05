@@ -741,20 +741,18 @@ export const reservedOperationMatrix = [
 export const implementedHttpOnlyOperations = new Set([
   "GET /api/v1/timelines/local",
   "POST /api/v1/media",
-]);
-
-export const reservedHttpOnlyOperations = new Set([
-  "GET /api/v1/media/{id}",
   "GET /api/v1/streams",
   "GET /api/v1/streams/timelines/home",
+  "GET /api/v1/streams/timelines/public",
   "GET /api/v1/streams/notifications",
 ]);
+
+export const reservedHttpOnlyOperations = new Set(["GET /api/v1/media/{id}"]);
 
 export const authenticatedHttpOnlyOperations = new Set([
   "POST /api/v1/media",
   "PATCH /api/v1/media/{id}",
   "DELETE /api/v1/media/{id}",
-  "GET /api/v1/streams",
   "GET /api/v1/streams/timelines/home",
   "GET /api/v1/streams/notifications",
 ]);
@@ -765,7 +763,12 @@ export const standaloneHttpOperations = new Set([
   "GET /api/v1/openapi.json",
 ]);
 
-export const standaloneGraphQLOperations = new Set(["query apiVersion", "query health"]);
+export const standaloneGraphQLOperations = new Set([
+  "query apiVersion",
+  "query health",
+  "subscription notificationStream",
+  "subscription timelineStream",
+]);
 
 export const reservedGraphQLOperations = new Set(
   reservedOperationMatrix.map((operation) => `${operation.graphqlType} ${operation.graphqlField}`),

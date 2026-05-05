@@ -19,6 +19,12 @@ import {
   type ScheduledPost,
   type SearchResult,
 } from "../types/entities.js";
+import {
+  type ConversationStreamInput,
+  type NotificationStreamInput,
+  type StreamConnection,
+  type TimelineStreamInput,
+} from "../types/streaming.js";
 
 export type PostVisibilityInput = Exclude<PostVisibility, "unknown">;
 export type NotificationTypeInput = Exclude<NotificationType, "unknown">;
@@ -40,6 +46,7 @@ export interface ActivityPlugAdapter {
   readonly followRequests?: FollowRequestAdapterOperations;
   readonly filters?: FilterAdapterOperations;
   readonly scheduledPosts?: ScheduledPostAdapterOperations;
+  readonly streams?: StreamAdapterOperations;
 }
 
 export interface AdapterOperationContext {
@@ -290,6 +297,21 @@ export interface ScheduledPostAdapterOperations {
   ) => Promise<DeletedEntity>;
 }
 
+export interface StreamAdapterOperations {
+  readonly timeline?: (
+    input: TimelineStreamInput,
+    context: AdapterOperationContext,
+  ) => Promise<StreamConnection> | StreamConnection;
+  readonly notifications?: (
+    input: NotificationStreamInput,
+    context: AdapterOperationContext,
+  ) => Promise<StreamConnection> | StreamConnection;
+  readonly conversations?: (
+    input: ConversationStreamInput,
+    context: AdapterOperationContext,
+  ) => Promise<StreamConnection> | StreamConnection;
+}
+
 export interface ActivityPlugClientOptions {
   readonly adapter: ActivityPlugAdapter;
   readonly origin: string;
@@ -315,6 +337,7 @@ export interface ActivityPlugClient {
   readonly followRequests: FollowRequestService;
   readonly filters: FilterService;
   readonly scheduledPosts: ScheduledPostService;
+  readonly streams: StreamService;
 }
 
 export interface DetectInstanceInput {
@@ -716,4 +739,10 @@ export interface ScheduledPostService {
   readonly create: (input: SchedulePostInput) => Promise<ScheduledPost>;
   readonly update: (input: UpdateScheduledPostInput) => Promise<ScheduledPost>;
   readonly delete: (input: DeleteScheduledPostInput) => Promise<DeletedEntity>;
+}
+
+export interface StreamService {
+  readonly timeline: (input: TimelineStreamInput) => Promise<StreamConnection>;
+  readonly notifications: (input: NotificationStreamInput) => Promise<StreamConnection>;
+  readonly conversations: (input: ConversationStreamInput) => Promise<StreamConnection>;
 }

@@ -119,14 +119,8 @@ export function createMisskeyStaticCapabilities() {
     ),
     "social.boost": capability("supported"),
     "social.reaction": capability("supported"),
-    "streaming.timeline": capability(
-      "unsupported",
-      "Streaming is not implemented by this adapter yet.",
-    ),
-    "streaming.notifications": capability(
-      "unsupported",
-      "Streaming is not implemented by this adapter yet.",
-    ),
+    "streaming.timeline": capability("supported"),
+    "streaming.notifications": capability("supported"),
     "streaming.conversations": capability(
       "unsupported",
       "Streaming is not implemented by this adapter yet.",

@@ -101,6 +101,7 @@ import {
   schedulePost,
   updateScheduledPost,
 } from "./scheduled-posts.js";
+import { connectMastodonNotificationStream, connectMastodonTimelineStream } from "./streaming.js";
 import {
   type MastodonAccountResponse,
   type MastodonBaseAdapterOptions,
@@ -250,14 +251,8 @@ export function createMastodonBaseAdapter(
           "unsupported",
           "Mastodon-compatible base APIs do not assume emoji reaction support.",
         ),
-        "streaming.timeline": capability(
-          "unsupported",
-          "Streaming is not implemented by this adapter yet.",
-        ),
-        "streaming.notifications": capability(
-          "unsupported",
-          "Streaming is not implemented by this adapter yet.",
-        ),
+        "streaming.timeline": capability("supported"),
+        "streaming.notifications": capability("supported"),
         "streaming.conversations": capability(
           "unsupported",
           "Streaming is not implemented by this adapter yet.",
@@ -368,6 +363,11 @@ export function createMastodonBaseAdapter(
       create: async (input, context) => schedulePost(input, context, options),
       update: async (input, context) => updateScheduledPost(input, context, options),
       delete: async (input, context) => deleteScheduledPost(input, context, options),
+    },
+    streams: {
+      timeline: async (input, context) => connectMastodonTimelineStream(input, context, options),
+      notifications: async (input, context) =>
+        connectMastodonNotificationStream(input, context, options),
     },
     social: {
       relationship: async (input, context) => relationship(input, context, options),

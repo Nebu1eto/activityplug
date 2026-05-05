@@ -57,6 +57,7 @@ import {
 } from "./internals.js";
 import { listNotifications } from "./notifications.js";
 import { getPoll, votePoll } from "./polls.js";
+import { connectMisskeyNotificationStream, connectMisskeyTimelineStream } from "./streaming.js";
 import {
   absoluteRemoteUrl,
   assertAccessTokenFresh,
@@ -255,6 +256,10 @@ export function createMisskeyAdapter(options: MisskeyAdapterOptions = {}): Activ
         noteReaction(input, "notes/reactions/create", "social.reaction", context, options),
       unreact: async (input, context) =>
         noteReaction(input, "notes/reactions/delete", "social.unreaction", context, options),
+    },
+    streams: {
+      timeline: (input, context) => connectMisskeyTimelineStream(input, context, options),
+      notifications: (input, context) => connectMisskeyNotificationStream(input, context, options),
     },
     auth: {
       registerOAuthClient: async (input, context) => registerOAuthClient(input, context),

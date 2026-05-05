@@ -1,4 +1,5 @@
-import { ActivityPlugError } from "@activityplug/core";
+import { ActivityPlugError, type StreamEvent } from "@activityplug/core";
+import { upgradeWebSocket } from "@hono/node-server";
 import { createYoga } from "graphql-yoga";
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
@@ -29,6 +30,7 @@ import {
   serializeScheduledPost,
   serializeScheduledPostConnection,
   serializeSearchResult,
+  serializeStreamEvent,
   type ActivityPlugApiService,
 } from "../api/service.js";
 import { createGraphQLSchema, type GraphQLContext } from "../graphql/schema.js";
@@ -1064,18 +1066,104 @@ export function createActivityPlugApp(options: CreateActivityPlugAppOptions): Ho
     });
   }
   app.get("/api/v1/openapi.json", (context) => context.json(openApiDocument));
+  app.get("/api/v1/streams", (context) =>
+    context.json(
+      data({
+        protocol: "websocket",
+        events: [
+          "timeline.update",
+          "notification",
+          "delete",
+          "edit",
+          "filters.changed",
+          "heartbeat",
+        ],
+      }),
+    ),
+  );
+
+  app.get(
+    "/api/v1/streams/timelines/home",
+    upgradeWebSocket((context) =>
+      streamSocket(context.req.raw.signal, async (signal) =>
+        options.service.streams.timeline({
+          type: "home",
+          sessionId: requiredSessionIdFromQueryOrBearer(
+            context.req.query("sessionId"),
+            context.req.header("authorization"),
+          ),
+          ...instanceSelectorQuery(context, "stream.timeline"),
+          signal,
+        }),
+      ),
+    ),
+  );
+  app.get(
+    "/api/v1/streams/timelines/public",
+    upgradeWebSocket((context) =>
+      streamSocket(context.req.raw.signal, async (signal) =>
+        options.service.streams.timeline({
+          type: optionalQueryBoolean(context.req.query("local"), "local").local
+            ? "local"
+            : "public",
+          ...instanceSelectorQuery(context, "stream.timeline"),
+          signal,
+        }),
+      ),
+    ),
+  );
+  app.get(
+    "/api/v1/streams/notifications",
+    upgradeWebSocket((context) =>
+      streamSocket(context.req.raw.signal, async (signal) =>
+        options.service.streams.notifications({
+          sessionId: requiredSessionIdFromQueryOrBearer(
+            context.req.query("sessionId"),
+            context.req.header("authorization"),
+          ),
+          ...instanceSelectorQuery(context, "stream.notifications"),
+          signal,
+        }),
+      ),
+    ),
+  );
   app.all("/graphql", (context) => yoga.fetch(context.req.raw, {}));
 
   return app;
+}
+
+function streamSocket(
+  requestSignal: AbortSignal,
+  connect: (signal: AbortSignal) => Promise<AsyncIterable<unknown>>,
+) {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  requestSignal.addEventListener("abort", abort, { once: true });
+  return {
+    async onOpen(_event: Event, ws: { send: (data: string) => void; close: () => void }) {
+      try {
+        for await (const event of await connect(controller.signal)) {
+          ws.send(JSON.stringify({ event: serializeStreamEvent(event as StreamEvent) }));
+        }
+      } catch (error) {
+        const activityPlugError = toActivityPlugError(error);
+        ws.send(JSON.stringify({ error: serializeActivityPlugError(activityPlugError) }));
+      } finally {
+        requestSignal.removeEventListener("abort", abort);
+        ws.close();
+      }
+    },
+    onClose() {
+      controller.abort();
+      requestSignal.removeEventListener("abort", abort);
+    },
+  };
 }
 
 const unsupportedHttpRoutes = [
   { method: "get", path: "/api/v1/posts/:id/context", operation: "post.context" },
   { method: "get", path: "/api/v1/posts/:id/quotes", operation: "post.quotes" },
   { method: "get", path: "/api/v1/media/:id", operation: "media.get" },
-  { method: "get", path: "/api/v1/streams", operation: "streaming.connect" },
-  { method: "get", path: "/api/v1/streams/timelines/home", operation: "streaming.home" },
-  { method: "get", path: "/api/v1/streams/notifications", operation: "streaming.notifications" },
 ] as const;
 
 function updatePostRequest(
@@ -1147,6 +1235,15 @@ function optionalSessionIdFromQueryOrBearer(
     );
   }
   return "sessionId" in querySession ? querySession : bearerSession;
+}
+
+function requiredSessionIdFromQueryOrBearer(
+  querySessionId: string | undefined,
+  authorization: string | undefined,
+): string {
+  const result = optionalSessionIdFromQueryOrBearer(querySessionId, authorization);
+  if ("sessionId" in result) return result.sessionId;
+  throw new ActivityPlugError("AUTH_REQUIRED", "ActivityPlug session authentication is required.");
 }
 
 function filterRequest(body: Record<string, unknown>, sessionId: string, requireOrigin: boolean) {

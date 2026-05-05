@@ -1,5 +1,8 @@
+import { ActivityPlugError } from "@activityplug/core";
 import SchemaBuilder from "@pothos/core";
+import { GraphQLError } from "graphql";
 
+import { serializeActivityPlugError } from "../api/errors.js";
 import {
   activityPlugApiVersion,
   serializeAuthStart,
@@ -31,6 +34,8 @@ import {
   type PublicRelationship,
   type PublicSearchResult,
   type PublicScheduledPost,
+  type PublicStreamEvent,
+  serializeStreamEvent,
   serializeDeletedEntity,
   serializeAccount,
   serializeInstanceProfile,
@@ -108,6 +113,7 @@ const builder = new SchemaBuilder<{
     List: PublicList;
     Filter: PublicFilter;
     ScheduledPost: PublicScheduledPost;
+    StreamEvent: PublicStreamEvent;
   };
   Scalars: {
     JSON: {
@@ -177,6 +183,16 @@ const SearchTypeEnum = builder.enumType("SearchType", {
     ACCOUNTS: { value: "accounts" },
     POSTS: { value: "posts" },
     HASHTAGS: { value: "hashtags" },
+  } as const,
+});
+
+const TimelineStreamKindEnum = builder.enumType("TimelineStreamKind", {
+  values: {
+    HOME: { value: "home" },
+    PUBLIC: { value: "public" },
+    LOCAL: { value: "local" },
+    HASHTAG: { value: "hashtag" },
+    LIST: { value: "list" },
   } as const,
 });
 
@@ -1043,6 +1059,32 @@ const DeletedEntityType = builder.objectRef<PublicDeletedEntity>("DeletedEntity"
   }),
 });
 
+const StreamEventType = builder.objectRef<PublicStreamEvent>("StreamEvent").implement({
+  fields: (t) => ({
+    type: t.exposeString("type"),
+    stream: t.exposeString("stream"),
+    id: t.exposeString("id", { nullable: true }),
+    emittedAt: t.exposeString("emittedAt", { nullable: true }),
+    post: t.field({
+      type: PostType,
+      nullable: true,
+      resolve: (event) =>
+        event.type === "timeline.update" || event.type === "edit" ? event.post : null,
+    }),
+    notification: t.field({
+      type: NotificationType,
+      nullable: true,
+      resolve: (event) => (event.type === "notification" ? event.notification : null),
+    }),
+    deleted: t.field({
+      type: DeletedEntityType,
+      nullable: true,
+      resolve: (event) => (event.type === "delete" ? event.deleted : null),
+    }),
+    raw: t.field({ type: JsonScalar, nullable: true, resolve: (event) => event.raw }),
+  }),
+});
+
 const AccountConnectionType = builder
   .objectRef<AccountConnectionPayload>("AccountConnection")
   .implement({
@@ -1194,6 +1236,102 @@ registerGraphQLOperations({
   unsupportedGraphQLResolver,
   withGraphQLErrorContract,
 });
+
+builder.subscriptionType({
+  fields: (t) => ({
+    timelineStream: t.field({
+      type: StreamEventType,
+      args: {
+        origin: t.arg.string({ required: true }),
+        adapter: t.arg({ type: AdapterKindEnum, required: false }),
+        sessionId: t.arg.id({ required: false }),
+        type: t.arg({ type: TimelineStreamKindEnum, required: true }),
+        tag: t.arg.string({ required: false }),
+        listId: t.arg.id({ required: false }),
+      },
+      subscribe: async (_parent, args, context) =>
+        withGraphQLErrorContract(async () => {
+          const sessionId =
+            args.sessionId === null || args.sessionId === undefined
+              ? undefined
+              : nonBlankString(args.sessionId, "sessionId");
+          const listId =
+            args.listId === null || args.listId === undefined
+              ? undefined
+              : nonBlankString(args.listId, "listId");
+          return graphQLStream(
+            await context.service.streams.timeline({
+              origin: nonBlankString(args.origin, "origin"),
+              ...(args.adapter === null || args.adapter === undefined
+                ? {}
+                : { adapter: args.adapter }),
+              ...(sessionId === undefined ? {} : { sessionId }),
+              type: normalizeTimelineStreamKind(args.type),
+              ...(args.tag === null || args.tag === undefined ? {} : { tag: args.tag }),
+              ...(listId === undefined ? {} : { listId }),
+            }),
+          );
+        }),
+      resolve: (event) => serializeStreamEvent(event),
+    }),
+    notificationStream: t.field({
+      type: StreamEventType,
+      args: {
+        sessionId: t.arg.id({ required: true }),
+        origin: t.arg.string({ required: true }),
+        adapter: t.arg({ type: AdapterKindEnum, required: false }),
+      },
+      subscribe: async (_parent, args, context) =>
+        withGraphQLErrorContract(async () => {
+          return graphQLStream(
+            await context.service.streams.notifications({
+              sessionId: nonBlankString(args.sessionId, "sessionId"),
+              origin: nonBlankString(args.origin, "origin"),
+              ...(args.adapter === null || args.adapter === undefined
+                ? {}
+                : { adapter: args.adapter }),
+            }),
+          );
+        }),
+      resolve: (event) => serializeStreamEvent(event),
+    }),
+  }),
+});
+
+function graphQLStream<T>(stream: AsyncIterable<T>): AsyncIterable<T> {
+  return {
+    async *[Symbol.asyncIterator]() {
+      try {
+        yield* stream;
+      } catch (error) {
+        const activityPlugError =
+          error instanceof ActivityPlugError
+            ? error
+            : new ActivityPlugError("INTERNAL_ERROR", "An internal server error occurred.");
+        throw new GraphQLError(activityPlugError.message, {
+          extensions: {
+            activityplug: serializeActivityPlugError(activityPlugError),
+          },
+        });
+      }
+    },
+  };
+}
+
+function normalizeTimelineStreamKind(value: string) {
+  if (
+    value === "home" ||
+    value === "public" ||
+    value === "local" ||
+    value === "hashtag" ||
+    value === "list"
+  ) {
+    return value;
+  }
+  throw new ActivityPlugError("VALIDATION_FAILED", "Timeline stream type is not supported.", {
+    operation: "stream.timeline",
+  });
+}
 
 export function createGraphQLSchema() {
   return builder.toSchema();

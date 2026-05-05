@@ -338,6 +338,12 @@ export function createTestService(
       },
       delete: async () => ({ ref: testPost.ref, deleted: true }),
     },
+    streams: {
+      timeline: async () =>
+        streamEvents([{ type: "timeline.update", stream: "timeline", post: testPost }]),
+      notifications: async () => streamEvents([]),
+      conversations: async () => streamEvents([]),
+    },
     auth: {
       importToken: async () => testSession,
       start: async () => ({
@@ -367,6 +373,14 @@ export function createTestService(
       session: testSession,
     }),
     ...overrides,
+  };
+}
+
+function streamEvents(events: readonly import("@activityplug/core").StreamEvent[]) {
+  return {
+    async *[Symbol.asyncIterator]() {
+      for (const event of events) yield event;
+    },
   };
 }
 

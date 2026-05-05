@@ -359,6 +359,11 @@ function createService(overrides: ServiceOverrides = {}): ActivityPlugApiService
       },
       delete: async () => ({ ref: post.ref, deleted: true }),
     },
+    streams: {
+      timeline: async () => streamEvents([{ type: "timeline.update", stream: "timeline", post }]),
+      notifications: async () => streamEvents([]),
+      conversations: async () => streamEvents([]),
+    },
     auth: {
       importToken: async () => session,
       start: async () => ({
@@ -381,6 +386,14 @@ function createService(overrides: ServiceOverrides = {}): ActivityPlugApiService
       revokeSession: async () => undefined,
     },
     viewer: async () => ({ account, session }),
+  };
+}
+
+function streamEvents(events: readonly import("@activityplug/core").StreamEvent[]) {
+  return {
+    async *[Symbol.asyncIterator]() {
+      for (const event of events) yield event;
+    },
   };
 }
 

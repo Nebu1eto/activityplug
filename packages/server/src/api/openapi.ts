@@ -26,6 +26,7 @@ import {
   requestBodySchema,
   stringQueryParameter,
   unsupportedOperation,
+  websocketOperation,
 } from "./openapi-helpers.js";
 import { type PathItem } from "./openapi-helpers.js";
 import { activityPlugApiVersion } from "./service.js";
@@ -829,13 +830,29 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         ),
       },
       "/api/v1/streams": {
-        get: unsupportedOperation("connectStreaming", "streaming", undefined, true),
+        get: operation("getStreamingInfo", "streaming", undefined, dataRef("StreamingInfo")),
       },
       "/api/v1/streams/timelines/home": {
-        get: unsupportedOperation("connectHomeTimelineStream", "streaming", undefined, true),
+        get: websocketOperation(
+          "connectHomeTimelineStream",
+          "streaming",
+          [...instanceQueryParameters(), stringQueryParameter("sessionId")],
+          true,
+        ),
+      },
+      "/api/v1/streams/timelines/public": {
+        get: websocketOperation("connectPublicTimelineStream", "streaming", [
+          ...instanceQueryParameters(),
+          booleanQueryParameter("local"),
+        ]),
       },
       "/api/v1/streams/notifications": {
-        get: unsupportedOperation("connectNotificationStream", "streaming", undefined, true),
+        get: websocketOperation(
+          "connectNotificationStream",
+          "streaming",
+          [...instanceQueryParameters(), stringQueryParameter("sessionId")],
+          true,
+        ),
       },
       "/api/v1/openapi.json": {
         get: operation("getOpenApiDocument", "system", undefined, {

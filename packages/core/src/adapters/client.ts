@@ -7,6 +7,7 @@ import {
 import { ActivityPlugError, unsupportedOperation } from "../errors/error.js";
 import { decodeOpaqueId } from "../ids/opaque-id.js";
 import { isIsoDateTimeString } from "../types/datetime.js";
+import { type TimelineStreamInput } from "../types/streaming.js";
 import {
   type ActivityPlugClient,
   type ActivityPlugClientOptions,
@@ -37,6 +38,7 @@ import {
   type SearchPageInput,
   type SearchService,
   type SocialService,
+  type StreamService,
   type TimelineService,
   type UpdateFilterInput,
   type UpdateListInput,
@@ -80,6 +82,7 @@ export function createActivityPlugClient(options: ActivityPlugClientOptions): Ac
     followRequests: createFollowRequestService(client),
     filters: createFilterService(client),
     scheduledPosts: createScheduledPostService(client),
+    streams: createStreamService(client),
   };
 }
 
@@ -1200,6 +1203,104 @@ function createScheduledPostService(client: RequiredClientContext): ScheduledPos
       );
     },
   };
+}
+
+function createStreamService(client: RequiredClientContext): StreamService {
+  return {
+    timeline: async (input) => {
+      const operation = client.adapter.streams?.timeline;
+      if (operation === undefined) {
+        throw unsupportedOperation(
+          "stream.timeline",
+          capabilityContext(client, "streaming.timeline"),
+        );
+      }
+      requireTimelineStreamCapability(client, input);
+      return operation(normalizeTimelineStreamInput(input, client), context(client));
+    },
+    notifications: async (input) => {
+      const operation = client.adapter.streams?.notifications;
+      if (operation === undefined) {
+        throw unsupportedOperation(
+          "stream.notifications",
+          capabilityContext(client, "streaming.notifications"),
+        );
+      }
+      requireClientCapability(client, "streaming.notifications", "stream.notifications");
+      return operation(input, context(client));
+    },
+    conversations: async (input) => {
+      const operation = client.adapter.streams?.conversations;
+      if (operation === undefined) {
+        throw unsupportedOperation(
+          "stream.conversations",
+          capabilityContext(client, "streaming.conversations"),
+        );
+      }
+      requireClientCapability(client, "streaming.conversations", "stream.conversations");
+      return operation(input, context(client));
+    },
+  };
+}
+
+function normalizeTimelineStreamInput(
+  input: TimelineStreamInput,
+  client: RequiredClientContext,
+): TimelineStreamInput {
+  if (!isTimelineStreamKind(input.type)) {
+    throwValidation("Timeline stream type is not supported.", "stream.timeline", client);
+  }
+  if ((input.type === "home" || input.type === "list") && input.session === undefined) {
+    throw new ActivityPlugError("AUTH_REQUIRED", "Timeline stream requires an auth session.", {
+      adapter: client.adapter.metadata.id,
+      origin: client.origin,
+      operation: "stream.timeline",
+    });
+  }
+  if (input.type === "hashtag") {
+    assertOptionalString(input.tag, "tag", "stream.timeline", client);
+    if (input.tag === undefined || input.tag.trim() === "") {
+      throwValidation("Hashtag timeline streams require tag.", "stream.timeline", client);
+    }
+  }
+  if (input.type === "list") {
+    assertOptionalString(input.listId, "listId", "stream.timeline", client);
+    if (input.listId === undefined || input.listId.trim() === "") {
+      throwValidation("List timeline streams require listId.", "stream.timeline", client);
+    }
+  }
+  const listId =
+    input.type === "list" && input.listId !== undefined
+      ? decodeRawRef(input.listId, client, "list", "stream.timeline")
+      : undefined;
+  return {
+    ...input,
+    ...(listId === undefined ? {} : { listId }),
+    ...(input.page === undefined
+      ? {}
+      : { page: normalizePageInput(input.page, "stream.timeline", client) }),
+  };
+}
+
+function requireTimelineStreamCapability(
+  client: RequiredClientContext,
+  input: TimelineStreamInput,
+): void {
+  requireClientCapability(client, "streaming.timeline", "stream.timeline");
+  if (input.type === "hashtag") {
+    requireClientCapability(client, "timelines.hashtag", "stream.timeline");
+  }
+  if (input.type === "list") requireClientCapability(client, "timelines.list", "stream.timeline");
+}
+
+function isTimelineStreamKind(value: unknown): value is TimelineStreamInput["type"] {
+  return (
+    value === "home" ||
+    value === "public" ||
+    value === "local" ||
+    value === "hashtag" ||
+    value === "list"
+  );
 }
 
 function validateListInput(
