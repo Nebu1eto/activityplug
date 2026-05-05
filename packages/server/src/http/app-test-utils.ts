@@ -149,6 +149,21 @@ export function createTestService(
     accounts: {
       get: async () => testViewerAccount,
       lookup: async () => testViewerAccount,
+      updateProfile: async () => testViewerAccount,
+      followers: async () => ({
+        nodes: [],
+        pageInfo: {
+          hasNextPage: false,
+          hasPreviousPage: false,
+        },
+      }),
+      following: async () => ({
+        nodes: [],
+        pageInfo: {
+          hasNextPage: false,
+          hasPreviousPage: false,
+        },
+      }),
       posts: async () => ({
         nodes: [],
         pageInfo: {
@@ -196,6 +211,37 @@ export function createTestService(
     },
     media: {
       upload: async () => ({
+        ref: createEntityRef({
+          adapter: "mastodon",
+          origin: "https://example.test",
+          type: "media",
+          id: "media-1",
+        }),
+        type: "image",
+        url: "https://example.test/media.png",
+        raw: {},
+      }),
+      update: async () => ({
+        ref: createEntityRef({
+          adapter: "mastodon",
+          origin: "https://example.test",
+          type: "media",
+          id: "media-1",
+        }),
+        type: "image",
+        url: "https://example.test/media.png",
+        raw: {},
+      }),
+      delete: async () => ({
+        ref: createEntityRef({
+          adapter: "mastodon",
+          origin: "https://example.test",
+          type: "media",
+          id: "media-1",
+        }),
+        deleted: true,
+      }),
+      uploadFromUrl: async () => ({
         ref: createEntityRef({
           adapter: "mastodon",
           origin: "https://example.test",

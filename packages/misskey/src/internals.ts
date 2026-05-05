@@ -63,6 +63,27 @@ export function accountFromResponse(
   const host = optionalNonEmptyString(account.host, "host", account, context, operation);
   const url = optionalString(account.url, "url", account, context, operation);
   const rawUrl = url ?? `${slashOrigin(context.origin)}@${account.username}`;
+  const fields = account.fields?.map((field) => {
+    if (!isRecord(field) || typeof field.name !== "string" || typeof field.value !== "string") {
+      throw invalidRemoteResponse("Misskey account field response is malformed.", {
+        context,
+        operation,
+        raw: field,
+      });
+    }
+    return {
+      name: field.name,
+      valueHtml: field.value,
+      ...renamedOptionalString(
+        field.verifiedAt,
+        "verifiedAt",
+        "verifiedAt",
+        field,
+        context,
+        operation,
+      ),
+    };
+  });
   return {
     ref: createEntityRef({
       adapter: context.adapterId,
@@ -94,6 +115,7 @@ export function accountFromResponse(
     ),
     bot: optionalBoolean(account.isBot, "isBot", account, context, operation) ?? false,
     locked: optionalBoolean(account.isLocked, "isLocked", account, context, operation) ?? false,
+    fields: fields ?? [],
     ...renamedOptionalString(
       account.createdAt,
       "createdAt",

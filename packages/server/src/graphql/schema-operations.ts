@@ -23,15 +23,19 @@ import {
   type serializeSearchResult,
 } from "../api/service.js";
 import {
+  deleteMediaInput,
   filterInput,
   listAccountInput,
   listInput,
   notificationTypeInput,
   postUpdateInput,
   schedulePostInput,
+  updateMediaInput,
   updateFilterInput,
   updateListInput,
+  updateProfileInput,
   updateScheduledPostInput,
+  uploadMediaFromUrlInput,
 } from "./schema-inputs.js";
 import {
   type accountActionResolver,
@@ -96,11 +100,11 @@ type SchemaOperationDeps = {
   readonly CreatePostInput: unknown;
   readonly DeletedEntityType: unknown;
   readonly DetectInstanceInput: unknown;
+  readonly DeleteMediaInput: unknown;
   readonly FilterConnectionType: unknown;
   readonly FilterType: unknown;
   readonly Health: unknown;
   readonly InstanceType: unknown;
-  readonly JsonInput: unknown;
   readonly ListConnectionType: unknown;
   readonly ListAccountInput: unknown;
   readonly ListType: unknown;
@@ -125,8 +129,11 @@ type SchemaOperationDeps = {
   readonly TimelineConnectionType: unknown;
   readonly UpdateFilterInput: unknown;
   readonly UpdateListInput: unknown;
+  readonly UpdateMediaInput: unknown;
   readonly UpdatePostInput: unknown;
+  readonly UpdateProfileInput: unknown;
   readonly UpdateScheduledPostInput: unknown;
+  readonly UploadMediaFromUrlInput: unknown;
   readonly UploadMediaInput: unknown;
   readonly VotePollInput: unknown;
   readonly activityPlugApiVersion: string;
@@ -192,11 +199,11 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
     CreatePostInput,
     DeletedEntityType,
     DetectInstanceInput,
+    DeleteMediaInput,
     FilterConnectionType,
     FilterType,
     Health,
     InstanceType,
-    JsonInput,
     ListConnectionType,
     ListAccountInput,
     ListType,
@@ -220,8 +227,11 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
     TimelineConnectionType,
     UpdateFilterInput,
     UpdateListInput,
+    UpdateMediaInput,
     UpdatePostInput,
+    UpdateProfileInput,
     UpdateScheduledPostInput,
+    UploadMediaFromUrlInput,
     UploadMediaInput,
     VotePollInput,
     activityPlugApiVersion,
@@ -416,6 +426,64 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
           withGraphQLErrorContract(async () =>
             serializePostConnection(
               await context.service.accounts.posts({
+                id: args.id,
+                page: normalizePageInput(args.page),
+                ...(args.sessionId === null || args.sessionId === undefined
+                  ? {}
+                  : { sessionId: args.sessionId }),
+              }),
+            ),
+          ),
+      }),
+      accountFollowers: unsupportedGraphQLField(t, {
+        type: AccountConnectionType,
+        operation: "account.followers",
+        args: {
+          id: t.arg.id({ required: true }),
+          page: t.arg({ type: PageInput }),
+          sessionId: t.arg.id(),
+        },
+        resolve: async (
+          _parent: unknown,
+          args: {
+            readonly id: string;
+            readonly page?: PageInputValue | null;
+            readonly sessionId?: string | null;
+          },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeAccountConnection(
+              await context.service.accounts.followers({
+                id: args.id,
+                page: normalizePageInput(args.page),
+                ...(args.sessionId === null || args.sessionId === undefined
+                  ? {}
+                  : { sessionId: args.sessionId }),
+              }),
+            ),
+          ),
+      }),
+      accountFollowing: unsupportedGraphQLField(t, {
+        type: AccountConnectionType,
+        operation: "account.following",
+        args: {
+          id: t.arg.id({ required: true }),
+          page: t.arg({ type: PageInput }),
+          sessionId: t.arg.id(),
+        },
+        resolve: async (
+          _parent: unknown,
+          args: {
+            readonly id: string;
+            readonly page?: PageInputValue | null;
+            readonly sessionId?: string | null;
+          },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeAccountConnection(
+              await context.service.accounts.following({
                 id: args.id,
                 page: normalizePageInput(args.page),
                 ...(args.sessionId === null || args.sessionId === undefined
@@ -995,7 +1063,62 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
       ingestMediaFromUrl: unsupportedGraphQLField(t, {
         type: MediaAttachmentType,
         operation: "media.ingestUrl",
-        args: { input: t.arg({ type: JsonInput, required: true }) },
+        args: { input: t.arg({ type: UploadMediaFromUrlInput, required: true }) },
+        resolve: async (
+          _parent: unknown,
+          args: { readonly input: unknown },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeMediaAttachment(
+              await context.service.media.uploadFromUrl(uploadMediaFromUrlInput(args.input)),
+            ),
+          ),
+      }),
+      updateMedia: unsupportedGraphQLField(t, {
+        type: MediaAttachmentType,
+        operation: "media.update",
+        args: { input: t.arg({ type: UpdateMediaInput, required: true }) },
+        resolve: async (
+          _parent: unknown,
+          args: { readonly input: unknown },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeMediaAttachment(
+              await context.service.media.update(updateMediaInput(args.input)),
+            ),
+          ),
+      }),
+      deleteMedia: unsupportedGraphQLField(t, {
+        type: DeletedEntityType,
+        operation: "media.delete",
+        args: { input: t.arg({ type: DeleteMediaInput, required: true }) },
+        resolve: async (
+          _parent: unknown,
+          args: { readonly input: unknown },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeDeletedEntity(
+              await context.service.media.delete(deleteMediaInput(args.input)),
+            ),
+          ),
+      }),
+      updateProfile: unsupportedGraphQLField(t, {
+        type: AccountType,
+        operation: "account.updateProfile",
+        args: { input: t.arg({ type: UpdateProfileInput, required: true }) },
+        resolve: async (
+          _parent: unknown,
+          args: { readonly input: unknown },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeAccount(
+              await context.service.accounts.updateProfile(updateProfileInput(args.input)),
+            ),
+          ),
       }),
       createPost: unsupportedGraphQLField(t, {
         type: PostType,

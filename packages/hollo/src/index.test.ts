@@ -159,6 +159,15 @@ describe("Hollo adapter", () => {
       context: { capability: "search.hashtags", operation: "search.hashtags" },
     });
     await expect(
+      client.accounts.listFollowers({
+        accountId: account.ref.id,
+        page: { limit: 1 },
+      }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "accounts.followers", operation: "account.followers" },
+    });
+    await expect(
       client.posts.create({
         session,
         content: "Poll",

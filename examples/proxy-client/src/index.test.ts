@@ -5,6 +5,7 @@ import {
   type Account,
   type AuthSession,
   type InstanceProfile,
+  type MediaAttachment,
   type Post,
   type Relationship,
 } from "@activityplug/core";
@@ -64,6 +65,8 @@ const post: Post = {
   ],
   raw: {},
 };
+
+const media = (): MediaAttachment => post.media[0];
 
 const instance: InstanceProfile = {
   ref: createEntityRef({
@@ -245,6 +248,9 @@ function createService(overrides: ServiceOverrides = {}): ActivityPlugApiService
     accounts: {
       get: async () => account,
       lookup: async () => account,
+      updateProfile: async () => account,
+      followers: async () => ({ nodes: [account], pageInfo: pageInfo() }),
+      following: async () => ({ nodes: [account], pageInfo: pageInfo() }),
       posts: async () => ({ nodes: [post], pageInfo: pageInfo() }),
     },
     posts: {
@@ -265,17 +271,10 @@ function createService(overrides: ServiceOverrides = {}): ActivityPlugApiService
       search: async () => ({ accounts: [account], posts: [post], hashtags: [], raw: {} }),
     },
     media: {
-      upload: async () => ({
-        ref: createEntityRef({
-          adapter: "mastodon",
-          origin: "https://example.test",
-          type: "media",
-          id: "media-1",
-        }),
-        type: "image",
-        url: "https://example.test/media.png",
-        raw: {},
-      }),
+      upload: async () => media(),
+      update: async () => media(),
+      delete: async () => ({ ref: media().ref, deleted: true }),
+      uploadFromUrl: async () => media(),
     },
     polls: {
       get: async () => {

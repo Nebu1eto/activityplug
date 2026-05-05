@@ -983,6 +983,46 @@ describe("HackersPub adapter", () => {
     ).toBe("page-1-react");
   });
 
+  it("stops filtered HackersPub notification scans when cursors do not advance", async () => {
+    const notificationCalls: unknown[] = [];
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter({
+        fetch: async (input, init) => {
+          const request = new Request(input, init);
+          const body = (await request.json()) as { readonly variables?: Record<string, unknown> };
+          notificationCalls.push(body.variables);
+          return Response.json({
+            data: {
+              viewer: {
+                notifications: {
+                  edges: [],
+                  pageInfo: {
+                    hasNextPage: true,
+                    hasPreviousPage: false,
+                    startCursor: "",
+                    endCursor: "stalled-cursor",
+                  },
+                },
+              },
+            },
+          });
+        },
+      }),
+      origin: "https://hackerspub.example",
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    const notifications = await client.notifications.list({
+      session,
+      types: ["emoji_reaction"],
+      page: { limit: 2 },
+    });
+
+    expect(notificationCalls).toHaveLength(1);
+    expect(notifications.nodes).toEqual([]);
+    expect(notifications.pageInfo.hasNextPage).toBe(false);
+  });
+
   it("rejects malformed HackersPub notification edges and IDs", async () => {
     const malformedEdgeClient = createActivityPlugClient({
       adapter: createHackersPubAdapter({
@@ -1138,7 +1178,7 @@ describe("HackersPub adapter", () => {
       context: { operation: "post.create" },
     });
     expect(client.capabilities["media.upload"]).toMatchObject({ status: "unsupported" });
-    expect(createHackersPubAdapter().media).toBeUndefined();
+    expect(createHackersPubAdapter().media?.upload).toBeUndefined();
     await expect(
       client.media.upload({
         session,

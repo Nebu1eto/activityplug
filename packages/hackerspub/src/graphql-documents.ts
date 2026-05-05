@@ -39,6 +39,7 @@ export const viewerDocument = hackersPubGraphQL<
 >(`
   query {
     viewer {
+      id
       uuid
       username
       name

@@ -75,6 +75,9 @@ export interface ActivityPlugInstanceApiService {
 export interface ActivityPlugAccountApiService {
   readonly get: (input: AccountIdRequest) => Promise<Account>;
   readonly lookup: (input: AccountLookupRequest) => Promise<Account | null>;
+  readonly updateProfile: (input: UpdateProfileRequest) => Promise<Account>;
+  readonly followers: (input: AccountFollowsRequest) => Promise<Connection<Account>>;
+  readonly following: (input: AccountFollowsRequest) => Promise<Connection<Account>>;
   readonly posts: (input: AccountPostsRequest) => Promise<Connection<Post>>;
 }
 
@@ -100,6 +103,9 @@ export interface ActivityPlugSearchApiService {
 
 export interface ActivityPlugMediaApiService {
   readonly upload: (input: UploadMediaRequest) => Promise<MediaAttachment>;
+  readonly update: (input: UpdateMediaRequest) => Promise<MediaAttachment>;
+  readonly delete: (input: MediaIdRequest) => Promise<DeletedEntity>;
+  readonly uploadFromUrl: (input: UploadMediaFromUrlRequest) => Promise<MediaAttachment>;
 }
 
 export interface ActivityPlugPollApiService {
@@ -225,6 +231,11 @@ export interface PublicAccountField {
   readonly name: string;
   readonly valueHtml: string;
   readonly verifiedAt?: string;
+}
+
+export interface PublicAccountFieldInput {
+  readonly name: string;
+  readonly value: string;
 }
 
 export interface PublicEntityRef {
@@ -492,6 +503,19 @@ export interface AccountPostsRequest {
   readonly sessionId?: string;
 }
 
+export type AccountFollowsRequest = AccountPostsRequest;
+
+export interface UpdateProfileRequest extends InstanceSelector {
+  readonly sessionId: string;
+  readonly displayName?: string;
+  readonly note?: string;
+  readonly avatarId?: string;
+  readonly headerId?: string;
+  readonly locked?: boolean;
+  readonly bot?: boolean;
+  readonly fields?: readonly PublicAccountFieldInput[];
+}
+
 export interface SessionPageRequest {
   readonly sessionId: string;
   readonly adapter?: string;
@@ -558,6 +582,25 @@ export interface UploadMediaRequest extends InstanceSelector {
   readonly sessionId: string;
   readonly file: Blob;
   readonly filename?: string;
+  readonly description?: string;
+  readonly sensitive?: boolean;
+}
+
+export interface UpdateMediaRequest {
+  readonly sessionId: string;
+  readonly id: string;
+  readonly description?: string;
+  readonly sensitive?: boolean;
+}
+
+export interface MediaIdRequest {
+  readonly sessionId: string;
+  readonly id: string;
+}
+
+export interface UploadMediaFromUrlRequest extends InstanceSelector {
+  readonly sessionId: string;
+  readonly url: string;
   readonly description?: string;
   readonly sensitive?: boolean;
 }
@@ -698,6 +741,9 @@ export function createDefaultApiService(capabilities: CapabilitySet): ActivityPl
     accounts: {
       get: unsupportedApiOperation("account.get"),
       lookup: unsupportedApiOperation("account.lookup"),
+      updateProfile: unsupportedApiOperation("account.updateProfile"),
+      followers: unsupportedApiOperation("account.followers"),
+      following: unsupportedApiOperation("account.following"),
       posts: unsupportedApiOperation("account.posts"),
     },
     posts: {
@@ -719,6 +765,9 @@ export function createDefaultApiService(capabilities: CapabilitySet): ActivityPl
     },
     media: {
       upload: unsupportedApiOperation("media.upload"),
+      update: unsupportedApiOperation("media.update"),
+      delete: unsupportedApiOperation("media.delete"),
+      uploadFromUrl: unsupportedApiOperation("media.uploadFromUrl"),
     },
     polls: {
       get: unsupportedApiOperation("poll.get"),

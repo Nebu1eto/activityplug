@@ -22,10 +22,9 @@ Hollo、HackersPub です。
     置きます。
 
 Compose ファイルは、Misskey、Pleroma、HackersPub を隣接するソフトウェア
-checkout から build します。既定の場所は
-`/Users/Nebuleto/Workspace/activityplug-docs` です。checkout が別の場所に
-ある場合は、`ACTIVITYPLUG_SOFTWARE_ROOT` を設定します。検証した source
-revision は次のとおりです。
+checkout から build します。既定の場所は `../activityplug-docs` です。
+checkout が別の場所にある場合は、`ACTIVITYPLUG_SOFTWARE_ROOT` を設定します。
+検証した source revision は次のとおりです。
 
  -  Misskey: `0f5da633284ffe20c3ed59bb0a5c5866071baac3`.
  -  Pleroma: `683ab39160a2ff95d151887a89217bd1d4a6dcf5`.
@@ -100,9 +99,10 @@ disposable local account に対する follow/unfollow、block/unblock、mute/unm
     のみ `NODE_TLS_REJECT_UNAUTHORIZED=0` を設定します。Provision は viewer
     account と disposable social-action account の両方を作成します。
  -  Misskey の provision は、データベースで federation を有効にし、既定の
-    `canSearchNotes` policy を有効にし、note search 用の Meilisearch を起動し
-    ます。その後、admin session と disposable social-action account を作成し、
-    seed note が index されるまで待ってから token target を作ります。
+    `canSearchNotes` policy を有効にし、Docker Compose が起動した
+    Meilisearch service を note search に使います。その後、admin session と
+    disposable social-action account を作成し、seed note が index されるまで
+    待ってから token target を作ります。
  -  Pleroma の provision は、`pleroma_ctl` でローカルユーザーを作成し、
     Mastodon-compatible OAuth application を登録し、password-grant token、
     disposable social-action account、public seed status を作ります。

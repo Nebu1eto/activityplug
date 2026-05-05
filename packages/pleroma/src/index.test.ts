@@ -68,7 +68,7 @@ describe("Pleroma adapter", () => {
     });
 
     expect(client.capabilities["social.bookmarkFolders"]).toMatchObject({
-      status: "unknown",
+      status: "unsupported",
     });
     expect(client.capabilities["notifications.pleromaEmojiReaction"]).toMatchObject({
       status: "supported",

@@ -10,6 +10,7 @@ import {
   type CapabilityName,
   type Connection,
   type DeletedEntity,
+  type MediaAttachment,
   type PageInput,
   type Post,
   type PostActionInput,
@@ -18,6 +19,8 @@ import {
   type SearchInput,
   type SearchResult,
   type ReactPostInput,
+  type UpdateProfileInput,
+  type UploadMediaFromUrlInput,
 } from "@activityplug/core";
 
 import { createHackersPubStaticCapabilities } from "./capabilities.js";
@@ -64,6 +67,8 @@ import {
 } from "./transport.js";
 import {
   type HackersPubAdapterOptions,
+  type HackersPubActor,
+  type HackersPubMediaUploadResponse,
   type HackersPubPost,
   type HackersPubPostEdge,
   type HackersPubPostConnection,
@@ -91,6 +96,27 @@ export function createHackersPubAdapter(
     accounts: {
       getById: async (input, context) => getActorById(input.id, context, options),
       getByHandle: async (input, context) => getActorByHandle(input.handle, context, options),
+      updateProfile: async (input, context) => updateProfile(input, context, options),
+      listFollowers: async (input, context) =>
+        listActorConnections(
+          input.accountId,
+          "followers",
+          input.page,
+          context,
+          options,
+          input.session,
+          "account.followers",
+        ),
+      listFollowing: async (input, context) =>
+        listActorConnections(
+          input.accountId,
+          "followees",
+          input.page,
+          context,
+          options,
+          input.session,
+          "account.following",
+        ),
       listPosts: async (input, context) =>
         listActorPosts(input.accountId, input.page, context, options, input.session),
     },
@@ -116,6 +142,9 @@ export function createHackersPubAdapter(
     },
     search: {
       search: async (input, context) => search(input, context, options),
+    },
+    media: {
+      uploadFromUrl: async (input, context) => uploadMediaFromUrl(input, context, options),
     },
     social: {
       relationship: async (input, context) => relationship(input, context, options),
@@ -278,6 +307,145 @@ async function verifyCredentials(
     });
   }
   return viewerAccountFromResponse(response.viewer, operationContext);
+}
+
+async function updateProfile(
+  input: UpdateProfileInput,
+  context: AdapterOperationContext,
+  options: HackersPubAdapterOptions,
+): Promise<Account> {
+  if (
+    input.headerId !== undefined ||
+    input.locked !== undefined ||
+    input.bot !== undefined ||
+    input.fields !== undefined
+  ) {
+    throw new ActivityPlugError(
+      "UNSUPPORTED_OPERATION",
+      "HackersPub profile updates do not map header, lock, bot, or field values.",
+      {
+        adapter: context.adapterId,
+        origin: context.origin,
+        operation: "account.updateProfile",
+        capability: "accounts.updateProfile",
+      },
+    );
+  }
+  const viewer = await graphql(
+    viewerDocument,
+    {},
+    context,
+    options,
+    "account.updateProfile",
+    input.session,
+  );
+  const accountId = viewer.viewer?.id;
+  if (!nonEmptyString(accountId)) {
+    throw new ActivityPlugError("AUTH_REQUIRED", "HackersPub viewer session is not available.", {
+      adapter: context.adapterId,
+      origin: context.origin,
+      operation: "account.updateProfile",
+    });
+  }
+  const response = await graphql<{
+    readonly updateAccount?: {
+      readonly account?: { readonly actor?: HackersPubActor | null } | null;
+    } | null;
+  }>(
+    `
+      mutation ($input: UpdateAccountInput!) {
+        updateAccount(input: $input) {
+          account {
+            actor {
+              ${actorSelectionWithRelationship()}
+            }
+          }
+        }
+      }
+    `,
+    {
+      input: {
+        id: accountId,
+        ...(input.displayName === undefined ? {} : { name: input.displayName }),
+        ...(input.note === undefined ? {} : { bio: input.note }),
+        ...(input.avatarId === undefined ? {} : { avatarUrl: input.avatarId }),
+      },
+    },
+    context,
+    options,
+    "account.updateProfile",
+    input.session,
+  );
+  const actor = response.updateAccount?.account?.actor;
+  if (!isRecord(actor)) {
+    throw activityPlugError(
+      "REMOTE_ERROR",
+      "HackersPub account update response is malformed.",
+      context,
+      "account.updateProfile",
+      response,
+    );
+  }
+  return actorFromResponse(actor, context, "account.updateProfile");
+}
+
+async function uploadMediaFromUrl(
+  input: UploadMediaFromUrlInput,
+  context: AdapterOperationContext,
+  options: HackersPubAdapterOptions,
+): Promise<MediaAttachment> {
+  if (input.description !== undefined || input.sensitive !== undefined) {
+    throw new ActivityPlugError(
+      "UNSUPPORTED_OPERATION",
+      "HackersPub URL media upload does not store media description or sensitivity metadata.",
+      {
+        adapter: context.adapterId,
+        origin: context.origin,
+        operation: "media.uploadFromUrl",
+        capability: "media.remoteUrlUpload",
+      },
+    );
+  }
+  const response = await graphql<{
+    readonly uploadMedia?: HackersPubMediaUploadResponse | null;
+  }>(
+    `
+      mutation ($input: UploadMediaInput!) {
+        uploadMedia(input: $input) {
+          url
+          width
+          height
+        }
+      }
+    `,
+    { input: { mediaUrl: input.url } },
+    context,
+    options,
+    "media.uploadFromUrl",
+    input.session,
+  );
+  const uploaded = response.uploadMedia;
+  if (!isRecord(uploaded) || !nonEmptyString(uploaded.url)) {
+    throw activityPlugError(
+      "REMOTE_ERROR",
+      "HackersPub media upload response is malformed.",
+      context,
+      "media.uploadFromUrl",
+      response,
+    );
+  }
+  return {
+    ref: createEntityRef({
+      adapter: context.adapterId,
+      origin: context.origin,
+      type: "media",
+      id: uploaded.url,
+      rawUrl: uploaded.url,
+    }),
+    type: "image",
+    url: uploaded.url,
+    raw: uploaded,
+  };
 }
 
 async function searchPosts(
@@ -689,6 +857,127 @@ async function listActorPosts(
       raw: publicRelayPageInfo(posts.pageInfo),
     },
   };
+}
+
+async function listActorConnections(
+  accountId: string,
+  field: "followers" | "followees",
+  page: PageInput | undefined,
+  context: AdapterOperationContext,
+  options: HackersPubAdapterOptions,
+  session: AuthSession | undefined,
+  operation: "account.followers" | "account.following",
+): Promise<Connection<Account>> {
+  const response = await graphql<{
+    readonly actorByUuid?: {
+      readonly followers?: HackersPubActorConnection;
+      readonly followees?: HackersPubActorConnection;
+    } | null;
+  }>(
+    `
+      query ($id: UUID!, $first: Int, $after: String, $last: Int, $before: String) {
+        actorByUuid(uuid: $id) {
+          ${field}(first: $first, after: $after, last: $last, before: $before) {
+            edges {
+              node {
+                ${actorSelectionWithRelationship()}
+              }
+            }
+            pageInfo {
+              hasNextPage
+              hasPreviousPage
+              startCursor
+              endCursor
+            }
+          }
+        }
+      }
+    `,
+    { id: accountId, ...relayPageVariables(page, context, operation) },
+    context,
+    options,
+    operation,
+    session,
+  );
+  assertSelectedField(response, "actorByUuid", context, operation);
+  const connection = response.actorByUuid?.[field];
+  if (
+    response.actorByUuid === null ||
+    !isRecord(connection) ||
+    !Array.isArray(connection.edges) ||
+    !validPageInfo(connection.pageInfo)
+  ) {
+    throw activityPlugError(
+      response.actorByUuid === null ? "NOT_FOUND" : "REMOTE_ERROR",
+      "HackersPub actor connection response is malformed.",
+      context,
+      operation,
+      response,
+    );
+  }
+  const actorConnection = connection as unknown as HackersPubActorConnection & {
+    readonly edges: readonly HackersPubActorEdge[];
+    readonly pageInfo: NonNullable<HackersPubActorConnection["pageInfo"]>;
+  };
+  return {
+    nodes: actorConnection.edges.map((edge) => actorFromConnectionEdge(edge, context, operation)),
+    pageInfo: {
+      hasNextPage: actorConnection.pageInfo.hasNextPage ?? false,
+      hasPreviousPage: actorConnection.pageInfo.hasPreviousPage ?? false,
+      ...(actorConnection.pageInfo.startCursor === null ||
+      actorConnection.pageInfo.startCursor === undefined
+        ? {}
+        : {
+            startCursor: encodeOperationCursor(
+              actorConnection.pageInfo.startCursor,
+              context,
+              operation,
+            ),
+          }),
+      ...(actorConnection.pageInfo.endCursor === null ||
+      actorConnection.pageInfo.endCursor === undefined
+        ? {}
+        : {
+            endCursor: encodeOperationCursor(
+              actorConnection.pageInfo.endCursor,
+              context,
+              operation,
+            ),
+          }),
+      raw: publicRelayPageInfo(actorConnection.pageInfo),
+    },
+  };
+}
+
+interface HackersPubActorConnection {
+  readonly edges?: readonly HackersPubActorEdge[];
+  readonly pageInfo?: {
+    readonly hasNextPage?: boolean;
+    readonly hasPreviousPage?: boolean;
+    readonly startCursor?: string | null;
+    readonly endCursor?: string | null;
+  };
+}
+
+interface HackersPubActorEdge {
+  readonly node?: HackersPubActor;
+}
+
+function actorFromConnectionEdge(
+  edge: HackersPubActorEdge,
+  context: AdapterOperationContext,
+  operation: string,
+): Account {
+  if (!isRecord(edge) || !isRecord(edge.node)) {
+    throw activityPlugError(
+      "REMOTE_ERROR",
+      "HackersPub actor connection edge response is malformed.",
+      context,
+      operation,
+      edge,
+    );
+  }
+  return actorFromResponse(edge.node, context, operation);
 }
 
 async function getPostById(

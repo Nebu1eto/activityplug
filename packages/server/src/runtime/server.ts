@@ -19,6 +19,7 @@ import { type cors } from "hono/cors";
 
 import {
   createDefaultApiService,
+  type AccountFollowsRequest,
   type ActivityPlugApiService,
   type InstanceSelector,
   type RelationshipRequest,
@@ -187,6 +188,33 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
           handle: input.handle,
         });
       },
+      updateProfile: async (input) => {
+        const { adapter: _adapter, origin: _origin, sessionId, ...profile } = input;
+        const selector = normalizeSelector(input, "account.updateProfile");
+        const session = await requireSession(sessionId, sessions, "account.updateProfile");
+        await originPolicy({ origin: selector.origin, operation: "account.updateProfile" });
+        assertSessionTarget(session, selector, "account.updateProfile");
+        return resolveClient(selector, options.adapters, sessions).accounts.updateProfile({
+          ...profile,
+          session: toPublicSession(session),
+        });
+      },
+      followers: async (input) =>
+        listAccountConnections(
+          input,
+          "account.followers",
+          options.adapters,
+          sessions,
+          originPolicy,
+        ),
+      following: async (input) =>
+        listAccountConnections(
+          input,
+          "account.following",
+          options.adapters,
+          sessions,
+          originPolicy,
+        ),
       posts: async (input) => {
         const ref = decodeOpaqueIdForOperation(input.id, "account.posts");
         await originPolicy({ origin: ref.origin, operation: "account.posts" });
@@ -374,6 +402,40 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
         await originPolicy({ origin: selector.origin, operation: "media.upload" });
         assertSessionTarget(session, selector, "media.upload");
         return resolveClient(selector, options.adapters, sessions).media.upload({
+          ...upload,
+          session: toPublicSession(session),
+        });
+      },
+      update: async (input) => {
+        const { sessionId, ...update } = input;
+        const session = await requireSession(sessionId, sessions, "media.update");
+        const ref = decodeOpaqueIdForOperation(input.id, "media.update");
+        await originPolicy({ origin: ref.origin, operation: "media.update" });
+        assertSessionTarget(session, { adapter: ref.adapter, origin: ref.origin }, "media.update");
+        return resolveClient(
+          { adapter: ref.adapter, origin: ref.origin },
+          options.adapters,
+          sessions,
+        ).media.update({ ...update, session: toPublicSession(session) });
+      },
+      delete: async (input) => {
+        const session = await requireSession(input.sessionId, sessions, "media.delete");
+        const ref = decodeOpaqueIdForOperation(input.id, "media.delete");
+        await originPolicy({ origin: ref.origin, operation: "media.delete" });
+        assertSessionTarget(session, { adapter: ref.adapter, origin: ref.origin }, "media.delete");
+        return resolveClient(
+          { adapter: ref.adapter, origin: ref.origin },
+          options.adapters,
+          sessions,
+        ).media.delete({ id: input.id, session: toPublicSession(session) });
+      },
+      uploadFromUrl: async (input) => {
+        const { adapter: _adapter, origin: _origin, sessionId, ...upload } = input;
+        const selector = normalizeSelector(input, "media.uploadFromUrl");
+        const session = await requireSession(sessionId, sessions, "media.uploadFromUrl");
+        await originPolicy({ origin: selector.origin, operation: "media.uploadFromUrl" });
+        assertSessionTarget(session, selector, "media.uploadFromUrl");
+        return resolveClient(selector, options.adapters, sessions).media.uploadFromUrl({
           ...upload,
           session: toPublicSession(session),
         });
@@ -996,6 +1058,33 @@ async function detectInstance(
       operation: "instance.detect",
     },
   );
+}
+
+async function listAccountConnections(
+  input: AccountFollowsRequest,
+  operation: "account.followers" | "account.following",
+  adapters: readonly ActivityPlugAdapter[],
+  sessions: AuthSessionStore,
+  originPolicy: OriginFetchPolicy,
+) {
+  const ref = decodeOpaqueIdForOperation(input.id, operation);
+  await originPolicy({ origin: ref.origin, operation });
+  const session =
+    input.sessionId === undefined
+      ? undefined
+      : await requireSession(input.sessionId, sessions, operation);
+  if (session !== undefined) {
+    assertSessionTarget(session, { adapter: ref.adapter, origin: ref.origin }, operation);
+  }
+  const client = resolveClient({ adapter: ref.adapter, origin: ref.origin }, adapters, sessions);
+  const request = {
+    accountId: input.id,
+    ...(input.page === undefined ? {} : { page: input.page }),
+    ...(session === undefined ? {} : { session: toPublicSession(session) }),
+  };
+  return operation === "account.followers"
+    ? client.accounts.listFollowers(request)
+    : client.accounts.listFollowing(request);
 }
 
 function matchesDetectedSoftware(adapter: ActivityPlugAdapter, softwareName: string): boolean {

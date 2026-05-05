@@ -10,14 +10,33 @@ export function createHackersPubStaticCapabilities() {
       "unsupported",
       "HackersPub does not expose OAuth refresh tokens.",
     ),
+    "auth.oauth.clientCredentials": capability(
+      "unsupported",
+      "HackersPub does not expose OAuth client authentication.",
+    ),
+    "auth.passkey": capability(
+      "unsupported",
+      "HackersPub passkey login is not exposed through this adapter API.",
+    ),
     "instance.nodeInfo": capability("supported"),
+    "instance.peers": capability("unsupported", "Peer listing is not mapped by this adapter."),
     "accounts.lookupById": capability("supported"),
     "accounts.lookupByHandle": capability("supported"),
     "accounts.relationships": capability("supported"),
+    "accounts.updateProfile": capability("supported"),
+    "accounts.followers": capability("supported"),
+    "accounts.following": capability("supported"),
     "auth.tokenInjection": capability("supported"),
     "media.upload": capability(
       "unsupported",
       "HackersPub can upload images, but its createNote GraphQL API cannot attach uploaded media.",
+    ),
+    "media.update": capability("unsupported", "Media updates are not mapped by this adapter."),
+    "media.delete": capability("unsupported", "Media deletion is not mapped by this adapter."),
+    "media.remoteUrlUpload": capability("supported"),
+    "media.urlIngestion": capability(
+      "unsupported",
+      "URL media ingestion is not mapped by this adapter.",
     ),
     "posts.read": capability("supported"),
     "posts.create": capability("supported"),
@@ -28,6 +47,7 @@ export function createHackersPubStaticCapabilities() {
     ),
     "posts.reply": capability("supported"),
     "posts.quote": capability("supported"),
+    "posts.translate": capability("unsupported", "Post translation is not mapped by this adapter."),
     "posts.history": capability("unsupported", "HackersPub does not expose edit history."),
     "polls.create": capability("unsupported", "HackersPub poll creation is not mapped yet."),
     "polls.read": capability("supported"),
@@ -36,6 +56,18 @@ export function createHackersPubStaticCapabilities() {
     "notifications.grouped": capability(
       "unsupported",
       "HackersPub does not expose grouped notifications in the mapped GraphQL API.",
+    ),
+    "notifications.pleromaEmojiReaction": capability(
+      "unsupported",
+      "Pleroma-specific notification types do not apply to HackersPub.",
+    ),
+    "notifications.pleromaChatMention": capability(
+      "unsupported",
+      "Pleroma-specific notification types do not apply to HackersPub.",
+    ),
+    "notifications.pleromaReport": capability(
+      "unsupported",
+      "Pleroma-specific notification types do not apply to HackersPub.",
     ),
     "notifications.dismiss": capability(
       "unsupported",
@@ -129,6 +161,10 @@ export function createHackersPubStaticCapabilities() {
     "social.mute": capability("unsupported", "HackersPub social actions are not mapped yet."),
     "social.favourite": capability("supported"),
     "social.bookmark": capability("supported"),
+    "social.bookmarkFolders": capability(
+      "unsupported",
+      "Bookmark folders are not mapped by this adapter.",
+    ),
     "social.boost": capability("supported"),
     "social.reaction": capability("supported"),
   });

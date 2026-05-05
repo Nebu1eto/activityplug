@@ -14,6 +14,7 @@ import {
   type AuthExchangeRequest,
   type AuthStartRequest,
   type ImportTokenRequest,
+  type PublicAccountFieldInput,
   serializePost,
   serializeRelationship,
 } from "../api/service.js";
@@ -441,6 +442,28 @@ export function optionalJsonStringArray(
     );
   }
   return { [field]: value };
+}
+
+export function optionalJsonAccountFields(body: Record<string, unknown>): {
+  readonly fields?: readonly PublicAccountFieldInput[];
+} {
+  const value = body.fields;
+  if (value === undefined || value === null) return {};
+  if (!Array.isArray(value)) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "GraphQL JSON field must be an account field array: fields.",
+    );
+  }
+  return {
+    fields: value.map((item) => {
+      const field = requireJsonObject(item);
+      return {
+        name: requiredJsonStringValue(field, "name"),
+        value: requiredJsonStringValue(field, "value"),
+      };
+    }),
+  };
 }
 
 export function optionalJsonBoolean(

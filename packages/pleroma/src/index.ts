@@ -61,9 +61,10 @@ export function createPleromaAdapter(options: PleromaAdapterOptions = {}): Activ
         ...adapter.metadata.staticCapabilities,
         "social.reaction": capability("supported"),
         "social.bookmarkFolders": capability(
-          "unknown",
-          "Pleroma bookmark folders are not exposed by the current public API.",
+          "unsupported",
+          "Bookmark folders are not mapped by this adapter.",
         ),
+        "media.delete": capability("unsupported", "Pleroma does not expose media deletion."),
         "notifications.pleromaEmojiReaction": capability(
           "supported",
           "Pleroma emoji reaction notifications are normalized by this adapter.",
@@ -116,6 +117,21 @@ export function createPleromaAdapter(options: PleromaAdapterOptions = {}): Activ
             origin: context.origin,
             operation: "notification.unreadCount",
             capability: "notifications.unreadCount",
+          },
+        );
+      },
+    },
+    media: {
+      ...adapter.media,
+      delete: async (_input, context) => {
+        throw new ActivityPlugError(
+          "UNSUPPORTED_OPERATION",
+          "Pleroma does not expose media deletion.",
+          {
+            adapter: context.adapterId,
+            origin: context.origin,
+            operation: "media.delete",
+            capability: "media.delete",
           },
         );
       },

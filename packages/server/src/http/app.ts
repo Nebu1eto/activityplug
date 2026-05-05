@@ -45,6 +45,7 @@ import {
   instanceSelectorQuery,
   instanceSelectorRequest,
   mediaUploadFilename,
+  optionalAccountFields,
   formString,
   nonBlankValue,
   optionalBearerSessionId,
@@ -309,6 +310,56 @@ export function createActivityPlugApp(options: CreateActivityPlugAppOptions): Ho
         {
           pageInfo: connection.pageInfo,
         },
+      ),
+    );
+  });
+  app.get("/api/v1/accounts/:id/followers", async (context) => {
+    const page = pageQuery(context);
+    const connection = await options.service.accounts.followers({
+      id: context.req.param("id"),
+      ...optionalBearerSessionId(context.req.header("authorization")),
+      ...optionalQuery(context.req.query("sessionId"), "sessionId"),
+      ...(page === undefined ? {} : { page }),
+    });
+    return context.json(
+      data(
+        connection.nodes.map((account) => serializeAccount(account)),
+        { pageInfo: connection.pageInfo },
+      ),
+    );
+  });
+  app.get("/api/v1/accounts/:id/following", async (context) => {
+    const page = pageQuery(context);
+    const connection = await options.service.accounts.following({
+      id: context.req.param("id"),
+      ...optionalBearerSessionId(context.req.header("authorization")),
+      ...optionalQuery(context.req.query("sessionId"), "sessionId"),
+      ...(page === undefined ? {} : { page }),
+    });
+    return context.json(
+      data(
+        connection.nodes.map((account) => serializeAccount(account)),
+        { pageInfo: connection.pageInfo },
+      ),
+    );
+  });
+  app.patch("/api/v1/accounts/update-profile", async (context) => {
+    const body = requireObjectBody(await parseJsonBody(context.req.json()));
+    return context.json(
+      data(
+        serializeAccount(
+          await options.service.accounts.updateProfile({
+            ...instanceSelectorRequest(body),
+            sessionId: bearerSessionId(context.req.header("authorization")),
+            ...optionalString(body, "displayName"),
+            ...optionalString(body, "note"),
+            ...optionalString(body, "avatarId"),
+            ...optionalString(body, "headerId"),
+            ...optionalBooleanBody(body, "locked"),
+            ...optionalBooleanBody(body, "bot"),
+            ...optionalAccountFields(body),
+          }),
+        ),
       ),
     );
   });
@@ -958,6 +1009,49 @@ export function createActivityPlugApp(options: CreateActivityPlugAppOptions): Ho
       ),
     );
   });
+  app.post("/api/v1/media/ingest-url", async (context) => {
+    const body = requireObjectBody(await parseJsonBody(context.req.json()));
+    return context.json(
+      data(
+        serializeMediaAttachment(
+          await options.service.media.uploadFromUrl({
+            ...instanceSelectorRequest(body),
+            sessionId: bearerSessionId(context.req.header("authorization")),
+            url: requiredStringValue(body, "url"),
+            ...optionalString(body, "description"),
+            ...optionalBooleanBody(body, "sensitive"),
+          }),
+        ),
+      ),
+    );
+  });
+  app.patch("/api/v1/media/:id", async (context) => {
+    const body = requireObjectBody(await parseJsonBody(context.req.json()));
+    return context.json(
+      data(
+        serializeMediaAttachment(
+          await options.service.media.update({
+            id: context.req.param("id"),
+            sessionId: bearerSessionId(context.req.header("authorization")),
+            ...optionalString(body, "description"),
+            ...optionalBooleanBody(body, "sensitive"),
+          }),
+        ),
+      ),
+    );
+  });
+  app.delete("/api/v1/media/:id", async (context) =>
+    context.json(
+      data(
+        serializeDeletedEntity(
+          await options.service.media.delete({
+            id: context.req.param("id"),
+            sessionId: bearerSessionId(context.req.header("authorization")),
+          }),
+        ),
+      ),
+    ),
+  );
   for (const route of unsupportedHttpRoutes) {
     app.on(route.method, route.path, () => {
       throw new ActivityPlugError(
@@ -978,10 +1072,7 @@ export function createActivityPlugApp(options: CreateActivityPlugAppOptions): Ho
 const unsupportedHttpRoutes = [
   { method: "get", path: "/api/v1/posts/:id/context", operation: "post.context" },
   { method: "get", path: "/api/v1/posts/:id/quotes", operation: "post.quotes" },
-  { method: "post", path: "/api/v1/media/ingest-url", operation: "media.ingestUrl" },
   { method: "get", path: "/api/v1/media/:id", operation: "media.get" },
-  { method: "patch", path: "/api/v1/media/:id", operation: "media.update" },
-  { method: "delete", path: "/api/v1/media/:id", operation: "media.delete" },
   { method: "get", path: "/api/v1/streams", operation: "streaming.connect" },
   { method: "get", path: "/api/v1/streams/timelines/home", operation: "streaming.home" },
   { method: "get", path: "/api/v1/streams/notifications", operation: "streaming.notifications" },

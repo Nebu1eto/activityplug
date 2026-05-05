@@ -46,6 +46,7 @@ import {
   optionalObject,
   optionalString,
   optionalStringArray,
+  renamedOptionalBoolean,
   renamedOptionalNumber,
   renamedOptionalString,
   requestJson,
@@ -726,9 +727,7 @@ export function pollFromResponse(
         context,
         operation,
       ),
-      ...(optionalBoolean(poll.voted, "voted", poll, context, operation) === undefined
-        ? {}
-        : { voted: optionalBoolean(poll.voted, "voted", poll, context, operation) }),
+      ...renamedOptionalBoolean(poll.voted, "voted", "voted", poll, context, operation),
       ...(ownVotes === undefined ? {} : { ownVotes }),
       options: poll.options.map((option) => {
         if (!isRecord(option) || typeof option.title !== "string") {
@@ -744,23 +743,14 @@ export function pollFromResponse(
         };
         return {
           title: pollOption.title,
-          ...(optionalNumber(
+          ...renamedOptionalNumber(
             pollOption.votes_count,
             "votes_count",
+            "votesCount",
             pollOption,
             context,
             operation,
-          ) === undefined
-            ? {}
-            : {
-                votesCount: optionalNumber(
-                  pollOption.votes_count,
-                  "votes_count",
-                  pollOption,
-                  context,
-                  operation,
-                ),
-              }),
+          ),
         };
       }),
       ...(poll.pleroma === undefined ? {} : { extensions: { pleroma: poll.pleroma } }),

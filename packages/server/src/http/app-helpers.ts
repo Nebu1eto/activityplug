@@ -18,6 +18,7 @@ import {
   type AuthParseCallbackRequest,
   type AuthStartRequest,
   type ImportTokenRequest,
+  type PublicAccountFieldInput,
 } from "../api/service.js";
 
 export function data<T, Extra extends object = Record<never, never>>(
@@ -731,6 +732,28 @@ export function optionalStringArray(
     );
   }
   return { [field]: value };
+}
+
+export function optionalAccountFields(body: Record<string, unknown>): {
+  readonly fields?: readonly PublicAccountFieldInput[];
+} {
+  const value = body.fields;
+  if (value === undefined) return {};
+  if (!Array.isArray(value)) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "Request body field must be an account field array: fields.",
+    );
+  }
+  return {
+    fields: value.map((item) => {
+      const field = requireObjectBody(item);
+      return {
+        name: requiredStringValue(field, "name"),
+        value: requiredStringValue(field, "value"),
+      };
+    }),
+  };
 }
 
 export function randomState(): string {

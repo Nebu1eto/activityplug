@@ -43,7 +43,7 @@ export async function listNotifications(
     return listFilteredNotifications(input, initialVariables, context, options);
   }
   const notifications = await notificationConnection(initialVariables, input, context, options);
-  return notificationConnectionFromResponse(notifications, input, context);
+  return notificationConnectionFromResponse(notifications, context);
 }
 
 async function listFilteredNotifications(
@@ -57,6 +57,8 @@ async function listFilteredNotifications(
   let variables = initialVariables;
   let lastConnection: HackersPubNotificationConnection | undefined;
   const backward = input.page?.before !== undefined;
+  let previousCursor = cursorVariable(initialVariables, backward);
+  let stoppedWithoutProgress = false;
   while (accepted.length < limit) {
     const notifications = await notificationConnection(variables, input, context, options);
     lastConnection = notifications;
@@ -80,9 +82,20 @@ async function listFilteredNotifications(
     const hasMore = backward
       ? notifications.pageInfo.hasPreviousPage
       : notifications.pageInfo.hasNextPage;
-    if (!hasMore || nextCursor === null || nextCursor === undefined || nextCursor.length === 0) {
+    if (!hasMore) {
       break;
     }
+    if (
+      notifications.edges.length === 0 ||
+      nextCursor === null ||
+      nextCursor === undefined ||
+      nextCursor.length === 0 ||
+      nextCursor === previousCursor
+    ) {
+      stoppedWithoutProgress = true;
+      break;
+    }
+    previousCursor = nextCursor;
     const remaining = limit - accepted.length;
     variables =
       remaining <= 0
@@ -97,8 +110,14 @@ async function listFilteredNotifications(
   return {
     nodes,
     pageInfo: {
-      hasNextPage: lastConnection?.pageInfo?.hasNextPage ?? false,
-      hasPreviousPage: lastConnection?.pageInfo?.hasPreviousPage ?? false,
+      hasNextPage:
+        stoppedWithoutProgress && !backward
+          ? false
+          : (lastConnection?.pageInfo?.hasNextPage ?? false),
+      hasPreviousPage:
+        stoppedWithoutProgress && backward
+          ? false
+          : (lastConnection?.pageInfo?.hasPreviousPage ?? false),
       ...(startCursor === undefined
         ? {}
         : {
@@ -112,6 +131,11 @@ async function listFilteredNotifications(
       raw: lastConnection === undefined ? undefined : publicRelayPageInfo(lastConnection.pageInfo),
     },
   };
+}
+
+function cursorVariable(variables: Record<string, unknown>, backward: boolean): string | undefined {
+  const cursor = variables[backward ? "before" : "after"];
+  return typeof cursor === "string" && cursor.length > 0 ? cursor : undefined;
 }
 
 async function notificationConnection(
@@ -192,16 +216,11 @@ async function notificationConnection(
 
 function notificationConnectionFromResponse(
   notifications: HackersPubNotificationConnection,
-  input: ListNotificationsInput,
   context: AdapterOperationContext,
 ): Connection<Notification> {
   const nodes = notifications.edges
     .map((edge) => notificationEdgeFromResponse(edge, context).node)
-    .map((node) => notificationFromResponse(node, context))
-    .filter((node) => {
-      if (input.types === undefined || input.types.length === 0) return true;
-      return input.types.some((type) => type === node.type);
-    });
+    .map((node) => notificationFromResponse(node, context));
   return {
     nodes,
     pageInfo: {

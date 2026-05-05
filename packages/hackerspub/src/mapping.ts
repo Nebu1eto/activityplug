@@ -20,8 +20,8 @@ import {
   isRecord,
   nonEmptyString,
   optionalString,
+  optionalStringAsField,
   optionalStringField,
-  renameOptionalStringField,
   validatedRemoteId,
 } from "./transport.js";
 import {
@@ -625,13 +625,11 @@ export function actorFromResponse(
     displayName: rawName ?? name ?? actor.username,
     ...(actorUrl === undefined ? {} : { url: actorUrl }),
     ...optionalStringField(actor.avatarUrl, "avatarUrl", actor, context, operation),
-    ...renameOptionalStringField(actor.headerUrl, "headerUrl", actor, context, operation),
+    ...optionalStringAsField(actor.headerUrl, "headerUrl", "headerUrl", actor, context, operation),
     bot: false,
     locked: !(actor.automaticallyApprovesFollowers ?? true),
-    ...(optionalString(actor.created, "created", actor, context, operation) === undefined
-      ? {}
-      : { createdAt: optionalString(actor.created, "created", actor, context, operation) }),
-    ...renameOptionalStringField(actor.bio, "note", actor, context, operation),
+    ...optionalStringAsField(actor.created, "created", "createdAt", actor, context, operation),
+    ...optionalStringAsField(actor.bio, "bio", "note", actor, context, operation),
     fields: actorFieldsFromResponse(actor.fields, context, operation),
     raw: actor,
   };
@@ -714,7 +712,14 @@ export function viewerAccountFromResponse(
     bot: false,
     locked: false,
     ...(response.created === undefined ? {} : { createdAt: response.created }),
-    ...renameOptionalStringField(response.bio, "note", response, context, "auth.verifyCredentials"),
+    ...optionalStringAsField(
+      response.bio,
+      "bio",
+      "note",
+      response,
+      context,
+      "auth.verifyCredentials",
+    ),
     raw: response,
   };
 }

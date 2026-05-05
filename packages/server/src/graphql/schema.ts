@@ -433,6 +433,55 @@ const UploadMediaInput = builder.inputType("UploadMediaInput", {
   }),
 });
 
+const UploadMediaFromUrlInput = builder.inputType("UploadMediaFromUrlInput", {
+  fields: (t) => ({
+    origin: t.string({ required: true }),
+    adapter: t.field({ type: AdapterKindEnum, required: false }),
+    sessionId: t.id({ required: true }),
+    url: t.string({ required: true }),
+    description: t.string({ required: false }),
+    sensitive: t.boolean({ required: false }),
+  }),
+});
+
+const UpdateMediaInput = builder.inputType("UpdateMediaInput", {
+  fields: (t) => ({
+    id: t.id({ required: true }),
+    sessionId: t.id({ required: true }),
+    description: t.string({ required: false }),
+    sensitive: t.boolean({ required: false }),
+  }),
+});
+
+const DeleteMediaInput = builder.inputType("DeleteMediaInput", {
+  fields: (t) => ({
+    id: t.id({ required: true }),
+    sessionId: t.id({ required: true }),
+  }),
+});
+
+const AccountFieldInput = builder.inputType("AccountFieldInput", {
+  fields: (t) => ({
+    name: t.string({ required: true }),
+    value: t.string({ required: true }),
+  }),
+});
+
+const UpdateProfileInput = builder.inputType("UpdateProfileInput", {
+  fields: (t) => ({
+    origin: t.string({ required: true }),
+    adapter: t.field({ type: AdapterKindEnum, required: false }),
+    sessionId: t.id({ required: true }),
+    displayName: t.string({ required: false }),
+    note: t.string({ required: false }),
+    avatarId: t.id({ required: false }),
+    headerId: t.id({ required: false }),
+    locked: t.boolean({ required: false }),
+    bot: t.boolean({ required: false }),
+    fields: t.field({ type: [AccountFieldInput], required: false }),
+  }),
+});
+
 const CreatePollInput = builder.inputType("CreatePollInput", {
   fields: (t) => ({
     options: t.stringList({ required: true }),
@@ -594,15 +643,6 @@ const VotePollInput = builder.inputType("VotePollInput", {
     id: t.id({ required: true }),
     sessionId: t.id({ required: true }),
     choices: t.intList({ required: true }),
-  }),
-});
-
-const JsonInput = builder.inputType("OperationInput", {
-  fields: (t) => ({
-    id: t.id({ required: false }),
-    origin: t.string({ required: false }),
-    sessionId: t.id({ required: false }),
-    adapter: t.field({ type: AdapterKindEnum, required: false }),
   }),
 });
 
@@ -1073,10 +1113,10 @@ registerGraphQLOperations({
   CreateFilterInput,
   DeletedEntityType,
   DetectInstanceInput,
+  DeleteMediaInput,
   Health,
   ImportTokenInput,
   InstanceType,
-  JsonInput,
   ListConnectionType,
   CreateListInput,
   ListType,
@@ -1103,8 +1143,11 @@ registerGraphQLOperations({
   ScheduledPostType,
   UpdateFilterInput,
   UpdateListInput,
+  UpdateMediaInput,
   UpdatePostInput,
+  UpdateProfileInput,
   UpdateScheduledPostInput,
+  UploadMediaFromUrlInput,
   UploadMediaInput,
   VotePollInput,
   accountActionResolver,

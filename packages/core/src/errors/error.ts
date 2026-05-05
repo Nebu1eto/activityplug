@@ -24,6 +24,13 @@ export interface ActivityPlugErrorContext {
   readonly raw?: unknown;
 }
 
+export type RemoteHttpErrorCode =
+  | "AUTH_REQUIRED"
+  | "NOT_FOUND"
+  | "CONFLICT"
+  | "RATE_LIMITED"
+  | "REMOTE_ERROR";
+
 export class ActivityPlugError extends Error {
   public override readonly name = "ActivityPlugError";
   public readonly code: ActivityPlugErrorCode;
@@ -71,6 +78,14 @@ export function unsupportedOperation(
 
 export function invalidOpaqueId(message: string, options?: ErrorOptions): ActivityPlugError {
   return new ActivityPlugError("VALIDATION_FAILED", message, {}, options);
+}
+
+export function remoteHttpErrorCodeForStatus(status: number): RemoteHttpErrorCode {
+  if (status === 401 || status === 403) return "AUTH_REQUIRED";
+  if (status === 404) return "NOT_FOUND";
+  if (status === 409) return "CONFLICT";
+  if (status === 429) return "RATE_LIMITED";
+  return "REMOTE_ERROR";
 }
 
 export function isActivityPlugError(error: unknown): error is ActivityPlugError {

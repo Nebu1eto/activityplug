@@ -8,6 +8,7 @@ import {
   type AdapterOperationContext,
   type AuthSession,
   type CreatePostInput,
+  type DeleteMediaInput,
   type DeletePostInput,
   type DeletedEntity,
   type Connection,
@@ -25,8 +26,11 @@ import {
   type RelationshipInput,
   type SearchInput,
   type SearchResult,
+  type UpdateMediaInput,
   type UpdatePostInput,
+  type UpdateProfileInput,
   type UploadMediaInput,
+  type UploadMediaFromUrlInput,
   type VotePollInput,
 } from "@activityplug/core";
 import ky, { type KyInstance } from "ky";
@@ -41,6 +45,7 @@ import {
   clientFor,
   createAuthorizationUrl,
   decodeAccountPostsCursor,
+  decodeOperationCursor,
   errorContext,
   exchangeAuthorizationCode,
   hashtagFromResponse,
@@ -140,11 +145,20 @@ export function createMastodonBaseAdapter(
             ? undefined
             : "This adapter does not assume refresh-token support.",
         ),
+        "auth.oauth.clientCredentials": capability(
+          "unsupported",
+          "Client-credentials OAuth is not mapped by this adapter.",
+        ),
+        "auth.passkey": capability("unsupported", "Passkey auth is not mapped by this adapter."),
         "auth.tokenInjection": capability("supported"),
         "instance.nodeInfo": capability("supported"),
+        "instance.peers": capability("unsupported", "Peer listing is not mapped by this adapter."),
         "accounts.relationships": capability("supported"),
         "accounts.lookupById": capability("supported"),
         "accounts.lookupByHandle": capability("supported"),
+        "accounts.updateProfile": capability("supported"),
+        "accounts.followers": capability("supported"),
+        "accounts.following": capability("supported"),
         "posts.read": capability("supported"),
         "posts.create": capability("supported"),
         "posts.delete": capability("supported"),
@@ -156,6 +170,10 @@ export function createMastodonBaseAdapter(
             ? "This adapter does not expose a stable quote-post API."
             : undefined,
         ),
+        "posts.translate": capability(
+          "unsupported",
+          "Post translation is not mapped by this adapter.",
+        ),
         "posts.history": capability("supported"),
         "timelines.home": capability("supported"),
         "timelines.public": capability("supported"),
@@ -163,10 +181,32 @@ export function createMastodonBaseAdapter(
         "timelines.hashtag": capability("supported"),
         "timelines.list": capability("supported"),
         "media.upload": capability("supported"),
+        "media.update": capability("supported"),
+        "media.delete": capability("supported"),
+        "media.remoteUrlUpload": capability(
+          "unsupported",
+          "Remote URL media upload is not mapped by this adapter.",
+        ),
+        "media.urlIngestion": capability(
+          "unsupported",
+          "URL media ingestion is not mapped by this adapter.",
+        ),
         "notifications.list": capability("supported"),
         "notifications.grouped": capability(
           "unsupported",
           "Grouped notifications are not mapped by this adapter.",
+        ),
+        "notifications.pleromaEmojiReaction": capability(
+          "unsupported",
+          "Pleroma-specific notification types are not mapped by this base adapter.",
+        ),
+        "notifications.pleromaChatMention": capability(
+          "unsupported",
+          "Pleroma-specific notification types are not mapped by this base adapter.",
+        ),
+        "notifications.pleromaReport": capability(
+          "unsupported",
+          "Pleroma-specific notification types are not mapped by this base adapter.",
         ),
         "notifications.dismiss": capability("supported"),
         "notifications.clear": capability("supported"),
@@ -201,6 +241,10 @@ export function createMastodonBaseAdapter(
         "social.mute": capability("supported"),
         "social.favourite": capability("supported"),
         "social.bookmark": capability("supported"),
+        "social.bookmarkFolders": capability(
+          "unsupported",
+          "Bookmark folders are not mapped by this adapter.",
+        ),
         "social.boost": capability("supported"),
         "social.reaction": capability(
           "unsupported",
@@ -230,6 +274,25 @@ export function createMastodonBaseAdapter(
     accounts: {
       getById: async (input, context) => getAccountById(input.id, context, options),
       getByHandle: async (input, context) => getAccountByHandle(input.handle, context, options),
+      updateProfile: async (input, context) => updateProfile(input, context, options),
+      listFollowers: async (input, context) =>
+        listAccountFollows(
+          input.accountId,
+          "followers",
+          input.page,
+          context,
+          options,
+          input.session,
+        ),
+      listFollowing: async (input, context) =>
+        listAccountFollows(
+          input.accountId,
+          "following",
+          input.page,
+          context,
+          options,
+          input.session,
+        ),
       listPosts: async (input, context) =>
         listAccountPosts(input.accountId, input.page, context, options, input.session),
     },
@@ -252,6 +315,9 @@ export function createMastodonBaseAdapter(
     },
     media: {
       upload: async (input, context) => uploadMedia(input, context, options),
+      update: async (input, context) => updateMedia(input, context, options),
+      delete: async (input, context) => deleteMedia(input, context, options),
+      uploadFromUrl: async (input, context) => uploadMediaFromUrl(input, context, options),
     },
     polls: {
       get: async (input, context) => getPoll(input, context, options),
@@ -686,6 +752,89 @@ async function listAccountPosts(
   };
 }
 
+async function listAccountFollows(
+  accountId: string,
+  collection: "followers" | "following",
+  page: PageInput | undefined,
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+  session?: AuthSession,
+): Promise<Connection<Account>> {
+  const operation = collection === "followers" ? "account.followers" : "account.following";
+  const searchParams = new URLSearchParams();
+  if (page?.limit !== undefined) searchParams.set("limit", String(page.limit));
+  if (page?.after !== undefined)
+    searchParams.set("max_id", decodeOperationCursor(page.after, context, operation));
+  if (page?.before !== undefined)
+    searchParams.set("min_id", decodeOperationCursor(page.before, context, operation));
+  const remoteResponse = await requestResponse(
+    clientFor(context, options).get(
+      `api/v1/accounts/${encodeURIComponent(accountId)}/${collection}`,
+      {
+        searchParams,
+        ...(session === undefined
+          ? {}
+          : { headers: await tokenHeader(session, context, operation) }),
+      },
+    ),
+    operation,
+    context,
+  );
+  const response = await parseJsonArray<MastodonAccountResponse>(
+    remoteResponse,
+    operation,
+    context,
+  );
+  return {
+    nodes: response.map((account) => accountFromResponse(account, context, operation)),
+    pageInfo: mastodonPageInfoForOperation(
+      response as readonly MastodonStatusResponse[],
+      remoteResponse.headers,
+      context,
+      operation,
+    ),
+  };
+}
+
+async function updateProfile(
+  input: UpdateProfileInput,
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+): Promise<Account> {
+  if (input.avatarId !== undefined || input.headerId !== undefined) {
+    throw new ActivityPlugError(
+      "UNSUPPORTED_OPERATION",
+      "Mastodon-compatible profile images require binary avatar or header uploads.",
+      {
+        adapter: context.adapterId,
+        origin: context.origin,
+        operation: "account.updateProfile",
+        capability: "accounts.updateProfile",
+      },
+    );
+  }
+  const form = new FormData();
+  if (input.displayName !== undefined) form.set("display_name", input.displayName);
+  if (input.note !== undefined) form.set("note", input.note);
+  if (input.locked !== undefined) form.set("locked", String(input.locked));
+  if (input.bot !== undefined) form.set("bot", String(input.bot));
+  for (const [index, field] of (input.fields ?? []).entries()) {
+    form.set(`fields_attributes[${index}][name]`, field.name);
+    form.set(`fields_attributes[${index}][value]`, field.value);
+  }
+  const response = await requestJson<MastodonAccountResponse>(
+    clientFor(context, options)
+      .patch("api/v1/accounts/update_credentials", {
+        headers: await tokenHeader(input.session, context, "account.updateProfile"),
+        body: form,
+      })
+      .json(),
+    "account.updateProfile",
+    context,
+  );
+  return accountFromResponse(response, context, "account.updateProfile");
+}
+
 async function getPost(
   id: string,
   context: AdapterOperationContext,
@@ -878,6 +1027,82 @@ async function uploadMedia(
     context,
   );
   return mediaAttachmentFromResponse(response, context, "media.upload");
+}
+
+async function updateMedia(
+  input: UpdateMediaInput,
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+): Promise<MediaAttachment> {
+  if (input.sensitive !== undefined) {
+    throw new ActivityPlugError(
+      "UNSUPPORTED_OPERATION",
+      "Mastodon-compatible media update does not support media-level sensitivity.",
+      {
+        adapter: context.adapterId,
+        origin: context.origin,
+        operation: "media.update",
+        capability: "media.update",
+      },
+    );
+  }
+  const form = new FormData();
+  if (input.description !== undefined) form.set("description", input.description);
+  const response = await requestJson<MastodonMediaAttachmentResponse>(
+    clientFor(context, options)
+      .put(`api/v1/media/${encodeURIComponent(input.id)}`, {
+        headers: await tokenHeader(input.session, context, "media.update"),
+        body: form,
+      })
+      .json(),
+    "media.update",
+    context,
+  );
+  return mediaAttachmentFromResponse(response, context, "media.update");
+}
+
+async function deleteMedia(
+  input: DeleteMediaInput,
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+): Promise<DeletedEntity> {
+  const raw = await requestJson<unknown>(
+    clientFor(context, options)
+      .delete(`api/v1/media/${encodeURIComponent(input.id)}`, {
+        headers: await tokenHeader(input.session, context, "media.delete"),
+      })
+      .json(),
+    "media.delete",
+    context,
+  );
+  return {
+    ref: createEntityRef({
+      adapter: context.adapterId,
+      origin: context.origin,
+      type: "media",
+      id: input.id,
+    }),
+    deleted: true,
+    raw,
+  };
+}
+
+async function uploadMediaFromUrl(
+  input: UploadMediaFromUrlInput,
+  context: AdapterOperationContext,
+  _options: MastodonBaseAdapterOptions,
+): Promise<MediaAttachment> {
+  throw new ActivityPlugError(
+    "UNSUPPORTED_OPERATION",
+    "Mastodon-compatible APIs do not expose a remote URL media upload endpoint.",
+    {
+      adapter: context.adapterId,
+      origin: context.origin,
+      operation: "media.uploadFromUrl",
+      capability: "media.remoteUrlUpload",
+      raw: { url: input.url },
+    },
+  );
 }
 
 async function createPost(

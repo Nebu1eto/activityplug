@@ -2,6 +2,7 @@ import {
   ActivityPlugError,
   type ActivityPlugErrorCode,
   createEntityRef,
+  remoteHttpErrorCodeForStatus,
   type AdapterOperationContext,
   type AuthSession,
   type Post,
@@ -84,7 +85,7 @@ export function postFromResponse(
       optionalString(post.visibility, "visibility", post, context, operation),
     ),
     sensitive: optionalBoolean(post.sensitive, "sensitive", post, context, operation) ?? false,
-    ...renameOptionalStringField(post.summary, "summary", post, context, operation),
+    ...optionalStringAsField(post.summary, "summary", "summary", post, context, operation),
     media: [],
     ...(post.poll === null || post.poll === undefined
       ? {}
@@ -727,15 +728,16 @@ export function optionalStringField(
   return parsed === undefined ? {} : { [field]: parsed };
 }
 
-export function renameOptionalStringField(
+export function optionalStringAsField(
   value: unknown,
-  field: string,
+  sourceField: string,
+  targetField: string,
   raw: unknown,
   context: AdapterOperationContext,
   operation: string,
 ): Record<string, string> {
-  const parsed = optionalString(value, field, raw, context, operation);
-  return parsed === undefined ? {} : { [field]: parsed };
+  const parsed = optionalString(value, sourceField, raw, context, operation);
+  return parsed === undefined ? {} : { [targetField]: parsed };
 }
 
 export function optionalHtmlContent(
@@ -814,11 +816,7 @@ export function activityPlugError(
 export function errorCodeForStatus(
   status: number,
 ): "AUTH_REQUIRED" | "NOT_FOUND" | "CONFLICT" | "RATE_LIMITED" | "REMOTE_ERROR" {
-  if (status === 401 || status === 403) return "AUTH_REQUIRED";
-  if (status === 404) return "NOT_FOUND";
-  if (status === 409) return "CONFLICT";
-  if (status === 429) return "RATE_LIMITED";
-  return "REMOTE_ERROR";
+  return remoteHttpErrorCodeForStatus(status);
 }
 
 export async function safeResponseText(response: Response): Promise<string | undefined> {

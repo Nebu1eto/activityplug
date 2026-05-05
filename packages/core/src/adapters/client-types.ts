@@ -66,6 +66,18 @@ export interface AccountAdapterOperations {
     input: LookupAccountInput,
     context: AdapterOperationContext,
   ) => Promise<Account | null>;
+  readonly updateProfile?: (
+    input: UpdateProfileInput,
+    context: AdapterOperationContext,
+  ) => Promise<Account>;
+  readonly listFollowers?: (
+    input: ListAccountFollowsInput,
+    context: AdapterOperationContext,
+  ) => Promise<Connection<Account>>;
+  readonly listFollowing?: (
+    input: ListAccountFollowsInput,
+    context: AdapterOperationContext,
+  ) => Promise<Connection<Account>>;
   readonly listPosts?: (
     input: ListAccountPostsInput,
     context: AdapterOperationContext,
@@ -112,6 +124,18 @@ export interface SearchAdapterOperations {
 export interface MediaAdapterOperations {
   readonly upload?: (
     input: UploadMediaInput,
+    context: AdapterOperationContext,
+  ) => Promise<MediaAttachment>;
+  readonly update?: (
+    input: UpdateMediaInput,
+    context: AdapterOperationContext,
+  ) => Promise<MediaAttachment>;
+  readonly delete?: (
+    input: DeleteMediaInput,
+    context: AdapterOperationContext,
+  ) => Promise<DeletedEntity>;
+  readonly uploadFromUrl?: (
+    input: UploadMediaFromUrlInput,
     context: AdapterOperationContext,
   ) => Promise<MediaAttachment>;
 }
@@ -325,6 +349,28 @@ export interface ListAccountPostsInput {
   readonly session?: AuthSession;
 }
 
+export interface ListAccountFollowsInput {
+  readonly accountId: string;
+  readonly page?: PageInput;
+  readonly session?: AuthSession;
+}
+
+export interface UpdateProfileInput {
+  readonly session: AuthSession;
+  readonly displayName?: string;
+  readonly note?: string;
+  readonly avatarId?: string;
+  readonly headerId?: string;
+  readonly locked?: boolean;
+  readonly bot?: boolean;
+  readonly fields?: readonly AccountFieldInput[];
+}
+
+export interface AccountFieldInput {
+  readonly name: string;
+  readonly value: string;
+}
+
 export interface SessionPageInput {
   readonly session: AuthSession;
   readonly page?: PageInput;
@@ -406,6 +452,25 @@ export interface UploadMediaInput {
   readonly session: AuthSession;
   readonly file: Blob;
   readonly filename?: string;
+  readonly description?: string;
+  readonly sensitive?: boolean;
+}
+
+export interface UpdateMediaInput {
+  readonly session: AuthSession;
+  readonly id: string;
+  readonly description?: string;
+  readonly sensitive?: boolean;
+}
+
+export interface DeleteMediaInput {
+  readonly session: AuthSession;
+  readonly id: string;
+}
+
+export interface UploadMediaFromUrlInput {
+  readonly session: AuthSession;
+  readonly url: string;
   readonly description?: string;
   readonly sensitive?: boolean;
 }
@@ -557,6 +622,9 @@ export interface InstanceService {
 export interface AccountService {
   readonly getById: (input: GetAccountInput) => Promise<Account>;
   readonly getByHandle: (input: LookupAccountInput) => Promise<Account | null>;
+  readonly updateProfile: (input: UpdateProfileInput) => Promise<Account>;
+  readonly listFollowers: (input: ListAccountFollowsInput) => Promise<Connection<Account>>;
+  readonly listFollowing: (input: ListAccountFollowsInput) => Promise<Connection<Account>>;
   readonly listPosts: (input: ListAccountPostsInput) => Promise<Connection<Post>>;
 }
 
@@ -582,6 +650,9 @@ export interface SearchService {
 
 export interface MediaService {
   readonly upload: (input: UploadMediaInput) => Promise<MediaAttachment>;
+  readonly update: (input: UpdateMediaInput) => Promise<MediaAttachment>;
+  readonly delete: (input: DeleteMediaInput) => Promise<DeletedEntity>;
+  readonly uploadFromUrl: (input: UploadMediaFromUrlInput) => Promise<MediaAttachment>;
 }
 
 export interface PollService {

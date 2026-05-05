@@ -23,6 +23,11 @@ export interface MisskeyMeResponse {
   readonly isLocked?: boolean;
   readonly createdAt?: string;
   readonly description?: string | null;
+  readonly fields?: readonly {
+    readonly name?: string;
+    readonly value?: string;
+    readonly verifiedAt?: string | null;
+  }[];
   readonly followersCount?: number;
   readonly followingCount?: number;
   readonly notesCount?: number;

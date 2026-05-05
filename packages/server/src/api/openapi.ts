@@ -229,6 +229,31 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
           listRef("Post"),
         ),
       },
+      "/api/v1/accounts/{id}/followers": {
+        get: operation(
+          "getAccountFollowers",
+          "accounts",
+          [idPathParameter(), ...pageQueryParameters(), stringQueryParameter("sessionId")],
+          listRef("Account"),
+        ),
+      },
+      "/api/v1/accounts/{id}/following": {
+        get: operation(
+          "getAccountFollowing",
+          "accounts",
+          [idPathParameter(), ...pageQueryParameters(), stringQueryParameter("sessionId")],
+          listRef("Account"),
+        ),
+      },
+      "/api/v1/accounts/update-profile": {
+        patch: authenticatedOperation(
+          "updateProfile",
+          "accounts",
+          undefined,
+          dataRef("Account"),
+          requestBodyRef("UpdateProfileRequest"),
+        ),
+      },
       "/api/v1/accounts/{id}/relationships": {
         get: authenticatedOperation(
           "getAccountRelationships",
@@ -470,12 +495,29 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         ),
       },
       "/api/v1/media/ingest-url": {
-        post: unsupportedOperation("ingestMediaFromUrl", "media", undefined, true),
+        post: authenticatedOperation(
+          "ingestMediaFromUrl",
+          "media",
+          undefined,
+          dataRef("MediaAttachment"),
+          requestBodyRef("UploadMediaFromUrlRequest"),
+        ),
       },
       "/api/v1/media/{id}": {
         get: unsupportedOperation("getMedia", "media", [idPathParameter()]),
-        patch: unsupportedOperation("updateMedia", "media", [idPathParameter()], true),
-        delete: unsupportedOperation("deleteMedia", "media", [idPathParameter()], true),
+        patch: authenticatedOperation(
+          "updateMedia",
+          "media",
+          [idPathParameter()],
+          dataRef("MediaAttachment"),
+          requestBodyRef("UpdateMediaRequest"),
+        ),
+        delete: authenticatedOperation(
+          "deleteMedia",
+          "media",
+          [idPathParameter()],
+          dataRef("DeletedEntity"),
+        ),
       },
       "/api/v1/search": {
         get: operation(

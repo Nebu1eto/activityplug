@@ -57,6 +57,57 @@ export function updateScheduledPostInput(input: unknown) {
   };
 }
 
+export function uploadMediaFromUrlInput(input: unknown) {
+  const value = objectInput(input);
+  return {
+    origin: stringInput(value, "origin"),
+    ...(typeof value["adapter"] === "string" ? { adapter: value["adapter"] } : {}),
+    sessionId: stringInput(value, "sessionId"),
+    url: stringInput(value, "url"),
+    ...(typeof value["description"] === "string" ? { description: value["description"] } : {}),
+    ...(typeof value["sensitive"] === "boolean" ? { sensitive: value["sensitive"] } : {}),
+  };
+}
+
+export function updateMediaInput(input: unknown) {
+  const value = objectInput(input);
+  const output = {
+    id: stringInput(value, "id"),
+    sessionId: stringInput(value, "sessionId"),
+    ...(typeof value["description"] === "string" ? { description: value["description"] } : {}),
+    ...(typeof value["sensitive"] === "boolean" ? { sensitive: value["sensitive"] } : {}),
+  };
+  if (output.description !== undefined || output.sensitive !== undefined) return output;
+  throw new ActivityPlugError(
+    "VALIDATION_FAILED",
+    "Media update requires description or sensitive.",
+  );
+}
+
+export function deleteMediaInput(input: unknown) {
+  const value = objectInput(input);
+  return {
+    id: stringInput(value, "id"),
+    sessionId: stringInput(value, "sessionId"),
+  };
+}
+
+export function updateProfileInput(input: unknown) {
+  const value = objectInput(input);
+  return {
+    origin: stringInput(value, "origin"),
+    ...(typeof value["adapter"] === "string" ? { adapter: value["adapter"] } : {}),
+    sessionId: stringInput(value, "sessionId"),
+    ...(typeof value["displayName"] === "string" ? { displayName: value["displayName"] } : {}),
+    ...(typeof value["note"] === "string" ? { note: value["note"] } : {}),
+    ...(typeof value["avatarId"] === "string" ? { avatarId: value["avatarId"] } : {}),
+    ...(typeof value["headerId"] === "string" ? { headerId: value["headerId"] } : {}),
+    ...(typeof value["locked"] === "boolean" ? { locked: value["locked"] } : {}),
+    ...(typeof value["bot"] === "boolean" ? { bot: value["bot"] } : {}),
+    ...(value["fields"] === undefined ? {} : { fields: accountFields(value["fields"]) }),
+  };
+}
+
 export function listInput(input: unknown) {
   const value = objectInput(input);
   return {
@@ -248,6 +299,16 @@ function filterKeywords(input: unknown) {
     return {
       keyword: stringInput(value, "keyword"),
       ...(typeof value["wholeWord"] === "boolean" ? { wholeWord: value["wholeWord"] } : {}),
+    };
+  });
+}
+
+function accountFields(input: unknown) {
+  return arrayInput(input, "fields").map((item) => {
+    const value = objectInput(item);
+    return {
+      name: stringInput(value, "name"),
+      value: stringValueInput(value, "value"),
     };
   });
 }

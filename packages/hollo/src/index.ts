@@ -2,9 +2,12 @@ import {
   ActivityPlugError,
   capability,
   createCapabilitySet,
+  type Account,
   type ActivityPlugAdapter,
   type AdapterOperationContext,
   type CapabilityName,
+  type Connection,
+  type ListAccountFollowsInput,
   type NotificationUnreadCountInput,
   type Post,
   type ReactPostInput,
@@ -66,6 +69,7 @@ export function createHolloAdapter(options: HolloAdapterOptions = {}): ActivityP
           "unsupported",
           "Hollo does not expose Mastodon v1 notification clearing.",
         ),
+        "media.delete": capability("unsupported", "Hollo does not expose media deletion."),
         "notifications.unreadCount": capability(
           "supported",
           "Hollo exposes notification unread counts through its v2 API.",
@@ -137,6 +141,23 @@ export function createHolloAdapter(options: HolloAdapterOptions = {}): ActivityP
           "post.history",
           "posts.history",
           "Hollo does not expose status edit history.",
+        ),
+    },
+    accounts: {
+      ...adapter.accounts,
+      listFollowers: async (input, context) =>
+        holloAccountFollows(adapter.accounts?.listFollowers, input, context, "account.followers"),
+      listFollowing: async (input, context) =>
+        holloAccountFollows(adapter.accounts?.listFollowing, input, context, "account.following"),
+    },
+    media: {
+      ...adapter.media,
+      delete: async (_input, context) =>
+        unsupportedHolloOperation(
+          context,
+          "media.delete",
+          "media.delete",
+          "Hollo does not expose media deletion.",
         ),
     },
     search: {
@@ -294,6 +315,42 @@ export function createHolloAdapter(options: HolloAdapterOptions = {}): ActivityP
             },
           ),
         ),
+    },
+  };
+}
+
+async function holloAccountFollows(
+  operation:
+    | NonNullable<ActivityPlugAdapter["accounts"]>["listFollowers"]
+    | NonNullable<ActivityPlugAdapter["accounts"]>["listFollowing"]
+    | undefined,
+  input: ListAccountFollowsInput,
+  context: AdapterOperationContext,
+  operationName: "account.followers" | "account.following",
+): Promise<Connection<Account>> {
+  if (operation === undefined) {
+    return unsupportedHolloOperation(
+      context,
+      operationName,
+      operationName === "account.followers" ? "accounts.followers" : "accounts.following",
+      "Hollo account follow listing is not mapped.",
+    );
+  }
+  if (input.page !== undefined) {
+    return unsupportedHolloOperation(
+      context,
+      operationName,
+      operationName === "account.followers" ? "accounts.followers" : "accounts.following",
+      "Hollo account follow listing does not expose cursor pagination.",
+    );
+  }
+  const connection = await operation({ ...input, page: undefined }, context);
+  return {
+    nodes: connection.nodes,
+    pageInfo: {
+      hasNextPage: false,
+      hasPreviousPage: false,
+      raw: connection.pageInfo.raw,
     },
   };
 }

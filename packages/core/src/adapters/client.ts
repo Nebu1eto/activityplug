@@ -19,6 +19,7 @@ import {
   type InstanceService,
   type FilterService,
   type FollowRequestService,
+  type ListAccountFollowsInput,
   type ListService,
   type ListAccountInput,
   type ListAccountsInput,
@@ -39,7 +40,9 @@ import {
   type TimelineService,
   type UpdateFilterInput,
   type UpdateListInput,
+  type UpdateMediaInput,
   type UpdatePostInput,
+  type UpdateProfileInput,
 } from "./client-types.js";
 import { maxPageLimit } from "./page.js";
 
@@ -134,6 +137,39 @@ function createAccountService(client: RequiredClientContext): AccountService {
       if (operation === undefined) throw unsupportedOperation("account.lookup", context(client));
       return operation(input, context(client));
     },
+    updateProfile: async (input) => {
+      const operation = client.adapter.accounts?.updateProfile;
+      if (operation === undefined) {
+        throw unsupportedOperation(
+          "account.updateProfile",
+          capabilityContext(client, "accounts.updateProfile"),
+        );
+      }
+      requireClientCapability(client, "accounts.updateProfile", "account.updateProfile");
+      assertUpdateProfileInput(input, client);
+      return operation(
+        {
+          ...input,
+          ...(input.avatarId === undefined
+            ? {}
+            : { avatarId: decodeRawRef(input.avatarId, client, "media", "account.updateProfile") }),
+          ...(input.headerId === undefined
+            ? {}
+            : { headerId: decodeRawRef(input.headerId, client, "media", "account.updateProfile") }),
+        },
+        context(client),
+      );
+    },
+    listFollowers: async (input) =>
+      listAccountFollows(input, client, client.adapter.accounts?.listFollowers, {
+        operation: "account.followers",
+        capability: "accounts.followers",
+      }),
+    listFollowing: async (input) =>
+      listAccountFollows(input, client, client.adapter.accounts?.listFollowing, {
+        operation: "account.following",
+        capability: "accounts.following",
+      }),
     listPosts: async (input) => {
       const operation = client.adapter.accounts?.listPosts;
       if (operation === undefined) throw unsupportedOperation("account.posts", context(client));
@@ -149,6 +185,82 @@ function createAccountService(client: RequiredClientContext): AccountService {
       );
     },
   };
+}
+
+async function listAccountFollows(
+  input: ListAccountFollowsInput,
+  client: RequiredClientContext,
+  operation:
+    | Required<NonNullable<RequiredClientContext["adapter"]["accounts"]>>["listFollowers"]
+    | Required<NonNullable<RequiredClientContext["adapter"]["accounts"]>>["listFollowing"]
+    | undefined,
+  names: { readonly operation: string; readonly capability: CapabilityName },
+) {
+  if (operation === undefined) {
+    throw unsupportedOperation(names.operation, capabilityContext(client, names.capability));
+  }
+  requireClientCapability(client, names.capability, names.operation);
+  const page = normalizePageInput(input.page, names.operation, client);
+  const rawId = decodeRawRef(input.accountId, client, "account", names.operation);
+  return operation(
+    {
+      accountId: rawId,
+      ...(page === undefined ? {} : { page }),
+      ...(input.session === undefined ? {} : { session: input.session }),
+    },
+    context(client),
+  );
+}
+
+function assertUpdateProfileInput(input: UpdateProfileInput, client: RequiredClientContext): void {
+  assertOptionalString(input.displayName, "displayName", "account.updateProfile", client);
+  assertOptionalString(input.note, "note", "account.updateProfile", client);
+  assertOptionalBoolean(input.locked, "locked", "account.updateProfile", client);
+  assertOptionalBoolean(input.bot, "bot", "account.updateProfile", client);
+  if (input.avatarId !== undefined && typeof input.avatarId !== "string") {
+    throwValidation(
+      "Profile avatarId must be an opaque media ID.",
+      "account.updateProfile",
+      client,
+    );
+  }
+  if (input.headerId !== undefined && typeof input.headerId !== "string") {
+    throwValidation(
+      "Profile headerId must be an opaque media ID.",
+      "account.updateProfile",
+      client,
+    );
+  }
+  if (input.fields !== undefined) {
+    if (
+      !Array.isArray(input.fields) ||
+      input.fields.some(
+        (field) => typeof field.name !== "string" || typeof field.value !== "string",
+      )
+    ) {
+      throwValidation(
+        "Profile fields must include string names and values.",
+        "account.updateProfile",
+        client,
+      );
+    }
+  }
+  if (
+    input.displayName !== undefined ||
+    input.note !== undefined ||
+    input.avatarId !== undefined ||
+    input.headerId !== undefined ||
+    input.locked !== undefined ||
+    input.bot !== undefined ||
+    input.fields !== undefined
+  ) {
+    return;
+  }
+  throwValidation(
+    "Profile update requires at least one editable field.",
+    "account.updateProfile",
+    client,
+  );
 }
 
 function createPostService(client: RequiredClientContext): PostService {
@@ -561,7 +673,51 @@ function createMediaService(client: RequiredClientContext): MediaService {
       requireClientCapability(client, "media.upload", "media.upload");
       return operation(input, context(client));
     },
+    update: async (input) => {
+      const operation = client.adapter.media?.update;
+      if (operation === undefined) {
+        throw unsupportedOperation("media.update", capabilityContext(client, "media.update"));
+      }
+      requireClientCapability(client, "media.update", "media.update");
+      validateUpdateMediaInput(input, client);
+      return operation(
+        { ...input, id: decodeRawRef(input.id, client, "media", "media.update") },
+        context(client),
+      );
+    },
+    delete: async (input) => {
+      const operation = client.adapter.media?.delete;
+      if (operation === undefined) {
+        throw unsupportedOperation("media.delete", capabilityContext(client, "media.delete"));
+      }
+      requireClientCapability(client, "media.delete", "media.delete");
+      const id = decodeRawRef(input.id, client, "media", "media.delete");
+      return operation({ ...input, id }, context(client));
+    },
+    uploadFromUrl: async (input) => {
+      const operation = client.adapter.media?.uploadFromUrl;
+      if (operation === undefined) {
+        throw unsupportedOperation(
+          "media.uploadFromUrl",
+          capabilityContext(client, "media.remoteUrlUpload"),
+        );
+      }
+      requireClientCapability(client, "media.remoteUrlUpload", "media.uploadFromUrl");
+      assertOptionalString(input.description, "description", "media.uploadFromUrl", client);
+      assertOptionalBoolean(input.sensitive, "sensitive", "media.uploadFromUrl", client);
+      if (!URL.canParse(input.url)) {
+        throwValidation("Media URL must be a valid URL.", "media.uploadFromUrl", client);
+      }
+      return operation(input, context(client));
+    },
   };
+}
+
+function validateUpdateMediaInput(input: UpdateMediaInput, client: RequiredClientContext): void {
+  assertOptionalString(input.description, "description", "media.update", client);
+  assertOptionalBoolean(input.sensitive, "sensitive", "media.update", client);
+  if (input.description !== undefined || input.sensitive !== undefined) return;
+  throwValidation("Media update requires at least one editable field.", "media.update", client);
 }
 
 function createPollService(client: RequiredClientContext): PollService {

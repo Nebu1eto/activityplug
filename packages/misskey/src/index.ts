@@ -10,6 +10,7 @@ import {
   type CapabilityName,
   type Connection,
   type CreatePostInput,
+  type DeleteMediaInput,
   type DeletedEntity,
   type InstanceProfile,
   type MediaAttachment,
@@ -29,7 +30,10 @@ import {
   type SearchResult,
   type StoredAuthSession,
   type TokenSet,
+  type UpdateMediaInput,
+  type UpdateProfileInput,
   type UploadMediaInput,
+  type UploadMediaFromUrlInput,
 } from "@activityplug/core";
 import ky, { type KyInstance } from "ky";
 
@@ -119,6 +123,27 @@ export function createMisskeyAdapter(options: MisskeyAdapterOptions = {}): Activ
     accounts: {
       getById: async (input, context) => getAccountById(input.id, context, options),
       getByHandle: async (input, context) => getAccountByHandle(input.handle, context, options),
+      updateProfile: async (input, context) => updateProfile(input, context, options),
+      listFollowers: async (input, context) =>
+        listUserConnections(
+          input.accountId,
+          "api/users/followers",
+          input.page,
+          context,
+          options,
+          input.session,
+          "account.followers",
+        ),
+      listFollowing: async (input, context) =>
+        listUserConnections(
+          input.accountId,
+          "api/users/following",
+          input.page,
+          context,
+          options,
+          input.session,
+          "account.following",
+        ),
       listPosts: async (input, context) =>
         listAccountPosts(input.accountId, input.page, context, options, input.session),
     },
@@ -155,6 +180,9 @@ export function createMisskeyAdapter(options: MisskeyAdapterOptions = {}): Activ
     },
     media: {
       upload: async (input, context) => uploadMedia(input, context, options),
+      update: async (input, context) => updateMedia(input, context, options),
+      delete: async (input, context) => deleteMedia(input, context, options),
+      uploadFromUrl: async (input, context) => uploadMediaFromUrl(input, context, options),
     },
     polls: {
       get: async (input, context) => getPoll(input.id, input.session, context, options),
@@ -454,6 +482,78 @@ async function listAccountPosts(
   };
 }
 
+async function listUserConnections(
+  accountId: string,
+  endpoint: "api/users/followers" | "api/users/following",
+  page: PageInput | undefined,
+  context: AdapterOperationContext,
+  options: MisskeyAdapterOptions,
+  session: AuthSession | undefined,
+  operation: "account.followers" | "account.following",
+): Promise<Connection<Account>> {
+  const requestedLimit = Math.min(page?.limit ?? 20, 99);
+  const fetchLimit = requestedLimit + 1;
+  const response = await requestJson<readonly MisskeyFollowingResponse[]>(
+    clientFor(context, options)
+      .post(endpoint, {
+        ...(session === undefined
+          ? {}
+          : { headers: await tokenHeader(session, context, operation) }),
+        json: {
+          userId: accountId,
+          limit: fetchLimit,
+          ...(page?.after === undefined
+            ? {}
+            : { untilId: decodeOperationCursor(page.after, context, operation) }),
+          ...(page?.before === undefined
+            ? {}
+            : { sinceId: decodeOperationCursor(page.before, context, operation) }),
+        },
+      })
+      .json(),
+    operation,
+    context,
+  );
+  if (!Array.isArray(response)) {
+    throw invalidRemoteResponse("Misskey following response did not include the expected array.", {
+      context,
+      operation,
+      raw: response,
+    });
+  }
+  const items =
+    page?.before === undefined
+      ? response.slice(0, requestedLimit)
+      : response.slice(0, requestedLimit).toReversed();
+  const nodes = items.map((item) => {
+    const account = endpoint === "api/users/followers" ? item.follower : item.followee;
+    if (account === undefined) {
+      throw invalidRemoteResponse("Misskey following response is missing the account object.", {
+        context,
+        operation,
+        raw: item,
+      });
+    }
+    return accountFromResponse(account, context, operation);
+  });
+  return {
+    nodes,
+    pageInfo: misskeyPageInfoForOperation(
+      items as readonly MisskeyNoteResponse[],
+      response.length > nodes.length,
+      page,
+      context,
+      operation,
+    ),
+  };
+}
+
+interface MisskeyFollowingResponse {
+  readonly id?: string;
+  readonly follower?: MisskeyMeResponse;
+  readonly followee?: MisskeyMeResponse;
+}
+
 async function getNote(
   id: string,
   context: AdapterOperationContext,
@@ -699,6 +799,256 @@ async function uploadMedia(
     });
   }
   return attachment;
+}
+
+async function updateMedia(
+  input: UpdateMediaInput,
+  context: AdapterOperationContext,
+  options: MisskeyAdapterOptions,
+): Promise<MediaAttachment> {
+  const response = await requestJson<MisskeyFileResponse>(
+    clientFor(context, options)
+      .post("api/drive/files/update", {
+        headers: await tokenHeader(input.session, context, "media.update"),
+        json: {
+          fileId: input.id,
+          ...(input.description === undefined ? {} : { comment: input.description }),
+          ...(input.sensitive === undefined ? {} : { isSensitive: input.sensitive }),
+        },
+      })
+      .json(),
+    "media.update",
+    context,
+  );
+  const [attachment] = mediaAttachmentFromResponse(response, context, "media.update");
+  if (attachment === undefined) {
+    throw invalidRemoteResponse("Misskey media update response is malformed.", {
+      context,
+      operation: "media.update",
+      raw: response,
+    });
+  }
+  return attachment;
+}
+
+async function deleteMedia(
+  input: DeleteMediaInput,
+  context: AdapterOperationContext,
+  options: MisskeyAdapterOptions,
+): Promise<DeletedEntity> {
+  await requestVoid(
+    clientFor(context, options)
+      .post("api/drive/files/delete", {
+        headers: await tokenHeader(input.session, context, "media.delete"),
+        json: { fileId: input.id },
+      })
+      .then(() => undefined),
+    "media.delete",
+    context,
+  );
+  return {
+    ref: createEntityRef({
+      adapter: context.adapterId,
+      origin: context.origin,
+      type: "media",
+      id: input.id,
+    }),
+    deleted: true,
+  };
+}
+
+async function uploadMediaFromUrl(
+  input: UploadMediaFromUrlInput,
+  context: AdapterOperationContext,
+  options: MisskeyAdapterOptions,
+): Promise<MediaAttachment> {
+  const tokenSet = await requireStoredToken(input.session, context, "media.uploadFromUrl");
+  const marker = globalThis.crypto.randomUUID();
+  const file = await waitForUrlUpload(marker, tokenSet.accessToken, context, options, async () => {
+    await requestVoid(
+      clientFor(context, options)
+        .post("api/drive/files/upload-from-url", {
+          headers: await tokenHeader(input.session, context, "media.uploadFromUrl"),
+          json: {
+            url: input.url,
+            marker,
+            ...(input.description === undefined ? {} : { comment: input.description }),
+            ...(input.sensitive === undefined ? {} : { isSensitive: input.sensitive }),
+          },
+        })
+        .then(() => undefined),
+      "media.uploadFromUrl",
+      context,
+    );
+  });
+  const [attachment] = mediaAttachmentFromResponse(file, context, "media.uploadFromUrl");
+  if (attachment === undefined) {
+    throw invalidRemoteResponse("Misskey URL media upload response is malformed.", {
+      context,
+      operation: "media.uploadFromUrl",
+      raw: file,
+    });
+  }
+  return attachment;
+}
+
+async function requireStoredToken(
+  session: AuthSession,
+  context: AdapterOperationContext,
+  operation: string,
+): Promise<{ readonly accessToken: string }> {
+  const stored = await context.sessionStore?.get(session.id);
+  if (stored === undefined || stored === null) {
+    throw new ActivityPlugError("AUTH_REQUIRED", "Auth session is not available.", {
+      adapter: context.adapterId,
+      origin: context.origin,
+      operation,
+    });
+  }
+  if (stored.adapter !== context.adapterId || stored.origin !== context.origin) {
+    throw new ActivityPlugError("AUTH_REQUIRED", "Auth session does not belong to this adapter.", {
+      adapter: context.adapterId,
+      origin: context.origin,
+      operation,
+    });
+  }
+  return { accessToken: stored.tokenSet.accessToken };
+}
+
+async function waitForUrlUpload(
+  marker: string,
+  accessToken: string,
+  context: AdapterOperationContext,
+  options: MisskeyAdapterOptions,
+  startUpload: () => Promise<void>,
+): Promise<MisskeyFileResponse> {
+  const WebSocketClient = globalThis.WebSocket;
+  if (WebSocketClient === undefined) {
+    throw new ActivityPlugError(
+      "UNSUPPORTED_OPERATION",
+      "Misskey URL media upload requires WebSocket support to receive the uploaded file id.",
+      {
+        adapter: context.adapterId,
+        origin: context.origin,
+        operation: "media.uploadFromUrl",
+        capability: "media.remoteUrlUpload",
+      },
+    );
+  }
+  const streamingUrl = new URL("streaming", context.origin);
+  streamingUrl.protocol = streamingUrl.protocol === "https:" ? "wss:" : "ws:";
+  streamingUrl.searchParams.set("i", accessToken);
+  streamingUrl.searchParams.set("_t", String(Date.now()));
+
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocketClient(streamingUrl);
+    const channelId = "activityplug-url-upload";
+    let settled = false;
+    let uploadStarted = false;
+    const timeout = setTimeout(() => {
+      settle(
+        "reject",
+        new ActivityPlugError("TIMEOUT", "Timed out waiting for Misskey URL media upload.", {
+          adapter: context.adapterId,
+          origin: context.origin,
+          operation: "media.uploadFromUrl",
+        }),
+      );
+    }, 60_000);
+
+    function settle(kind: "resolve", file: MisskeyFileResponse): void;
+    function settle(kind: "reject", error: unknown): void;
+    function settle(kind: "resolve" | "reject", value: MisskeyFileResponse | unknown): void {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      socket.close();
+      if (kind === "resolve") {
+        resolve(value as MisskeyFileResponse);
+      } else {
+        reject(value);
+      }
+    }
+
+    socket.addEventListener("open", () => {
+      socket.send(
+        JSON.stringify({ type: "connect", body: { channel: "main", id: channelId, pong: true } }),
+      );
+    });
+    socket.addEventListener("error", () => {
+      settle(
+        "reject",
+        new ActivityPlugError("NETWORK_ERROR", "Misskey streaming connection failed.", {
+          adapter: context.adapterId,
+          origin: context.origin,
+          operation: "media.uploadFromUrl",
+        }),
+      );
+    });
+    socket.addEventListener("message", (event: MessageEvent<string>) => {
+      const message = parseStreamingMessage(event.data);
+      if (
+        message?.type === "connected" &&
+        isRecord(message.body) &&
+        message.body.id === channelId
+      ) {
+        if (!uploadStarted) {
+          uploadStarted = true;
+          startUpload().catch((error: unknown) => settle("reject", error));
+        }
+        return;
+      }
+      if (message?.type !== "channel" || !isRecord(message.body)) return;
+      if (message.body.id !== channelId || message.body.type !== "urlUploadFinished") return;
+      const payload = message.body.body;
+      if (!isRecord(payload) || payload.marker !== marker || !isRecord(payload.file)) return;
+      settle("resolve", payload.file as MisskeyFileResponse);
+    });
+  });
+}
+
+function parseStreamingMessage(
+  data: string,
+): { readonly type?: string; readonly body?: unknown } | undefined {
+  try {
+    const parsed = JSON.parse(data) as unknown;
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function updateProfile(
+  input: UpdateProfileInput,
+  context: AdapterOperationContext,
+  options: MisskeyAdapterOptions,
+): Promise<Account> {
+  const response = await requestJson<MisskeyMeResponse>(
+    clientFor(context, options)
+      .post("api/i/update", {
+        headers: await tokenHeader(input.session, context, "account.updateProfile"),
+        json: {
+          ...(input.displayName === undefined ? {} : { name: input.displayName }),
+          ...(input.note === undefined ? {} : { description: input.note }),
+          ...(input.avatarId === undefined ? {} : { avatarId: input.avatarId }),
+          ...(input.headerId === undefined ? {} : { bannerId: input.headerId }),
+          ...(input.locked === undefined ? {} : { isLocked: input.locked }),
+          ...(input.bot === undefined ? {} : { isBot: input.bot }),
+          ...(input.fields === undefined
+            ? {}
+            : {
+                fields: input.fields.map((field) => ({
+                  name: field.name,
+                  value: field.value,
+                })),
+              }),
+        },
+      })
+      .json(),
+    "account.updateProfile",
+    context,
+  );
+  return accountFromResponse(response, context, "account.updateProfile");
 }
 
 async function createNote(

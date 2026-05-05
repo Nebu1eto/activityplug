@@ -83,6 +83,7 @@ export interface HackersPubPostConnection {
 }
 
 export interface HackersPubViewerAccount {
+  readonly id?: string;
   readonly uuid?: string;
   readonly username?: string;
   readonly name?: string | null;

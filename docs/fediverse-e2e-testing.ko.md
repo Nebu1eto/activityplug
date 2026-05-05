@@ -21,9 +21,9 @@ HackersPub입니다.
  -  Compose 파일, 서버 설정, provision 스크립트는 `test/e2e/` 아래에 둡니다.
 
 Compose 파일은 Misskey, Pleroma, HackersPub를 인접한 소프트웨어 checkout에서
-빌드합니다. 기본 경로는 `/Users/Nebuleto/Workspace/activityplug-docs`입니다.
-checkout이 다른 위치에 있으면 `ACTIVITYPLUG_SOFTWARE_ROOT`를 설정합니다. 검증한
-source revision은 다음과 같습니다.
+빌드합니다. 기본 경로는 `../activityplug-docs`입니다. checkout이 다른 위치에
+있으면 `ACTIVITYPLUG_SOFTWARE_ROOT`를 설정합니다. 검증한 source revision은
+다음과 같습니다.
 
  -  Misskey: `0f5da633284ffe20c3ed59bb0a5c5866071baac3`.
  -  Pleroma: `683ab39160a2ff95d151887a89217bd1d4a6dcf5`.
@@ -94,9 +94,10 @@ local 계정을 대상으로 follow/unfollow, block/unblock, mute/unmute도 검�
     Provision은 viewer account와 disposable social-action account를 모두
     만듭니다.
  -  Misskey provision은 데이터베이스에서 federation을 켜고, 기본
-    `canSearchNotes` policy를 활성화하며, note search를 위한 Meilisearch를
-    시작합니다. 그 뒤 admin session과 disposable social-action account를 만들고
-    seed note가 index될 때까지 기다린 다음 token target을 생성합니다.
+    `canSearchNotes` policy를 활성화하며, Docker Compose가 시작한 Meilisearch
+    서비스를 note search에 사용합니다. 그 뒤 admin session과 disposable
+    social-action account를 만들고 seed note가 index될 때까지 기다린 다음 token
+    target을 생성합니다.
  -  Pleroma provision은 `pleroma_ctl`로 로컬 사용자를 만들고,
     Mastodon-compatible OAuth application을 등록한 뒤 password-grant token과
     disposable social-action account, public seed status를 만듭니다.

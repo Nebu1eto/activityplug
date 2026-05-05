@@ -21,9 +21,9 @@ split between the server package and the adapter packages:
  -  Compose files, server configs, and provision scripts live under `test/e2e/`.
 
 The Compose file builds Misskey, Pleroma, and HackersPub from an adjacent
-software checkout. By default, that checkout is
-`/Users/Nebuleto/Workspace/activityplug-docs`. Set `ACTIVITYPLUG_SOFTWARE_ROOT`
-when the checkout is in a different location. The verified source revisions are:
+software checkout. By default, that checkout is `../activityplug-docs`.
+Set `ACTIVITYPLUG_SOFTWARE_ROOT` when the checkout is in a different
+location. The verified source revisions are:
 
  -  Misskey: `0f5da633284ffe20c3ed59bb0a5c5866071baac3`.
  -  Pleroma: `683ab39160a2ff95d151887a89217bd1d4a6dcf5`.
@@ -94,9 +94,10 @@ Target notes:
     `NODE_TLS_REJECT_UNAUTHORIZED=0` for this local test only. Provisioning
     creates both the viewer account and a disposable social-action account.
  -  Misskey provisioning enables federation in the database, enables the
-    `canSearchNotes` default policy, starts Meilisearch for note search, creates
-    an admin session and a disposable social-action account, creates a seed
-    note, waits until the seed note is indexed, and emits a token target.
+    `canSearchNotes` default policy, uses the Meilisearch service started by
+    Docker Compose for note search, creates an admin session and a disposable
+    social-action account, creates a seed note, waits until the seed note is
+    indexed, and emits a token target.
  -  Pleroma provisioning creates the local user through `pleroma_ctl`, registers
     a Mastodon-compatible OAuth application, gets a password-grant token, and
     creates a disposable social-action account and a public seed status.

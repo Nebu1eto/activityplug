@@ -1,6 +1,7 @@
 import {
   ActivityPlugError,
   isIsoDateTimeString,
+  remoteHttpErrorCodeForStatus,
   type AdapterOperationContext,
   type AuthAdapterContext,
   type AuthSession,
@@ -232,11 +233,7 @@ export async function remoteError(
 export function errorCodeForStatus(
   status: number,
 ): "AUTH_REQUIRED" | "NOT_FOUND" | "CONFLICT" | "RATE_LIMITED" | "REMOTE_ERROR" {
-  if (status === 401 || status === 403) return "AUTH_REQUIRED";
-  if (status === 404) return "NOT_FOUND";
-  if (status === 409) return "CONFLICT";
-  if (status === 429) return "RATE_LIMITED";
-  return "REMOTE_ERROR";
+  return remoteHttpErrorCodeForStatus(status);
 }
 
 export function errorContext(
@@ -381,6 +378,18 @@ export function optionalBoolean(
     operation,
     raw,
   });
+}
+
+export function renamedOptionalBoolean(
+  value: unknown,
+  sourceField: string,
+  targetField: string,
+  raw: unknown,
+  context: AuthAdapterContext | AdapterOperationContext,
+  operation: string,
+): Record<string, boolean> {
+  const parsed = optionalBoolean(value, sourceField, raw, context, operation);
+  return parsed === undefined ? {} : { [targetField]: parsed };
 }
 
 export function optionalNumber(

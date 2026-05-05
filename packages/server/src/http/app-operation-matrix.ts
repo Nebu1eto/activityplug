@@ -61,6 +61,26 @@ export const publicOperationMatrix = [
   },
   {
     graphqlType: "query",
+    graphqlField: "accountFollowers",
+    graphqlArgs: ["id", "page", "sessionId"],
+    graphqlReturnType: "AccountConnection",
+    httpMethod: "get",
+    httpPath: "/api/v1/accounts/{id}/followers",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/Account",
+  },
+  {
+    graphqlType: "query",
+    graphqlField: "accountFollowing",
+    graphqlArgs: ["id", "page", "sessionId"],
+    graphqlReturnType: "AccountConnection",
+    httpMethod: "get",
+    httpPath: "/api/v1/accounts/{id}/following",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/Account",
+  },
+  {
+    graphqlType: "query",
     graphqlField: "accountRelationship",
     graphqlArgs: ["id", "sessionId"],
     graphqlReturnType: "Relationship",
@@ -138,6 +158,46 @@ export const publicOperationMatrix = [
     httpPath: "/api/v1/media",
     httpRequestRef: undefined,
     httpResponseDataRef: "#/components/schemas/MediaAttachment",
+  },
+  {
+    graphqlType: "mutation",
+    graphqlField: "ingestMediaFromUrl",
+    graphqlArgs: ["input"],
+    graphqlReturnType: "MediaAttachment",
+    httpMethod: "post",
+    httpPath: "/api/v1/media/ingest-url",
+    httpRequestRef: "#/components/schemas/UploadMediaFromUrlRequest",
+    httpResponseDataRef: "#/components/schemas/MediaAttachment",
+  },
+  {
+    graphqlType: "mutation",
+    graphqlField: "updateMedia",
+    graphqlArgs: ["input"],
+    graphqlReturnType: "MediaAttachment",
+    httpMethod: "patch",
+    httpPath: "/api/v1/media/{id}",
+    httpRequestRef: "#/components/schemas/UpdateMediaRequest",
+    httpResponseDataRef: "#/components/schemas/MediaAttachment",
+  },
+  {
+    graphqlType: "mutation",
+    graphqlField: "deleteMedia",
+    graphqlArgs: ["input"],
+    graphqlReturnType: "DeletedEntity",
+    httpMethod: "delete",
+    httpPath: "/api/v1/media/{id}",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/DeletedEntity",
+  },
+  {
+    graphqlType: "mutation",
+    graphqlField: "updateProfile",
+    graphqlArgs: ["input"],
+    graphqlReturnType: "Account",
+    httpMethod: "patch",
+    httpPath: "/api/v1/accounts/update-profile",
+    httpRequestRef: "#/components/schemas/UpdateProfileRequest",
+    httpResponseDataRef: "#/components/schemas/Account",
   },
   {
     graphqlType: "query",
@@ -676,14 +736,6 @@ export const publicOperationMatrix = [
 export const reservedOperationMatrix = [
   reserved("query", "postContext", "PostContext", "get", "/api/v1/posts/{id}/context", false),
   reserved("query", "postQuotes", "PostConnection", "get", "/api/v1/posts/{id}/quotes", false),
-  reserved(
-    "mutation",
-    "ingestMediaFromUrl",
-    "MediaAttachment",
-    "post",
-    "/api/v1/media/ingest-url",
-    true,
-  ),
 ] as const;
 
 export const implementedHttpOnlyOperations = new Set([
@@ -693,8 +745,6 @@ export const implementedHttpOnlyOperations = new Set([
 
 export const reservedHttpOnlyOperations = new Set([
   "GET /api/v1/media/{id}",
-  "PATCH /api/v1/media/{id}",
-  "DELETE /api/v1/media/{id}",
   "GET /api/v1/streams",
   "GET /api/v1/streams/timelines/home",
   "GET /api/v1/streams/notifications",

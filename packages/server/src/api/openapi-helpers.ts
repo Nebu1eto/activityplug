@@ -550,6 +550,10 @@ export function openApiComponents(
         valueHtml: { type: "string" },
         verifiedAt: { type: "string" },
       }),
+      AccountFieldInput: objectSchema(["name", "value"], {
+        name: { type: "string" },
+        value: { type: "string" },
+      }),
       PageInfo: objectSchema(["hasNextPage", "hasPreviousPage"], {
         hasNextPage: { type: "boolean" },
         hasPreviousPage: { type: "boolean" },
@@ -695,6 +699,28 @@ export function openApiComponents(
           multiple: { type: "boolean" },
           expiresInSeconds: { type: "integer", minimum: 1 },
         }),
+      }),
+      UpdateProfileRequest: objectSchema(["origin"], {
+        adapter: adapterSchema(),
+        origin: nonEmptyStringSchema(),
+        displayName: { type: "string" },
+        note: { type: "string" },
+        avatarId: { type: "string" },
+        headerId: { type: "string" },
+        locked: { type: "boolean" },
+        bot: { type: "boolean" },
+        fields: { type: "array", items: { $ref: "#/components/schemas/AccountFieldInput" } },
+      }),
+      UpdateMediaRequest: objectSchema([], {
+        description: { type: "string" },
+        sensitive: { type: "boolean" },
+      }),
+      UploadMediaFromUrlRequest: objectSchema(["origin", "url"], {
+        adapter: adapterSchema(),
+        origin: nonEmptyStringSchema(),
+        url: { type: "string", format: "uri" },
+        description: { type: "string" },
+        sensitive: { type: "boolean" },
       }),
       SchedulePostRequest: objectSchema(["origin", "content", "scheduledAt"], {
         adapter: adapterSchema(),

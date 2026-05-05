@@ -481,6 +481,15 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
         accounts: {
           get: async () => testViewerAccount,
           lookup: async () => testViewerAccount,
+          updateProfile: async () => testViewerAccount,
+          followers: async () => ({
+            nodes: [],
+            pageInfo: { hasNextPage: false, hasPreviousPage: false },
+          }),
+          following: async () => ({
+            nodes: [],
+            pageInfo: { hasNextPage: false, hasPreviousPage: false },
+          }),
           posts: async () => ({
             nodes: [
               {
@@ -603,6 +612,15 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
         accounts: {
           get: async () => testViewerAccount,
           lookup: async () => null,
+          updateProfile: async () => testViewerAccount,
+          followers: async () => ({
+            nodes: [],
+            pageInfo: { hasNextPage: false, hasPreviousPage: false },
+          }),
+          following: async () => ({
+            nodes: [],
+            pageInfo: { hasNextPage: false, hasPreviousPage: false },
+          }),
           posts: async (input) => {
             seenInputs.push({ limit: input.page?.limit, sessionId: input.sessionId });
             return {
