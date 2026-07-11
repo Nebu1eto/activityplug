@@ -1,0 +1,4 @@
+interface:
+  display_name: "Commit"
+  short_description: "Create ActivityPlug-compliant git commits"
+  default_prompt: "Use $commit to create an ActivityPlug-compliant git commit for the staged changes."

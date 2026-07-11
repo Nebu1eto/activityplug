@@ -21,6 +21,40 @@ General rules
     compatibility-sensitive.
 
 
+AI usage rules
+--------------
+
+ -  Follow `AI_POLICY.md` for all AI-assisted work.
+ -  Disclose AI assistance in commit messages with an `Assisted-by` trailer in
+    the format `Assisted-by: <agent name>:<model version>`. Examples:
+    `Assisted-by: Claude Code:claude-fable-5`,
+    `Assisted-by: Codex:gpt-5.6-sol`. Do not use `Co-authored-by` or
+    `Generated with` trailers.
+
+
+Commit rules
+------------
+
+ -  Use the `commit` skill for all commits.
+ -  Subject format: `[<package name>] <type>(#<GITHUB-ISSUE>): <short summary>`.
+ -  If no GitHub issue number is provided or known, omit the issue segment:
+    `[<package name>] <type>: <short summary>`.
+ -  Body format: one or more bullets shaped exactly as
+    `- <what and why changed>`.
+ -  Keep the subject and each body bullet at or under 72 characters. If a
+    bullet exceeds 72 characters, split it into multiple bullets rather than
+    using continuation lines.
+ -  `<package name>` = affected package. Use `[*]` for repository-wide
+    changes.
+ -  `type` is required (`feat`, `fix`, `refactor`, `test`, `docs`, `chore`,
+    and so on).
+ -  Use the GitHub issue number when provided or known. Do not invent one.
+ -  Sign commits cryptographically when git signing is configured and
+    available.
+ -  Add a `Signed-off-by: <git user.name> <git user.email>` trailer.
+ -  Run `pnpm format` before committing.
+
+
 Testing rules
 -------------
 
