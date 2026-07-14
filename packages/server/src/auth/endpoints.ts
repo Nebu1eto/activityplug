@@ -4,6 +4,9 @@ import {
   validateOAuthCallbackState,
   type AuthSession,
   type AuthService,
+  type EmailChallengeStartInput,
+  type EmailChallengeStartResult,
+  type EmailChallengeVerifyInput,
   type InjectTokenInput,
   type OAuthAuthorizationRequest,
   type OAuthCallbackInput,
@@ -14,6 +17,9 @@ import {
   type OAuthCodeExchangeInput,
   type OAuthRefreshInput,
   type OAuthRevokeInput,
+  type PasskeyFinishInput,
+  type PasskeyStartInput,
+  type PasskeyStartResult,
   type VerifyCredentialsResult,
 } from "@activityplug/core";
 
@@ -52,6 +58,14 @@ export interface AuthEndpointHandlers {
   readonly exchange: (input: AuthExchangeInput) => Promise<AuthSession>;
   readonly refresh: (input: OAuthRefreshInput) => Promise<AuthSession>;
   readonly revoke: (input: OAuthRevokeInput) => Promise<void>;
+  readonly emailChallenge: {
+    readonly start: (input: EmailChallengeStartInput) => Promise<EmailChallengeStartResult>;
+    readonly verify: (input: EmailChallengeVerifyInput) => Promise<AuthSession>;
+  };
+  readonly passkey: {
+    readonly start: (input: PasskeyStartInput) => Promise<PasskeyStartResult>;
+    readonly finish: (input: PasskeyFinishInput) => Promise<AuthSession>;
+  };
   readonly viewer: (session: AuthSession) => Promise<VerifyCredentialsResult>;
 }
 
@@ -114,6 +128,14 @@ export function createAuthEndpointHandlers(client: AuthEndpointClient): AuthEndp
     },
     refresh: (input) => client.auth.refresh(input),
     revoke: (input) => client.auth.revoke(input),
+    emailChallenge: {
+      start: (input) => client.auth.emailChallenge.start(input),
+      verify: (input) => client.auth.emailChallenge.verify(input),
+    },
+    passkey: {
+      start: (input) => client.auth.passkey.start(input),
+      finish: (input) => client.auth.passkey.finish(input),
+    },
     viewer: (session) => client.auth.verifyCredentials(session),
   };
 }

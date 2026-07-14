@@ -163,6 +163,69 @@ describe("server auth endpoint handlers", () => {
       }),
     );
   });
+
+  it("routes email and passkey strategies through typed core auth services", async () => {
+    const calls: string[] = [];
+    const handlers = createAuthEndpointHandlers({
+      auth: {
+        ...unsupportedAuthService(),
+        emailChallenge: {
+          start: async ({ identifier }) => {
+            calls.push(`email-start:${identifier}`);
+            return { challengeId: "email-1", expiresAt: "2026-07-13T00:00:00.000Z" };
+          },
+          verify: async ({ challengeId }) => {
+            calls.push(`email-verify:${challengeId}`);
+            return { ...fakeSession(), strategy: "emailChallenge" };
+          },
+        },
+        passkey: {
+          start: async ({ identifier }) => {
+            calls.push(`passkey-start:${identifier}`);
+            return {
+              challengeId: "passkey-1",
+              options: { challenge: "public-challenge" },
+              expiresAt: "2026-07-13T00:00:00.000Z",
+            };
+          },
+          finish: async ({ challengeId }) => {
+            calls.push(`passkey-finish:${challengeId}`);
+            return { ...fakeSession(), strategy: "passkey" };
+          },
+        },
+      },
+    });
+
+    await handlers.emailChallenge.start({
+      identifier: "alice@example.test",
+      verificationUriTemplate: "https://client.test/verify/{challengeId}",
+    });
+    const email = await handlers.emailChallenge.verify({ challengeId: "email-1", code: "123456" });
+    await handlers.passkey.start({ identifier: "alice@example.test" });
+    const passkey = await handlers.passkey.finish({
+      challengeId: "passkey-1",
+      credential: {
+        id: "credential",
+        rawId: "credential",
+        type: "public-key",
+        response: {
+          clientDataJSON: "client-data",
+          authenticatorData: "authenticator-data",
+          signature: "signature",
+        },
+        clientExtensionResults: {},
+      },
+    });
+
+    expect(email.strategy).toBe("emailChallenge");
+    expect(passkey.strategy).toBe("passkey");
+    expect(calls).toEqual([
+      "email-start:alice@example.test",
+      "email-verify:email-1",
+      "passkey-start:alice@example.test",
+      "passkey-finish:passkey-1",
+    ]);
+  });
 });
 
 function fakeSession(): AuthSession {
@@ -170,6 +233,7 @@ function fakeSession(): AuthSession {
     id: "session-1",
     adapter: "mastodon",
     origin: "https://mastodon.example",
+    strategy: "token",
     scopes: [],
     capabilities: {},
   };
@@ -185,26 +249,28 @@ function callbackBinding() {
 
 function unsupportedAuthService(): AuthService {
   return {
-    injectToken: async () => {
-      throw new Error("unexpected injectToken call");
+    availableStrategies: [],
+    oauth: {
+      registerClient: unexpectedAuthServiceCall,
+      start: unexpectedAuthServiceCall,
+      exchange: unexpectedAuthServiceCall,
     },
-    verifyCredentials: async () => {
-      throw new Error("unexpected verifyCredentials call");
-    },
-    registerOAuthClient: async () => {
-      throw new Error("unexpected registerOAuthClient call");
-    },
-    createAuthorizationUrl: async () => {
-      throw new Error("unexpected createAuthorizationUrl call");
-    },
-    exchangeAuthorizationCode: async () => {
-      throw new Error("unexpected exchangeAuthorizationCode call");
-    },
-    refresh: async () => {
-      throw new Error("unexpected refresh call");
-    },
-    revoke: async () => {
-      throw new Error("unexpected revoke call");
-    },
+    token: { importToken: unexpectedAuthServiceCall },
+    emailChallenge: { start: unexpectedAuthServiceCall, verify: unexpectedAuthServiceCall },
+    passkey: { start: unexpectedAuthServiceCall, finish: unexpectedAuthServiceCall },
+    verifySession: unexpectedAuthServiceCall,
+    refreshSession: unexpectedAuthServiceCall,
+    revokeSession: unexpectedAuthServiceCall,
+    injectToken: unexpectedAuthServiceCall,
+    verifyCredentials: unexpectedAuthServiceCall,
+    registerOAuthClient: unexpectedAuthServiceCall,
+    createAuthorizationUrl: unexpectedAuthServiceCall,
+    exchangeAuthorizationCode: unexpectedAuthServiceCall,
+    refresh: unexpectedAuthServiceCall,
+    revoke: unexpectedAuthServiceCall,
   };
+}
+
+async function unexpectedAuthServiceCall(): Promise<never> {
+  throw new Error("unexpected auth service call");
 }

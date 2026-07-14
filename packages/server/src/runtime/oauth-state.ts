@@ -11,7 +11,11 @@ import { type InstanceSelector } from "../api/service.js";
 import { type AuthSessionStore } from "../auth/session-store.js";
 
 export interface OAuthClientSecretStore {
-  readonly put: (id: string, secret: string, expiresAt: string) => Promise<void> | void;
+  readonly put: (
+    id: string,
+    secret: string,
+    expiresAt: string,
+  ) => Promise<boolean | void> | boolean | void;
   readonly take: (id: string) => Promise<string | null>;
 }
 
@@ -35,13 +39,12 @@ export async function storeOAuthCallbackState(
   const { clientSecret, ...storedClient } = state.client;
   const clientSecretRef =
     clientSecret === undefined ? undefined : `oauth-client-secret:${state.state}:${randomUUID()}`;
-  if (clientSecret !== undefined && clientSecretRef !== undefined) {
-    await secrets.put(clientSecretRef, clientSecret, expiresAt);
-  }
-  await sessions.create({
+  const session: StoredAuthSession = {
     id: oauthStateSessionId(state.state),
+    revision: 0,
     adapter: state.binding.adapter,
     origin: state.binding.origin,
+    strategy: "oauth",
     scopes: [],
     capabilities: {},
     tokenSet: {
@@ -59,7 +62,47 @@ export async function storeOAuthCallbackState(
       redirectUri: state.redirectUri,
       ...(state.codeVerifier === undefined ? {} : { codeVerifier: state.codeVerifier }),
     },
-  });
+  };
+  if (clientSecret !== undefined && clientSecretRef !== undefined) {
+    const stored = await secrets.put(clientSecretRef, clientSecret, expiresAt);
+    if (stored === false) {
+      // A false result confirms no secret was written, so never create an unusable callback.
+      throw new ActivityPlugError("INTERNAL_ERROR", "OAuth client secret could not be stored.", {
+        operation: "auth.oauth.authorizationUrl",
+      });
+    }
+  }
+  let created: boolean;
+  try {
+    created = await sessions.create(session);
+  } catch (error) {
+    await removeDefinitelyOrphanedSecret(sessions, session.id, clientSecretRef, secrets);
+    throw error;
+  }
+  if (!created) {
+    if (clientSecretRef !== undefined) await secrets.take(clientSecretRef);
+    throw new ActivityPlugError("CONFLICT", "OAuth callback state is already registered.", {
+      operation: "auth.oauth.start",
+    });
+  }
+}
+
+async function removeDefinitelyOrphanedSecret(
+  sessions: AuthSessionStore,
+  sessionId: string,
+  clientSecretRef: string | undefined,
+  secrets: OAuthClientSecretStore,
+): Promise<void> {
+  if (clientSecretRef === undefined) return;
+  let stored: StoredAuthSession | null;
+  try {
+    stored = await sessions.get(sessionId);
+  } catch {
+    // A failed read leaves the write outcome ambiguous, so deleting could break a committed state.
+    return;
+  }
+  if (stored?.metadata?.clientSecretRef === clientSecretRef) return;
+  await secrets.take(clientSecretRef);
 }
 
 export async function consumeOAuthCallbackState(
@@ -67,7 +110,7 @@ export async function consumeOAuthCallbackState(
   state: string,
   secrets: OAuthClientSecretStore,
 ): Promise<StoredOAuthCallbackState> {
-  const session = await consumeSession(sessions, oauthStateSessionId(state));
+  const session = await sessions.consume(oauthStateSessionId(state));
   const decoded = await decodeOAuthCallbackState(session, secrets);
   if (decoded === null) {
     throw new ActivityPlugError(
@@ -159,16 +202,6 @@ function oauthCallbackStateBinding(
   const metadata = session?.metadata;
   if (metadata?.activityplugKind !== "oauth-callback-state") return null;
   return isOAuthCallbackStateBinding(metadata.binding) ? metadata.binding : null;
-}
-
-async function consumeSession(
-  sessions: AuthSessionStore,
-  sessionId: string,
-): Promise<StoredAuthSession | null> {
-  if (sessions.consume !== undefined) return sessions.consume(sessionId);
-  const session = await sessions.get(sessionId);
-  if (session !== null) await sessions.delete(sessionId);
-  return session;
 }
 
 async function decodeOAuthCallbackState(

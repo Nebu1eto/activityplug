@@ -1,20 +1,27 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
-import { isIP } from "node:net";
 
 import {
   ActivityPlugError,
+  canonicalizeOrigin,
+  createVettedFetch,
   createActivityPlugClient,
   createCapabilitySet,
   createOAuthPkcePair,
   decodeOpaqueId,
+  isAuthStrategyKind,
   parseOAuthCallback,
   type ActivityPlugAdapter,
+  type ActivityPlugClient,
   type AuthSession,
+  type CapabilitySet,
+  type InstanceProfile,
+  type OriginPolicy,
   type StoredAuthSession,
 } from "@activityplug/core";
 import { serve, type ServerType } from "@hono/node-server";
 import { getLogger } from "@logtape/logtape";
-import { type Hono } from "hono";
+import { Hono } from "hono";
 import { type cors } from "hono/cors";
 import { WebSocketServer } from "ws";
 
@@ -28,8 +35,15 @@ import {
 } from "../api/service.js";
 import { createAuthEndpointHandlers } from "../auth/endpoints.js";
 import { InMemoryAuthSessionStore, type AuthSessionStore } from "../auth/session-store.js";
+import { createBrowserBoundary } from "../browser/app.js";
+import { type BrowserBoundary, type BrowserBoundaryOptions } from "../browser/types.js";
 import { createActivityPlugApp } from "../http/app.js";
 import { type TokenImportOptions } from "../http/app.js";
+import { type GraphQLLimits } from "../security/graphql-limits.js";
+import { createNodePinnedDispatcher, nodeLookupAddresses } from "../security/node-egress.js";
+import { resolveRequestLimits, type RequestLimits } from "../security/request-limits.js";
+import { type OAuthStartLimiter } from "../storage/contracts.js";
+import { InMemoryOAuthStartLimiter } from "../storage/in-memory.js";
 import {
   assertExchangeTarget,
   consumeOAuthCallbackState,
@@ -43,11 +57,21 @@ import {
 
 export interface ActivityPlugServerOptions {
   readonly adapters: readonly ActivityPlugAdapter[];
+  /**
+   * Optional dependency readiness probe for public health checks. Returning
+   * false, or rejecting, marks the server as unhealthy.
+   */
+  readonly readiness?: () => boolean | Promise<boolean>;
   readonly sessions?: AuthSessionStore;
   readonly cors?: Parameters<typeof cors>[0];
   readonly tokenImport?: TokenImportOptions;
-  readonly originPolicy?: OriginFetchPolicy;
+  readonly originPolicy?: OriginPolicy;
+  readonly allowPrivateNetworks?: boolean;
   readonly oauthClientSecrets?: OAuthClientSecretStore;
+  readonly requestLimits?: Partial<RequestLimits>;
+  readonly graphqlLimits?: Partial<GraphQLLimits>;
+  readonly browser?: BrowserBoundaryOptions;
+  readonly authStartLimiter?: OAuthStartLimiter;
 }
 
 export interface StartServerOptions {
@@ -57,11 +81,14 @@ export interface StartServerOptions {
   readonly cors?: Parameters<typeof cors>[0];
   readonly app?: Hono;
   readonly tokenImport?: TokenImportOptions;
+  readonly requestLimits?: Partial<RequestLimits>;
+  readonly graphqlLimits?: Partial<GraphQLLimits>;
 }
 
 export interface ActivityPlugServer {
   readonly app: Hono;
   readonly service: ActivityPlugApiService;
+  readonly browser?: BrowserBoundary;
   readonly start: (options: ConstructedServerStartOptions) => StartedServer;
 }
 
@@ -84,17 +111,75 @@ export interface OriginFetchPolicyContext {
 export type OriginFetchPolicy = (context: OriginFetchPolicyContext) => Promise<void> | void;
 
 export function createActivityPlugServer(options: ActivityPlugServerOptions): ActivityPlugServer {
-  const service = createAdapterBackedApiService(options);
-  const app = createActivityPlugApp({
+  const requestLimits = resolveRequestLimits(options.requestLimits);
+  const sessions = options.sessions ?? new InMemoryAuthSessionStore();
+  const authStartLimiter =
+    options.authStartLimiter ??
+    options.browser?.authStartLimiter ??
+    new InMemoryOAuthStartLimiter();
+  const configuredOriginPolicy = options.originPolicy ?? defaultOriginPolicy;
+  const originPolicy: OriginFetchPolicy = ({ origin, operation }) =>
+    configuredOriginPolicy.assertAllowed(origin, operation);
+  // Construct one boundary per server so detection, auth, viewer, and all adapter
+  // operations share identical authorization, DNS, and response-size semantics.
+  const vettedFetch = createVettedFetch({
+    remoteStructuredBytes: requestLimits.remoteStructuredBytes,
+    lookup: nodeLookupAddresses,
+    dispatchPinned: createNodePinnedDispatcher(),
+    originPolicy: configuredOriginPolicy,
+    allowPrivateNetworks: options.allowPrivateNetworks === true,
+  });
+  const operationFetch = createSignalAwareOperationFetch(vettedFetch);
+  const runtimeOptions: ActivityPlugServerRuntimeOptions = {
+    ...options,
+    sessions,
+    authStartLimiter,
+    originPolicy,
+    operationFetch,
+  };
+  const service = bindServiceRequestSignals(createAdapterBackedApiService(runtimeOptions));
+  const publicApp = createActivityPlugApp({
     service,
     cors: options.cors,
     tokenImport: options.tokenImport,
+    requestLimits,
+    graphqlLimits: options.graphqlLimits,
+    oauthClientRegistrationLimiter: authStartLimiter,
+    ...(options.browser?.clientIp === undefined ? {} : { clientIp: options.browser.clientIp }),
   });
+  const browser =
+    options.browser === undefined
+      ? undefined
+      : createBrowserBoundary({
+          ...options.browser,
+          requestLimits: { ...requestLimits, ...options.browser.requestLimits },
+          service,
+          authSessions: sessions,
+          authStartLimiter,
+          authStartsAreLimited: true,
+        });
+  const app =
+    browser === undefined
+      ? publicApp
+      : (() => {
+          const combined = new Hono();
+          combined.route("/", browser.app);
+          combined.route("/", publicApp);
+          return combined;
+        })();
   return {
     app,
     service,
+    ...(browser === undefined ? {} : { browser }),
     start: (startOptions) =>
-      startActivityPlugServer({ ...startOptions, service, cors: options.cors, app }),
+      startActivityPlugServer({
+        ...startOptions,
+        service,
+        cors: options.cors,
+        app,
+        requestLimits,
+        graphqlLimits: options.graphqlLimits,
+      }),
   };
 }
 
@@ -108,6 +193,8 @@ export function startActivityPlugServer(options: StartServerOptions): StartedSer
       service,
       cors: options.cors,
       tokenImport: options.tokenImport,
+      requestLimits: options.requestLimits,
+      graphqlLimits: options.graphqlLimits,
     });
   const server = serve(
     {
@@ -135,9 +222,82 @@ export function assertRuntimeOptions(options: StartServerOptions): void {
   }
 }
 
-function createAdapterBackedApiService(options: ActivityPlugServerOptions): ActivityPlugApiService {
+interface ActivityPlugServerRuntimeOptions extends Omit<ActivityPlugServerOptions, "originPolicy"> {
+  readonly originPolicy: OriginFetchPolicy;
+  readonly operationFetch: typeof fetch;
+}
+
+interface RuntimeClientResolver {
+  readonly detect: (input: InstanceSelector) => Promise<InstanceProfile>;
+  readonly resolve: (adapter: ActivityPlugAdapter, origin: string) => Promise<ActivityPlugClient>;
+}
+
+interface CachedInstanceProfile {
+  readonly profile: Promise<InstanceProfile>;
+  readonly expiresAt: number;
+}
+
+const DETECTED_PROFILE_TTL_MS = 5 * 60 * 1_000;
+const MAX_DETECTED_ORIGINS_PER_ADAPTER = 128;
+const runtimeClientResolvers = new WeakMap<typeof fetch, RuntimeClientResolver>();
+const runtimeRequestSignals = new AsyncLocalStorage<AbortSignal>();
+
+function createSignalAwareOperationFetch(vettedFetch: typeof fetch): typeof fetch {
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const requestSignal = runtimeRequestSignals.getStore();
+    if (requestSignal === undefined) return vettedFetch(input, init);
+    const existingSignals = [
+      init?.signal ?? undefined,
+      input instanceof Request ? input.signal : undefined,
+    ].filter((signal): signal is AbortSignal => signal !== undefined);
+    const signal =
+      existingSignals.length === 0
+        ? requestSignal
+        : AbortSignal.any([requestSignal, ...existingSignals]);
+    return vettedFetch(input, { ...init, signal });
+  };
+}
+
+function bindServiceRequestSignals(service: ActivityPlugApiService): ActivityPlugApiService {
+  const proxies = new WeakMap<object, object>();
+  const functions = new WeakMap<Function, Function>();
+  const wrap = <Value extends object>(value: Value): Value => {
+    const cached = proxies.get(value);
+    if (cached !== undefined) return cached as Value;
+    const proxy = new Proxy(value, {
+      get(target, property, receiver) {
+        const member = Reflect.get(target, property, receiver) as unknown;
+        if (typeof member === "function") {
+          const cachedFunction = functions.get(member);
+          if (cachedFunction !== undefined) return cachedFunction;
+          const wrapped = (...args: unknown[]) => {
+            const signal = serviceCallSignal(args[0]);
+            const invoke = () => Reflect.apply(member, target, args) as unknown;
+            return signal === undefined ? invoke() : runtimeRequestSignals.run(signal, invoke);
+          };
+          functions.set(member, wrapped);
+          return wrapped;
+        }
+        return typeof member === "object" && member !== null ? wrap(member) : member;
+      },
+    });
+    proxies.set(value, proxy);
+    return proxy;
+  };
+  return wrap(service);
+}
+
+function serviceCallSignal(input: unknown): AbortSignal | undefined {
+  if (typeof input !== "object" || input === null) return undefined;
+  const signal = (input as { readonly signal?: unknown }).signal;
+  return signal instanceof AbortSignal ? signal : undefined;
+}
+
+function createAdapterBackedApiService(
+  options: ActivityPlugServerRuntimeOptions,
+): ActivityPlugApiService {
   const sessions = options.sessions ?? new InMemoryAuthSessionStore();
-  const originPolicy = options.originPolicy ?? defaultOriginFetchPolicy;
+  const originPolicy = options.originPolicy;
   const oauthClientSecrets = options.oauthClientSecrets ?? new InMemoryOAuthClientSecretStore();
   if (
     options.sessions !== undefined &&
@@ -151,26 +311,71 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
       { operation: "server.create" },
     );
   }
-  const adaptersById = new Map(options.adapters.map((adapter) => [adapter.metadata.id, adapter]));
+  runtimeClientResolvers.set(
+    options.operationFetch,
+    createRuntimeClientResolver(options.adapters, sessions, options.operationFetch),
+  );
+  const readiness = options.readiness;
   return {
-    health: () => ({ ok: true, version: "v1" }),
+    health:
+      readiness === undefined
+        ? () => ({ ok: true, version: "v1" })
+        : async () => ({
+            ok: await resolveReadiness(readiness),
+            version: "v1",
+          }),
     capabilities: async (input) => {
       const selector = normalizeSelector(input, "capabilities");
       await originPolicy({ origin: selector.origin, operation: "capabilities" });
-      return (await detectInstance(selector, options.adapters, sessions)).capabilities;
+      return applyServerAuthCapabilityPolicy(
+        (await detectInstance(selector, options.adapters, sessions, options.operationFetch))
+          .capabilities,
+        options.tokenImport,
+      );
     },
     instances: {
       detect: async (input) => {
         const selector = normalizeSelector(input, "instance.detect");
         await originPolicy({ origin: selector.origin, operation: "instance.detect" });
-        return detectInstance(selector, options.adapters, sessions);
+        return applyServerAuthCapabilityPolicyToProfile(
+          await detectInstance(selector, options.adapters, sessions, options.operationFetch),
+          options.tokenImport,
+        );
       },
       get: async (input) => {
         const selector = normalizeSelector(input, "instance.get");
         await originPolicy({ origin: selector.origin, operation: "instance.get" });
-        return resolveClient(selector, options.adapters, sessions).instances.getProfile({
-          origin: selector.origin,
-        });
+        return applyServerAuthCapabilityPolicyToProfile(
+          await resolveClient(
+            selector,
+            options.adapters,
+            sessions,
+            options.operationFetch,
+          ).instances.getProfile({
+            origin: selector.origin,
+          }),
+          options.tokenImport,
+        );
+      },
+      oauthMetadata: async (input) => {
+        const selector = normalizeSelector(input, "instance.oauthMetadata");
+        await originPolicy({ origin: selector.origin, operation: "instance.oauthMetadata" });
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).instances.oauthMetadata({ origin: selector.origin });
+      },
+      peers: async (input) => {
+        const selector = normalizeSelector(input, "instance.peers");
+        await originPolicy({ origin: selector.origin, operation: "instance.peers" });
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).instances.peers({ origin: selector.origin });
       },
     },
     accounts: {
@@ -181,12 +386,18 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
           { adapter: ref.adapter, origin: ref.origin },
           options.adapters,
           sessions,
+          options.operationFetch,
         ).accounts.getById({ id: input.id });
       },
       lookup: async (input) => {
         const selector = normalizeSelector(input, "account.lookup");
         await originPolicy({ origin: selector.origin, operation: "account.lookup" });
-        return resolveClient(selector, options.adapters, sessions).accounts.getByHandle({
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).accounts.getByHandle({
           handle: input.handle,
         });
       },
@@ -196,7 +407,12 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
         const session = await requireSession(sessionId, sessions, "account.updateProfile");
         await originPolicy({ origin: selector.origin, operation: "account.updateProfile" });
         assertSessionTarget(session, selector, "account.updateProfile");
-        return resolveClient(selector, options.adapters, sessions).accounts.updateProfile({
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).accounts.updateProfile({
           ...profile,
           session: toPublicSession(session),
         });
@@ -208,6 +424,7 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
           options.adapters,
           sessions,
           originPolicy,
+          options.operationFetch,
         ),
       following: async (input) =>
         listAccountConnections(
@@ -216,6 +433,7 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
           options.adapters,
           sessions,
           originPolicy,
+          options.operationFetch,
         ),
       posts: async (input) => {
         const ref = decodeOpaqueIdForOperation(input.id, "account.posts");
@@ -228,6 +446,7 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
           { adapter: ref.adapter, origin: ref.origin },
           options.adapters,
           sessions,
+          options.operationFetch,
         ).accounts.listPosts({
           accountId: input.id,
           ...(input.page === undefined ? {} : { page: input.page }),
@@ -239,11 +458,22 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
       get: async (input) => {
         const ref = decodeOpaqueIdForOperation(input.id, "post.get");
         await originPolicy({ origin: ref.origin, operation: "post.get" });
+        const session =
+          input.sessionId === undefined
+            ? undefined
+            : await requireSession(input.sessionId, sessions, "post.get");
+        if (session !== undefined) {
+          assertSessionTarget(session, { adapter: ref.adapter, origin: ref.origin }, "post.get");
+        }
         return resolveClient(
           { adapter: ref.adapter, origin: ref.origin },
           options.adapters,
           sessions,
-        ).posts.get(input);
+          options.operationFetch,
+        ).posts.get({
+          id: input.id,
+          ...(session === undefined ? {} : { session: toPublicSession(session) }),
+        });
       },
       create: async (input) => {
         const { adapter: _adapter, origin: _origin, sessionId, ...create } = input;
@@ -251,7 +481,12 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
         const session = await requireSession(sessionId, sessions, "post.create");
         await originPolicy({ origin: selector.origin, operation: "post.create" });
         assertSessionTarget(session, selector, "post.create");
-        return resolveClient(selector, options.adapters, sessions).posts.create({
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).posts.create({
           ...create,
           session: toPublicSession(session),
         });
@@ -267,6 +502,7 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
           { adapter: ref.adapter, origin: ref.origin },
           options.adapters,
           sessions,
+          options.operationFetch,
         ).posts.update({ ...update, session: toPublicSession(session) });
       },
       history: async (input) => {
@@ -287,6 +523,7 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
           { adapter: ref.adapter, origin: ref.origin },
           options.adapters,
           sessions,
+          options.operationFetch,
         ).posts.history({
           id: input.id,
           ...(session === undefined ? {} : { session: toPublicSession(session) }),
@@ -301,9 +538,54 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
           { adapter: ref.adapter, origin: ref.origin },
           options.adapters,
           sessions,
+          options.operationFetch,
         ).posts.delete({
           session: toPublicSession(session),
           id: input.id,
+        });
+      },
+      context: async (input) => {
+        const ref = decodeOpaqueIdForOperation(input.id, "post.context");
+        await originPolicy({ origin: ref.origin, operation: "post.context" });
+        return resolveClient(
+          { adapter: ref.adapter, origin: ref.origin },
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).posts.context({ id: input.id });
+      },
+      quotes: async (input) => {
+        const ref = decodeOpaqueIdForOperation(input.id, "post.quotes");
+        await originPolicy({ origin: ref.origin, operation: "post.quotes" });
+        return resolveClient(
+          { adapter: ref.adapter, origin: ref.origin },
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).posts.quotes({
+          postId: input.id,
+          ...(input.page === undefined ? {} : { page: input.page }),
+        });
+      },
+      translate: async (input) => {
+        const session = await requireSession(input.sessionId, sessions, "post.translate");
+        const ref = decodeOpaqueIdForOperation(input.id, "post.translate");
+        await originPolicy({ origin: ref.origin, operation: "post.translate" });
+        assertSessionTarget(
+          session,
+          { adapter: ref.adapter, origin: ref.origin },
+          "post.translate",
+        );
+        return resolveClient(
+          { adapter: ref.adapter, origin: ref.origin },
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).posts.translate({
+          postId: input.id,
+          session: toPublicSession(session),
+          targetLanguage: input.targetLanguage,
+          ...(input.sourceLanguage === undefined ? {} : { sourceLanguage: input.sourceLanguage }),
         });
       },
     },
@@ -322,7 +604,12 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
               );
         assertSessionTarget(session, selector, "timeline.home");
         await originPolicy({ origin: selector.origin, operation: "timeline.home" });
-        return handlersClientForSession(session, options.adapters, sessions).timelines.home({
+        return handlersClientForSession(
+          session,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).timelines.home({
           session: toPublicSession(session),
           ...(input.page === undefined ? {} : { page: input.page }),
         });
@@ -335,7 +622,12 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
             : await requireSession(input.sessionId, sessions, "timeline.public");
         if (session !== undefined) assertSessionTarget(session, selector, "timeline.public");
         await originPolicy({ origin: selector.origin, operation: "timeline.public" });
-        return resolveClient(selector, options.adapters, sessions).timelines.public({
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).timelines.public({
           local: input.local,
           ...(input.page === undefined ? {} : { page: input.page }),
           ...(session === undefined ? {} : { session: toPublicSession(session) }),
@@ -349,7 +641,12 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
             : await requireSession(input.sessionId, sessions, "timeline.local");
         if (session !== undefined) assertSessionTarget(session, selector, "timeline.local");
         await originPolicy({ origin: selector.origin, operation: "timeline.local" });
-        return resolveClient(selector, options.adapters, sessions).timelines.local({
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).timelines.local({
           ...(input.page === undefined ? {} : { page: input.page }),
           ...(session === undefined ? {} : { session: toPublicSession(session) }),
         });
@@ -357,7 +654,12 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
       hashtag: async (input) => {
         const selector = normalizeSelector(input, "timeline.hashtag");
         await originPolicy({ origin: selector.origin, operation: "timeline.hashtag" });
-        return resolveClient(selector, options.adapters, sessions).timelines.hashtag({
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).timelines.hashtag({
           tag: input.tag,
           ...(input.page === undefined ? {} : { page: input.page }),
         });
@@ -371,6 +673,7 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
           { adapter: ref.adapter, origin: ref.origin },
           options.adapters,
           sessions,
+          options.operationFetch,
         ).timelines.list({
           listId: input.id,
           session: toPublicSession(session),
@@ -387,7 +690,12 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
             ? undefined
             : await requireSession(input.sessionId, sessions, "search");
         if (session !== undefined) assertSessionTarget(session, selector, "search");
-        return resolveClient(selector, options.adapters, sessions).search.search({
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).search.search({
           query: input.query,
           type: input.type,
           resolve: input.resolve,
@@ -397,13 +705,28 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
       },
     },
     media: {
+      get: async (input) => {
+        const ref = decodeOpaqueIdForOperation(input.id, "media.get");
+        await originPolicy({ origin: ref.origin, operation: "media.get" });
+        return resolveClient(
+          { adapter: ref.adapter, origin: ref.origin },
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).media.get({ id: input.id });
+      },
       upload: async (input) => {
         const { adapter: _adapter, origin: _origin, sessionId, ...upload } = input;
         const selector = normalizeSelector(input, "media.upload");
         const session = await requireSession(sessionId, sessions, "media.upload");
         await originPolicy({ origin: selector.origin, operation: "media.upload" });
         assertSessionTarget(session, selector, "media.upload");
-        return resolveClient(selector, options.adapters, sessions).media.upload({
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).media.upload({
           ...upload,
           session: toPublicSession(session),
         });
@@ -418,6 +741,7 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
           { adapter: ref.adapter, origin: ref.origin },
           options.adapters,
           sessions,
+          options.operationFetch,
         ).media.update({ ...update, session: toPublicSession(session) });
       },
       delete: async (input) => {
@@ -429,15 +753,21 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
           { adapter: ref.adapter, origin: ref.origin },
           options.adapters,
           sessions,
+          options.operationFetch,
         ).media.delete({ id: input.id, session: toPublicSession(session) });
       },
       uploadFromUrl: async (input) => {
         const { adapter: _adapter, origin: _origin, sessionId, ...upload } = input;
-        const selector = normalizeSelector(input, "media.uploadFromUrl");
-        const session = await requireSession(sessionId, sessions, "media.uploadFromUrl");
-        await originPolicy({ origin: selector.origin, operation: "media.uploadFromUrl" });
-        assertSessionTarget(session, selector, "media.uploadFromUrl");
-        return resolveClient(selector, options.adapters, sessions).media.uploadFromUrl({
+        const selector = normalizeSelector(input, "media.ingestUrl");
+        const session = await requireSession(sessionId, sessions, "media.ingestUrl");
+        await originPolicy({ origin: selector.origin, operation: "media.ingestUrl" });
+        assertSessionTarget(session, selector, "media.ingestUrl");
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).media.uploadFromUrl({
           ...upload,
           session: toPublicSession(session),
         });
@@ -458,6 +788,7 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
           { adapter: ref.adapter, origin: ref.origin },
           options.adapters,
           sessions,
+          options.operationFetch,
         ).polls.get({
           id: input.id,
           ...(session === undefined ? {} : { session: toPublicSession(session) }),
@@ -472,6 +803,7 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
           { adapter: ref.adapter, origin: ref.origin },
           options.adapters,
           sessions,
+          options.operationFetch,
         ).polls.vote({
           session: toPublicSession(session),
           pollId: input.id,
@@ -580,7 +912,28 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
         const selector = selectorForSessionInput(input, session, "notification.list");
         await originPolicy({ origin: selector.origin, operation: "notification.list" });
         assertSessionTarget(session, selector, "notification.list");
-        return resolveClient(selector, options.adapters, sessions).notifications.list({
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).notifications.list({
+          session: toPublicSession(session),
+          ...(input.page === undefined ? {} : { page: input.page }),
+          ...(input.types === undefined ? {} : { types: input.types }),
+        });
+      },
+      groups: async (input) => {
+        const session = await requireSession(input.sessionId, sessions, "notification.groups");
+        const selector = selectorForSessionInput(input, session, "notification.groups");
+        await originPolicy({ origin: selector.origin, operation: "notification.groups" });
+        assertSessionTarget(session, selector, "notification.groups");
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).notifications.groups({
           session: toPublicSession(session),
           ...(input.page === undefined ? {} : { page: input.page }),
           ...(input.types === undefined ? {} : { types: input.types }),
@@ -591,7 +944,12 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
         const selector = selectorForSessionInput(input, session, "notification.unreadCount");
         await originPolicy({ origin: selector.origin, operation: "notification.unreadCount" });
         assertSessionTarget(session, selector, "notification.unreadCount");
-        return resolveClient(selector, options.adapters, sessions).notifications.unreadCount({
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).notifications.unreadCount({
           session: toPublicSession(session),
         });
       },
@@ -608,6 +966,7 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
           { adapter: ref.adapter, origin: ref.origin },
           options.adapters,
           sessions,
+          options.operationFetch,
         ).notifications.dismiss({ session: toPublicSession(session), id: input.id });
       },
       clear: async (input) => {
@@ -615,7 +974,12 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
         const selector = selectorForSessionInput(input, session, "notification.clear");
         await originPolicy({ origin: selector.origin, operation: "notification.clear" });
         assertSessionTarget(session, selector, "notification.clear");
-        await resolveClient(selector, options.adapters, sessions).notifications.clear({
+        await resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).notifications.clear({
           session: toPublicSession(session),
         });
       },
@@ -626,7 +990,12 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
         const selector = selectorForSessionInput(input, session, "list.list");
         await originPolicy({ origin: selector.origin, operation: "list.list" });
         assertSessionTarget(session, selector, "list.list");
-        return resolveClient(selector, options.adapters, sessions).lists.list({
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).lists.list({
           session: toPublicSession(session),
           ...(input.page === undefined ? {} : { page: input.page }),
         });
@@ -640,6 +1009,7 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
           { adapter: ref.adapter, origin: ref.origin },
           options.adapters,
           sessions,
+          options.operationFetch,
         ).lists.get({
           session: toPublicSession(session),
           id: input.id,
@@ -651,7 +1021,12 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
         const selector = selectorForSessionInput(input, session, "list.create");
         await originPolicy({ origin: selector.origin, operation: "list.create" });
         assertSessionTarget(session, selector, "list.create");
-        return resolveClient(selector, options.adapters, sessions).lists.create({
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).lists.create({
           ...create,
           session: toPublicSession(session),
         });
@@ -667,6 +1042,7 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
           { adapter: ref.adapter, origin: ref.origin },
           options.adapters,
           sessions,
+          options.operationFetch,
         ).lists.update({
           ...update,
           session: toPublicSession(session),
@@ -709,7 +1085,12 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
         const selector = selectorForSessionInput(input, session, "followRequest.list");
         await originPolicy({ origin: selector.origin, operation: "followRequest.list" });
         assertSessionTarget(session, selector, "followRequest.list");
-        return resolveClient(selector, options.adapters, sessions).followRequests.list({
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).followRequests.list({
           session: toPublicSession(session),
           ...(input.page === undefined ? {} : { page: input.page }),
         });
@@ -737,7 +1118,12 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
         const selector = selectorForSessionInput(input, session, "filter.list");
         await originPolicy({ origin: selector.origin, operation: "filter.list" });
         assertSessionTarget(session, selector, "filter.list");
-        return resolveClient(selector, options.adapters, sessions).filters.list({
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).filters.list({
           session: toPublicSession(session),
           ...(input.page === undefined ? {} : { page: input.page }),
         });
@@ -752,7 +1138,12 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
         const selector = selectorForSessionInput(input, session, "filter.create");
         await originPolicy({ origin: selector.origin, operation: "filter.create" });
         assertSessionTarget(session, selector, "filter.create");
-        return resolveClient(selector, options.adapters, sessions).filters.create({
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).filters.create({
           ...create,
           session: toPublicSession(session),
         });
@@ -768,6 +1159,7 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
           { adapter: ref.adapter, origin: ref.origin },
           options.adapters,
           sessions,
+          options.operationFetch,
         ).filters.update({
           ...update,
           session: toPublicSession(session),
@@ -784,7 +1176,12 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
         const selector = selectorForSessionInput(input, session, "scheduledPost.list");
         await originPolicy({ origin: selector.origin, operation: "scheduledPost.list" });
         assertSessionTarget(session, selector, "scheduledPost.list");
-        return resolveClient(selector, options.adapters, sessions).scheduledPosts.list({
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).scheduledPosts.list({
           session: toPublicSession(session),
           ...(input.page === undefined ? {} : { page: input.page }),
         });
@@ -803,7 +1200,12 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
         const selector = selectorForSessionInput(input, session, "scheduledPost.create");
         await originPolicy({ origin: selector.origin, operation: "scheduledPost.create" });
         assertSessionTarget(session, selector, "scheduledPost.create");
-        return resolveClient(selector, options.adapters, sessions).scheduledPosts.create({
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).scheduledPosts.create({
           ...create,
           session: toPublicSession(session),
         });
@@ -826,6 +1228,69 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
           (client, session, id) => client.scheduledPosts.delete({ session, id }),
         ),
     },
+    bookmarkFolders: {
+      list: async (input) => {
+        const session = await requireSession(input.sessionId, sessions, "bookmarkFolder.list");
+        const selector = selectorForSessionInput(input, session, "bookmarkFolder.list");
+        await originPolicy({ origin: selector.origin, operation: "bookmarkFolder.list" });
+        assertSessionTarget(session, selector, "bookmarkFolder.list");
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).bookmarkFolders.list({
+          session: toPublicSession(session),
+          ...(input.page === undefined ? {} : { page: input.page }),
+        });
+      },
+      create: async (input) => {
+        const session = await requireSession(input.sessionId, sessions, "bookmarkFolder.create");
+        const selector = selectorForSessionInput(input, session, "bookmarkFolder.create");
+        await originPolicy({ origin: selector.origin, operation: "bookmarkFolder.create" });
+        assertSessionTarget(session, selector, "bookmarkFolder.create");
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).bookmarkFolders.create({ session: toPublicSession(session), name: input.name });
+      },
+      update: async (input) =>
+        bookmarkFolderIdAction(
+          input,
+          "bookmarkFolder.update",
+          sessions,
+          options,
+          (client, session, id) => client.bookmarkFolders.update({ session, id, name: input.name }),
+        ),
+      delete: async (input) =>
+        bookmarkFolderIdAction(
+          input,
+          "bookmarkFolder.delete",
+          sessions,
+          options,
+          (client, session, id) => client.bookmarkFolders.delete({ session, id }),
+        ),
+      addPost: async (input) =>
+        bookmarkFolderPostAction(
+          input,
+          "bookmarkFolder.addPost",
+          sessions,
+          options,
+          (client, session, folderId, postId) =>
+            client.bookmarkFolders.addPost({ session, folderId, postId }),
+        ),
+      removePost: async (input) =>
+        bookmarkFolderPostAction(
+          input,
+          "bookmarkFolder.removePost",
+          sessions,
+          options,
+          (client, session, folderId, postId) =>
+            client.bookmarkFolders.removePost({ session, folderId, postId }),
+        ),
+    },
     streams: {
       timeline: async (input) => {
         const selector = normalizeSelector(input, "stream.timeline");
@@ -835,7 +1300,12 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
             ? undefined
             : await requireSession(input.sessionId, sessions, "stream.timeline");
         if (session !== undefined) assertSessionTarget(session, selector, "stream.timeline");
-        return resolveClient(selector, options.adapters, sessions).streams.timeline({
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).streams.timeline({
           type: input.type,
           ...(input.tag === undefined ? {} : { tag: input.tag }),
           ...(input.listId === undefined ? {} : { listId: input.listId }),
@@ -849,7 +1319,12 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
         const selector = selectorForSessionInput(input, session, "stream.notifications");
         await originPolicy({ origin: selector.origin, operation: "stream.notifications" });
         assertSessionTarget(session, selector, "stream.notifications");
-        return resolveClient(selector, options.adapters, sessions).streams.notifications({
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).streams.notifications({
           session: toPublicSession(session),
           ...(input.signal === undefined ? {} : { signal: input.signal }),
         });
@@ -859,7 +1334,12 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
         const selector = selectorForSessionInput(input, session, "stream.conversations");
         await originPolicy({ origin: selector.origin, operation: "stream.conversations" });
         assertSessionTarget(session, selector, "stream.conversations");
-        return resolveClient(selector, options.adapters, sessions).streams.conversations({
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).streams.conversations({
           session: toPublicSession(session),
           ...(input.signal === undefined ? {} : { signal: input.signal }),
         });
@@ -867,18 +1347,53 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
     },
     auth: {
       importToken: async (input) => {
+        // Transport guards are defense in depth; direct service calls share this server gate.
+        if (options.tokenImport?.enabled !== true) {
+          throw new ActivityPlugError(
+            "UNSUPPORTED_OPERATION",
+            "Token import is disabled for this server.",
+            { operation: "auth.tokenInjection" },
+          );
+        }
         const { adapter: _adapter, origin: _origin, ...token } = input;
         const selector = normalizeSelector(input, "auth.tokenInjection");
         await originPolicy({ origin: selector.origin, operation: "auth.tokenInjection" });
-        return handlersFor(selector, options.adapters, sessions).importToken(token);
+        return handlersFor(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).importToken(token);
+      },
+      registerClient: async (input) => {
+        const selector = normalizeSelector(input, "auth.registerClient");
+        await originPolicy({ origin: selector.origin, operation: "auth.registerClient" });
+        return resolveClient(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).auth.oauth.registerClient(input.client);
       },
       start: async (input) => {
-        const { adapter: _adapter, origin: _origin, ...start } = input;
+        const extended = input as typeof input & { readonly clientIp?: string };
+        const { adapter: _adapter, origin: _origin, clientIp: _clientIp, ...start } = extended;
         const selector = normalizeSelector(input, "auth.oauth.authorizationUrl");
         await originPolicy({ origin: selector.origin, operation: "auth.oauth.authorizationUrl" });
+        await assertAuthStartAllowed(
+          options.authStartLimiter,
+          extended.clientIp,
+          selector.origin,
+          "auth.oauth.authorizationUrl",
+        );
         const adapter = resolveAdapter(selector.adapter, options.adapters);
         const pkce = start.codeChallenge === undefined ? await createOAuthPkcePair() : undefined;
-        const result = await handlersFor(selector, options.adapters, sessions).start({
+        const result = await handlersFor(
+          selector,
+          options.adapters,
+          sessions,
+          options.operationFetch,
+        ).start({
           ...start,
           ...(pkce === undefined
             ? {}
@@ -943,12 +1458,14 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
             input.expectedState,
             oauthClientSecrets,
           );
-          return handlersFor(selector, options.adapters, sessions).exchange({
-            ...exchange,
-            client: state.client,
-            redirectUri: state.redirectUri,
-            ...(state.codeVerifier === undefined ? {} : { codeVerifier: state.codeVerifier }),
-          });
+          return handlersFor(selector, options.adapters, sessions, options.operationFetch).exchange(
+            {
+              ...exchange,
+              client: state.client,
+              redirectUri: state.redirectUri,
+              ...(state.codeVerifier === undefined ? {} : { codeVerifier: state.codeVerifier }),
+            },
+          );
         }
         if (input.state === undefined) {
           throw new ActivityPlugError(
@@ -964,7 +1481,7 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
         const registeredBinding = await requireOAuthCallbackStateBinding(sessions, input.state);
         assertExchangeTarget(canonicalInput, adapter.metadata.id, registeredBinding);
         const state = await consumeOAuthCallbackState(sessions, input.state, oauthClientSecrets);
-        return handlersFor(selector, options.adapters, sessions).exchange({
+        return handlersFor(selector, options.adapters, sessions, options.operationFetch).exchange({
           ...exchange,
           client: state.client,
           redirectUri: state.redirectUri,
@@ -975,12 +1492,14 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
         const { adapter: _adapter, origin: _origin, ...refresh } = input;
         const selector = normalizeSelector(input, "auth.oauth.refresh");
         await originPolicy({ origin: selector.origin, operation: "auth.oauth.refresh" });
-        return handlersFor(selector, options.adapters, sessions).refresh(refresh);
+        return handlersFor(selector, options.adapters, sessions, options.operationFetch).refresh(
+          refresh,
+        );
       },
       refreshSession: async (input) => {
         const session = await requireSession(input.sessionId, sessions, "auth.oauth.refresh");
         await originPolicy({ origin: session.origin, operation: "auth.oauth.refresh" });
-        return handlersFor(session, options.adapters, sessions).refresh({
+        return handlersFor(session, options.adapters, sessions, options.operationFetch).refresh({
           session: toPublicSession(session),
         });
       },
@@ -988,38 +1507,120 @@ function createAdapterBackedApiService(options: ActivityPlugServerOptions): Acti
         const { adapter: _adapter, origin: _origin, ...revoke } = input;
         const selector = normalizeSelector(input, "auth.oauth.revoke");
         await originPolicy({ origin: selector.origin, operation: "auth.oauth.revoke" });
-        return handlersFor(selector, options.adapters, sessions).revoke(revoke);
+        return handlersFor(selector, options.adapters, sessions, options.operationFetch).revoke(
+          revoke,
+        );
       },
       revokeSession: async (input) => {
         const session = await requireSession(input.sessionId, sessions, "auth.oauth.revoke");
         await originPolicy({ origin: session.origin, operation: "auth.oauth.revoke" });
-        await handlersFor(session, options.adapters, sessions).revoke({
+        await handlersFor(session, options.adapters, sessions, options.operationFetch).revoke({
           session: toPublicSession(session),
         });
+      },
+      emailChallenge: {
+        start: async (input) => {
+          const extended = input as typeof input & { readonly clientIp?: string };
+          const { adapter: _adapter, origin: _origin, clientIp: _clientIp, ...start } = extended;
+          const selector = normalizeSelector(input, "auth.emailChallenge.start");
+          await originPolicy({ origin: selector.origin, operation: "auth.emailChallenge.start" });
+          await assertAuthStartAllowed(
+            options.authStartLimiter,
+            extended.clientIp,
+            selector.origin,
+            "auth.emailChallenge.start",
+          );
+          return handlersFor(
+            selector,
+            options.adapters,
+            sessions,
+            options.operationFetch,
+          ).emailChallenge.start(start);
+        },
+        verify: async (input) => {
+          const { adapter: _adapter, origin: _origin, ...verify } = input;
+          const selector = normalizeSelector(input, "auth.emailChallenge.verify");
+          await originPolicy({ origin: selector.origin, operation: "auth.emailChallenge.verify" });
+          return handlersFor(
+            selector,
+            options.adapters,
+            sessions,
+            options.operationFetch,
+          ).emailChallenge.verify(verify);
+        },
+      },
+      passkey: {
+        start: async (input) => {
+          const extended = input as typeof input & { readonly clientIp?: string };
+          const { adapter: _adapter, origin: _origin, clientIp: _clientIp, ...start } = extended;
+          const selector = normalizeSelector(input, "auth.passkey.start");
+          await originPolicy({ origin: selector.origin, operation: "auth.passkey.start" });
+          await assertAuthStartAllowed(
+            options.authStartLimiter,
+            extended.clientIp,
+            selector.origin,
+            "auth.passkey.start",
+          );
+          return handlersFor(
+            selector,
+            options.adapters,
+            sessions,
+            options.operationFetch,
+          ).passkey.start(start);
+        },
+        finish: async (input) => {
+          const { adapter: _adapter, origin: _origin, ...finish } = input;
+          const selector = normalizeSelector(input, "auth.passkey.finish");
+          await originPolicy({ origin: selector.origin, operation: "auth.passkey.finish" });
+          return handlersFor(
+            selector,
+            options.adapters,
+            sessions,
+            options.operationFetch,
+          ).passkey.finish(finish);
+        },
       },
     },
     viewer: async (input) => {
       const session = await requireSession(input.sessionId, sessions, "viewer");
       await originPolicy({ origin: session.origin, operation: "viewer" });
-      const adapter = adaptersById.get(session.adapter);
-      if (adapter === undefined) {
-        throw new ActivityPlugError(
-          "ADAPTER_NOT_FOUND",
-          `No adapter is registered for ${session.adapter}.`,
-          {
-            adapter: session.adapter,
-            origin: session.origin,
-            operation: "viewer",
-          },
-        );
-      }
       return createAuthEndpointHandlers(
-        createActivityPlugClient({
-          adapter,
-          origin: session.origin,
-          sessionStore: sessions,
-        }),
+        resolveClient(session, options.adapters, sessions, options.operationFetch),
       ).viewer(toPublicSession(session));
+    },
+  };
+}
+
+async function resolveReadiness(
+  readiness: NonNullable<ActivityPlugServerOptions["readiness"]>,
+): Promise<boolean> {
+  try {
+    return await readiness();
+  } catch {
+    return false;
+  }
+}
+
+function applyServerAuthCapabilityPolicyToProfile(
+  profile: InstanceProfile,
+  tokenImport: TokenImportOptions | undefined,
+): InstanceProfile {
+  const capabilities = applyServerAuthCapabilityPolicy(profile.capabilities, tokenImport);
+  return capabilities === profile.capabilities ? profile : { ...profile, capabilities };
+}
+
+function applyServerAuthCapabilityPolicy(
+  capabilities: CapabilitySet,
+  tokenImport: TokenImportOptions | undefined,
+): CapabilitySet {
+  if (tokenImport?.enabled === true) return capabilities;
+  return {
+    ...capabilities,
+    "auth.tokenInjection": {
+      name: "auth.tokenInjection",
+      status: "unsupported",
+      source: "static",
+      reason: "Token import is disabled by server configuration.",
     },
   };
 }
@@ -1029,6 +1630,30 @@ function normalizeSelector(input: InstanceSelector, operation: string): Instance
     ...input,
     origin: normalizeServerOrigin(input.origin, operation, input.adapter),
   };
+}
+
+async function assertAuthStartAllowed(
+  limiter: OAuthStartLimiter | undefined,
+  clientIp: string | undefined,
+  origin: string,
+  operation: string,
+): Promise<void> {
+  if (limiter === undefined) return;
+  const result = await limiter.take({
+    clientIp:
+      typeof clientIp === "string" && clientIp.trim() !== "" && clientIp.length <= 256
+        ? clientIp
+        : "unknown",
+    origin,
+    now: new Date(),
+  });
+  if (!result.allowed) {
+    throw new ActivityPlugError("RATE_LIMITED", "Too many authentication attempts.", {
+      origin,
+      operation,
+      raw: { retryAfterSeconds: result.retryAfterSeconds },
+    });
+  }
 }
 
 function normalizeServerOrigin(
@@ -1059,7 +1684,11 @@ function normalizeServerOrigin(
 
 async function requireSession(sessionId: string, sessions: AuthSessionStore, operation: string) {
   const session = await sessions.get(sessionId);
-  if (session === null || session.metadata?.activityplugKind === "oauth-callback-state") {
+  if (
+    session === null ||
+    !isAuthStrategyKind(session.strategy) ||
+    session.metadata?.activityplugKind === "oauth-callback-state"
+  ) {
     throw new ActivityPlugError("AUTH_REQUIRED", "Auth session is not available.", {
       operation,
     });
@@ -1067,38 +1696,163 @@ async function requireSession(sessionId: string, sessions: AuthSessionStore, ope
   return session;
 }
 
+function runtimeClientResolverFor(
+  adapters: readonly ActivityPlugAdapter[],
+  sessions: AuthSessionStore,
+  operationFetch: typeof fetch,
+): RuntimeClientResolver {
+  const existing = runtimeClientResolvers.get(operationFetch);
+  if (existing !== undefined) return existing;
+  const resolver = createRuntimeClientResolver(adapters, sessions, operationFetch);
+  runtimeClientResolvers.set(operationFetch, resolver);
+  return resolver;
+}
+
+function createRuntimeClientResolver(
+  adapters: readonly ActivityPlugAdapter[],
+  sessions: AuthSessionStore,
+  operationFetch: typeof fetch,
+): RuntimeClientResolver {
+  const detections = new Map<string, Map<string, CachedInstanceProfile>>();
+
+  const profileFor = (
+    adapter: ActivityPlugAdapter,
+    inputOrigin: string,
+  ): Promise<InstanceProfile> => {
+    const origin = canonicalizeOrigin(inputOrigin);
+    let profilesByOrigin = detections.get(adapter.metadata.id);
+    if (profilesByOrigin === undefined) {
+      profilesByOrigin = new Map();
+      detections.set(adapter.metadata.id, profilesByOrigin);
+    }
+    const cached = profilesByOrigin.get(origin);
+    if (cached !== undefined && cached.expiresAt > Date.now()) {
+      profilesByOrigin.delete(origin);
+      profilesByOrigin.set(origin, cached);
+      return cached.profile;
+    }
+    if (cached !== undefined) profilesByOrigin.delete(origin);
+
+    const pending = createActivityPlugClient({
+      adapter,
+      origin,
+      sessionStore: sessions,
+      fetch: operationFetch,
+    }).instances.detect({ origin });
+    if (profilesByOrigin.size >= MAX_DETECTED_ORIGINS_PER_ADAPTER) {
+      const oldestOrigin = profilesByOrigin.keys().next().value;
+      if (oldestOrigin !== undefined) profilesByOrigin.delete(oldestOrigin);
+    }
+    profilesByOrigin.set(origin, {
+      profile: pending,
+      expiresAt: Date.now() + DETECTED_PROFILE_TTL_MS,
+    });
+    void pending.catch(() => {
+      if (profilesByOrigin?.get(origin)?.profile !== pending) return;
+      profilesByOrigin.delete(origin);
+      if (profilesByOrigin.size === 0) detections.delete(adapter.metadata.id);
+    });
+    return pending;
+  };
+
+  return {
+    detect: async (input) => {
+      if (input.adapter !== undefined) {
+        return profileFor(resolveAdapter(input.adapter, adapters), input.origin);
+      }
+      const failures: unknown[] = [];
+      for (const adapter of adapters) {
+        try {
+          const profile = await profileFor(adapter, input.origin);
+          if (matchesDetectedSoftware(adapter, profile.software.name)) return profile;
+        } catch (error) {
+          failures.push(error);
+        }
+      }
+      if (failures.length === 1 && failures[0] instanceof ActivityPlugError) {
+        throw failures[0];
+      }
+      throw new ActivityPlugError(
+        "ADAPTER_NOT_FOUND",
+        "No registered adapter matched the detected instance.",
+        {
+          origin: canonicalizeOrigin(input.origin),
+          operation: "instance.detect",
+        },
+      );
+    },
+    resolve: async (adapter, inputOrigin) => {
+      const origin = canonicalizeOrigin(inputOrigin);
+      if (adapter.instances?.detect === undefined && adapter.instances?.getProfile === undefined) {
+        return createActivityPlugClient({
+          adapter,
+          origin,
+          sessionStore: sessions,
+          fetch: operationFetch,
+        });
+      }
+      const profile = await profileFor(adapter, origin);
+      return createActivityPlugClient({
+        adapter,
+        origin,
+        capabilities: profile.capabilities,
+        sessionStore: sessions,
+        fetch: operationFetch,
+      });
+    },
+  };
+}
+
+function deferClientOperations(
+  bootstrap: ActivityPlugClient,
+  resolve: () => Promise<ActivityPlugClient>,
+): ActivityPlugClient {
+  return deferObjectOperations(bootstrap, [], resolve);
+}
+
+function deferObjectOperations<T extends object>(
+  bootstrap: T,
+  path: readonly PropertyKey[],
+  resolve: () => Promise<ActivityPlugClient>,
+): T {
+  const nested = new Map<PropertyKey, object>();
+  return new Proxy(bootstrap, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver) as unknown;
+      if (typeof value === "function") {
+        return (...args: readonly unknown[]) =>
+          resolve().then((client) => {
+            let owner: unknown = client;
+            for (const segment of path) {
+              owner = Reflect.get(owner as object, segment);
+            }
+            const operation = Reflect.get(owner as object, property) as (
+              ...input: unknown[]
+            ) => unknown;
+            return Reflect.apply(operation, owner, args);
+          });
+      }
+      if (value === null || typeof value !== "object") return value;
+      if (Array.isArray(value)) return value;
+      if (path.length === 0 && (property === "adapter" || property === "capabilities")) {
+        return value;
+      }
+      const cached = nested.get(property);
+      if (cached !== undefined) return cached;
+      const deferred = deferObjectOperations(value, [...path, property], resolve);
+      nested.set(property, deferred);
+      return deferred;
+    },
+  });
+}
+
 async function detectInstance(
   input: InstanceSelector,
   adapters: readonly ActivityPlugAdapter[],
   sessions: AuthSessionStore,
+  operationFetch: typeof fetch,
 ) {
-  if (input.adapter !== undefined) {
-    return resolveClient(input, adapters, sessions).instances.detect({ origin: input.origin });
-  }
-  const failures: unknown[] = [];
-  for (const adapter of adapters) {
-    try {
-      const profile = await createActivityPlugClient({
-        adapter,
-        origin: input.origin,
-        sessionStore: sessions,
-      }).instances.detect({ origin: input.origin });
-      if (matchesDetectedSoftware(adapter, profile.software.name)) return profile;
-    } catch (error) {
-      failures.push(error);
-    }
-  }
-  if (failures.length === 1 && failures[0] instanceof ActivityPlugError) {
-    throw failures[0];
-  }
-  throw new ActivityPlugError(
-    "ADAPTER_NOT_FOUND",
-    "No registered adapter matched the detected instance.",
-    {
-      origin: input.origin,
-      operation: "instance.detect",
-    },
-  );
+  return runtimeClientResolverFor(adapters, sessions, operationFetch).detect(input);
 }
 
 async function listAccountConnections(
@@ -1107,6 +1861,7 @@ async function listAccountConnections(
   adapters: readonly ActivityPlugAdapter[],
   sessions: AuthSessionStore,
   originPolicy: OriginFetchPolicy,
+  operationFetch: typeof fetch,
 ) {
   const ref = decodeOpaqueIdForOperation(input.id, operation);
   await originPolicy({ origin: ref.origin, operation });
@@ -1117,7 +1872,12 @@ async function listAccountConnections(
   if (session !== undefined) {
     assertSessionTarget(session, { adapter: ref.adapter, origin: ref.origin }, operation);
   }
-  const client = resolveClient({ adapter: ref.adapter, origin: ref.origin }, adapters, sessions);
+  const client = resolveClient(
+    { adapter: ref.adapter, origin: ref.origin },
+    adapters,
+    sessions,
+    operationFetch,
+  );
   const request = {
     accountId: input.id,
     ...(input.page === undefined ? {} : { page: input.page }),
@@ -1143,20 +1903,30 @@ function handlersFor(
   input: InstanceSelector,
   adapters: readonly ActivityPlugAdapter[],
   sessions: AuthSessionStore,
+  operationFetch: typeof fetch,
 ) {
-  return createAuthEndpointHandlers(resolveClient(input, adapters, sessions));
+  return createAuthEndpointHandlers(resolveClient(input, adapters, sessions, operationFetch));
 }
 
 function resolveClient(
   input: InstanceSelector,
   adapters: readonly ActivityPlugAdapter[],
   sessions: AuthSessionStore,
+  operationFetch: typeof fetch,
 ) {
   const adapter = resolveAdapter(input.adapter, adapters);
-  return createActivityPlugClient({
+  const origin = canonicalizeOrigin(input.origin);
+  const bootstrap = createActivityPlugClient({
     adapter,
-    origin: input.origin,
+    origin,
     sessionStore: sessions,
+    fetch: operationFetch,
+  });
+  const resolver = runtimeClientResolverFor(adapters, sessions, operationFetch);
+  let resolved: Promise<ActivityPlugClient> | undefined;
+  return deferClientOperations(bootstrap, () => {
+    resolved ??= resolver.resolve(adapter, origin);
+    return resolved;
   });
 }
 
@@ -1164,8 +1934,14 @@ function handlersClientForSession(
   session: StoredAuthSession,
   adapters: readonly ActivityPlugAdapter[],
   sessions: AuthSessionStore,
+  operationFetch: typeof fetch,
 ) {
-  return resolveClient({ adapter: session.adapter, origin: session.origin }, adapters, sessions);
+  return resolveClient(
+    { adapter: session.adapter, origin: session.origin },
+    adapters,
+    sessions,
+    operationFetch,
+  );
 }
 
 function decodeOpaqueIdForOperation(
@@ -1191,7 +1967,7 @@ async function socialAccountAction<Output>(
   input: RelationshipRequest,
   operation: string,
   sessions: AuthSessionStore,
-  options: ActivityPlugServerOptions,
+  options: ActivityPlugServerRuntimeOptions,
   action: (
     client: ReturnType<typeof resolveClient>,
     session: AuthSession,
@@ -1200,10 +1976,15 @@ async function socialAccountAction<Output>(
 ): Promise<Output> {
   const session = await requireSession(input.sessionId, sessions, operation);
   const ref = decodeOpaqueIdForOperation(input.accountId, operation);
-  await (options.originPolicy ?? defaultOriginFetchPolicy)({ origin: ref.origin, operation });
+  await options.originPolicy({ origin: ref.origin, operation });
   assertSessionTarget(session, { adapter: ref.adapter, origin: ref.origin }, operation);
   return action(
-    resolveClient({ adapter: ref.adapter, origin: ref.origin }, options.adapters, sessions),
+    resolveClient(
+      { adapter: ref.adapter, origin: ref.origin },
+      options.adapters,
+      sessions,
+      options.operationFetch,
+    ),
     toPublicSession(session),
     input.accountId,
   );
@@ -1213,7 +1994,7 @@ async function socialPostAction<Output>(
   input: PostActionRequest,
   operation: string,
   sessions: AuthSessionStore,
-  options: ActivityPlugServerOptions,
+  options: ActivityPlugServerRuntimeOptions,
   action: (
     client: ReturnType<typeof resolveClient>,
     session: AuthSession,
@@ -1222,10 +2003,15 @@ async function socialPostAction<Output>(
 ): Promise<Output> {
   const session = await requireSession(input.sessionId, sessions, operation);
   const ref = decodeOpaqueIdForOperation(input.postId, operation);
-  await (options.originPolicy ?? defaultOriginFetchPolicy)({ origin: ref.origin, operation });
+  await options.originPolicy({ origin: ref.origin, operation });
   assertSessionTarget(session, { adapter: ref.adapter, origin: ref.origin }, operation);
   return action(
-    resolveClient({ adapter: ref.adapter, origin: ref.origin }, options.adapters, sessions),
+    resolveClient(
+      { adapter: ref.adapter, origin: ref.origin },
+      options.adapters,
+      sessions,
+      options.operationFetch,
+    ),
     toPublicSession(session),
     input.postId,
   );
@@ -1249,7 +2035,7 @@ async function listIdAction<Output>(
   input: { readonly id: string; readonly sessionId: string },
   operation: string,
   sessions: AuthSessionStore,
-  options: ActivityPlugServerOptions,
+  options: ActivityPlugServerRuntimeOptions,
   action: (
     client: ReturnType<typeof resolveClient>,
     session: AuthSession,
@@ -1258,10 +2044,15 @@ async function listIdAction<Output>(
 ): Promise<Output> {
   const session = await requireSession(input.sessionId, sessions, operation);
   const ref = decodeOpaqueIdForOperation(input.id, operation);
-  await (options.originPolicy ?? defaultOriginFetchPolicy)({ origin: ref.origin, operation });
+  await options.originPolicy({ origin: ref.origin, operation });
   assertSessionTarget(session, { adapter: ref.adapter, origin: ref.origin }, operation);
   return action(
-    resolveClient({ adapter: ref.adapter, origin: ref.origin }, options.adapters, sessions),
+    resolveClient(
+      { adapter: ref.adapter, origin: ref.origin },
+      options.adapters,
+      sessions,
+      options.operationFetch,
+    ),
     toPublicSession(session),
     input.id,
   );
@@ -1271,7 +2062,7 @@ async function filterIdAction<Output>(
   input: { readonly id: string; readonly sessionId: string },
   operation: string,
   sessions: AuthSessionStore,
-  options: ActivityPlugServerOptions,
+  options: ActivityPlugServerRuntimeOptions,
   action: (
     client: ReturnType<typeof resolveClient>,
     session: AuthSession,
@@ -1285,7 +2076,7 @@ async function scheduledPostIdAction<Output>(
   input: { readonly id: string; readonly sessionId: string },
   operation: string,
   sessions: AuthSessionStore,
-  options: ActivityPlugServerOptions,
+  options: ActivityPlugServerRuntimeOptions,
   action: (
     client: ReturnType<typeof resolveClient>,
     session: AuthSession,
@@ -1295,11 +2086,66 @@ async function scheduledPostIdAction<Output>(
   return listIdAction(input, operation, sessions, options, action);
 }
 
+async function bookmarkFolderIdAction<Output>(
+  input: { readonly id: string; readonly sessionId: string },
+  operation: string,
+  sessions: AuthSessionStore,
+  options: ActivityPlugServerRuntimeOptions,
+  action: (
+    client: ReturnType<typeof resolveClient>,
+    session: AuthSession,
+    id: string,
+  ) => Promise<Output>,
+): Promise<Output> {
+  return listIdAction(input, operation, sessions, options, action);
+}
+
+async function bookmarkFolderPostAction<Output>(
+  input: {
+    readonly folderId: string;
+    readonly postId: string;
+    readonly sessionId: string;
+  },
+  operation: string,
+  sessions: AuthSessionStore,
+  options: ActivityPlugServerRuntimeOptions,
+  action: (
+    client: ReturnType<typeof resolveClient>,
+    session: AuthSession,
+    folderId: string,
+    postId: string,
+  ) => Promise<Output>,
+): Promise<Output> {
+  const session = await requireSession(input.sessionId, sessions, operation);
+  const folder = decodeOpaqueIdForOperation(input.folderId, operation);
+  const post = decodeOpaqueIdForOperation(input.postId, operation);
+  if (folder.adapter !== post.adapter || folder.origin !== post.origin) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "Bookmark folder and post IDs must share a target.",
+      { adapter: folder.adapter, origin: folder.origin, operation },
+    );
+  }
+  await options.originPolicy({ origin: folder.origin, operation });
+  assertSessionTarget(session, { adapter: folder.adapter, origin: folder.origin }, operation);
+  return action(
+    resolveClient(
+      { adapter: folder.adapter, origin: folder.origin },
+      options.adapters,
+      sessions,
+      options.operationFetch,
+    ),
+    toPublicSession(session),
+    input.folderId,
+    input.postId,
+  );
+}
+
 async function listAccountAction<Output>(
   input: { readonly id: string; readonly accountId: string; readonly sessionId: string },
   operation: string,
   sessions: AuthSessionStore,
-  options: ActivityPlugServerOptions,
+  options: ActivityPlugServerRuntimeOptions,
   action: (
     client: ReturnType<typeof resolveClient>,
     session: AuthSession,
@@ -1317,10 +2163,15 @@ async function listAccountAction<Output>(
       operation,
     });
   }
-  await (options.originPolicy ?? defaultOriginFetchPolicy)({ origin: list.origin, operation });
+  await options.originPolicy({ origin: list.origin, operation });
   assertSessionTarget(session, { adapter: list.adapter, origin: list.origin }, operation);
   return action(
-    resolveClient({ adapter: list.adapter, origin: list.origin }, options.adapters, sessions),
+    resolveClient(
+      { adapter: list.adapter, origin: list.origin },
+      options.adapters,
+      sessions,
+      options.operationFetch,
+    ),
     toPublicSession(session),
     input.id,
     input.accountId,
@@ -1423,6 +2274,7 @@ function toPublicSession(session: AuthSession): AuthSession {
     id: session.id,
     adapter: session.adapter,
     origin: session.origin,
+    strategy: session.strategy,
     ...(session.account === undefined ? {} : { account: session.account }),
     scopes: session.scopes,
     capabilities: session.capabilities,
@@ -1435,14 +2287,17 @@ async function defaultOriginFetchPolicy(context: OriginFetchPolicyContext): Prom
   if (url.protocol !== "https:" && url.protocol !== "http:") {
     throw blockedOrigin(context, "Server-side remote fetches require an HTTP or HTTPS origin.");
   }
-  if (isBlockedHostname(url.hostname)) {
-    throw blockedOrigin(context, "Server-side remote fetch origin resolves to a private host.");
-  }
   throw blockedOrigin(
     context,
     "Server-side remote fetches require an explicit origin policy for this server.",
   );
 }
+
+const defaultOriginPolicy: OriginPolicy = {
+  assertAllowed: async (origin, operation) => {
+    await defaultOriginFetchPolicy({ origin, operation });
+  },
+};
 
 function parseServerFetchOrigin(context: OriginFetchPolicyContext): URL {
   try {
@@ -1457,64 +2312,8 @@ function parseServerFetchOrigin(context: OriginFetchPolicyContext): URL {
   }
 }
 
-function isBlockedHostname(hostname: string): boolean {
-  const normalized = hostname.toLowerCase().replace(/^\[|\]$/gu, "");
-  return (
-    normalized === "localhost" ||
-    normalized.endsWith(".localhost") ||
-    isBlockedIpAddress(normalized)
-  );
-}
-
-function isBlockedIpAddress(address: string): boolean {
-  const normalizedAddress = address.toLowerCase().replace(/^\[|\]$/gu, "");
-  const mappedIpv4 = ipv4MappedAddress(normalizedAddress);
-  if (mappedIpv4 !== undefined) return isBlockedIpAddress(mappedIpv4);
-  const family = isIP(normalizedAddress);
-  if (family === 0) return false;
-  if (family === 6) {
-    const firstHextet = Number.parseInt(normalizedAddress.split(":")[0] ?? "", 16);
-    return (
-      normalizedAddress === "::1" ||
-      normalizedAddress === "::" ||
-      normalizedAddress.startsWith("100:") ||
-      normalizedAddress.startsWith("2001:2:") ||
-      normalizedAddress.startsWith("2001:db8:") ||
-      normalizedAddress.startsWith("fc") ||
-      normalizedAddress.startsWith("fd") ||
-      (firstHextet >= 0xfe80 && firstHextet <= 0xfebf) ||
-      (firstHextet >= 0xff00 && firstHextet <= 0xffff)
-    );
-  }
-  const octets = normalizedAddress.split(".").map((part) => Number(part));
-  const [first = 0, second = 0] = octets;
-  return (
-    first === 0 ||
-    first === 10 ||
-    (first === 100 && second >= 64 && second <= 127) ||
-    first === 127 ||
-    (first === 169 && second === 254) ||
-    (first === 172 && second >= 16 && second <= 31) ||
-    (first === 192 && (second === 0 || second === 168)) ||
-    (first === 198 && (second === 18 || second === 19 || second === 51)) ||
-    (first === 203 && second === 0) ||
-    first >= 224
-  );
-}
-
-function ipv4MappedAddress(address: string): string | undefined {
-  const dotted = address.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/u)?.[1];
-  if (dotted !== undefined) return dotted;
-  const hex = address.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/u);
-  if (hex === null) return undefined;
-  const high = Number.parseInt(hex[1] ?? "", 16);
-  const low = Number.parseInt(hex[2] ?? "", 16);
-  if (!Number.isInteger(high) || !Number.isInteger(low)) return undefined;
-  return `${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`;
-}
-
 function blockedOrigin(context: OriginFetchPolicyContext, message: string): ActivityPlugError {
-  return new ActivityPlugError("VALIDATION_FAILED", message, {
+  return new ActivityPlugError("ORIGIN_NOT_ALLOWED", message, {
     origin: context.origin,
     operation: context.operation,
   });
