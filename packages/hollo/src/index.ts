@@ -10,17 +10,25 @@ import {
   type ListAccountFollowsInput,
   type NotificationUnreadCountInput,
   type Post,
+  type PartialCapabilitySet,
   type ReactPostInput,
+  type Relationship,
+  type RelationshipInput,
 } from "@activityplug/core";
 import {
   clientFor,
   createMastodonBaseAdapter,
+  invalidRemoteResponse,
+  relationshipFromResponse,
   requestJson,
   requestVoid,
   tokenHeader,
+  type DetectedMastodonSoftware,
   type MastodonBaseAdapterOptions,
+  type MastodonRelationshipResponse,
   type MastodonTransportOptions,
 } from "@activityplug/mastodon-base";
+import { z } from "zod";
 
 export type HolloAdapterOptions = Omit<
   MastodonBaseAdapterOptions,
@@ -31,7 +39,57 @@ export type HolloAdapterOptions = Omit<
   | "supportsRefreshToken"
   | "supportsLocalVisibility"
   | "quoteStatusParameter"
+  | "detectedCapabilities"
 >;
+
+const HOLLO_RELATIONSHIP_BOOLEAN_FIELDS = [
+  "following",
+  "followed_by",
+  "requested",
+  "blocking",
+  "blocked_by",
+  "muting",
+  "muting_notifications",
+  "domain_blocking",
+  "showing_reblogs",
+  "notifying",
+] as const;
+
+const holloRelationshipSchema = z.looseObject({
+  id: z.string().min(1),
+  ...(Object.fromEntries(
+    HOLLO_RELATIONSHIP_BOOLEAN_FIELDS.map((field) => [field, z.boolean()]),
+  ) as Record<(typeof HOLLO_RELATIONSHIP_BOOLEAN_FIELDS)[number], z.ZodBoolean>),
+});
+
+export function holloDetectedCapabilities(
+  software: DetectedMastodonSoftware,
+): PartialCapabilitySet {
+  if (software.name.toLowerCase() !== "hollo") return {};
+  const relationshipCapability = holloVersionCapability(
+    software.version,
+    [0, 1, 0],
+    "relationship lookup",
+  );
+  return {
+    "accounts.relationships": relationshipCapability,
+    "posts.context": capability("unsupported", "Post context is not mapped by this adapter."),
+    "posts.quotes": capability("unsupported", "Quote listing is not mapped by this adapter."),
+    "posts.quote": capability("supported", "Hollo exposes quote creation."),
+    "posts.update": capability("supported", "Hollo exposes status editing."),
+    "posts.history": capability("unsupported", "Hollo does not expose status edit history."),
+    "media.get": capability("unsupported", "Media lookup is not mapped by this adapter."),
+    "media.upload": capability("supported", "Hollo exposes media upload."),
+    "media.delete": capability("unsupported", "Hollo does not expose media deletion."),
+    "notifications.unreadCount": capability(
+      "supported",
+      "Hollo exposes notification unread counts through its v2 API.",
+    ),
+    "filters.read": capability("unsupported", "Hollo does not expose filters."),
+    "filters.create": capability("unsupported", "Hollo does not expose filters."),
+    "filters.delete": capability("unsupported", "Hollo does not expose filters."),
+  };
+}
 
 export function createHolloAdapter(options: HolloAdapterOptions = {}): ActivityPlugAdapter {
   const adapter = createMastodonBaseAdapter({
@@ -43,6 +101,7 @@ export function createHolloAdapter(options: HolloAdapterOptions = {}): ActivityP
     supportsRefreshToken: false,
     instanceEndpointRequired: false,
     quoteStatusParameter: "quoted_status_id",
+    detectedCapabilities: holloDetectedCapabilities,
   });
   return {
     ...adapter,
@@ -52,8 +111,10 @@ export function createHolloAdapter(options: HolloAdapterOptions = {}): ActivityP
         ...adapter.metadata.staticCapabilities,
         "polls.create": capability("supported"),
         "accounts.relationships": capability(
-          "unsupported",
-          "Hollo relationship reads are not compatible with the Mastodon relationship API.",
+          "unknown",
+          "Hollo relationship lookup requires a detected stable server version.",
+          undefined,
+          { software: { minimum: "0.1.0" } },
         ),
         "posts.quote": capability("supported"),
         "posts.update": capability(
@@ -61,6 +122,7 @@ export function createHolloAdapter(options: HolloAdapterOptions = {}): ActivityP
           "Hollo exposes Mastodon-compatible status editing.",
         ),
         "posts.history": capability("unsupported", "Hollo does not expose status edit history."),
+        "media.upload": capability("supported", "Hollo exposes media upload."),
         "notifications.dismiss": capability(
           "unsupported",
           "Hollo does not expose Mastodon v1 notification dismiss.",
@@ -113,28 +175,6 @@ export function createHolloAdapter(options: HolloAdapterOptions = {}): ActivityP
     },
     posts: {
       ...adapter.posts,
-      create: async (input, context) => {
-        const create = adapter.posts?.create;
-        if (create === undefined) {
-          throw new ActivityPlugError("UNSUPPORTED_OPERATION", "Hollo compose is not mapped.", {
-            adapter: context.adapterId,
-            origin: context.origin,
-            operation: "post.create",
-          });
-        }
-        return create(
-          input.poll === undefined || input.poll.expiresInSeconds !== undefined
-            ? input
-            : {
-                ...input,
-                poll: {
-                  ...input.poll,
-                  expiresInSeconds: 3600,
-                },
-              },
-          context,
-        );
-      },
       history: async (_input, context) =>
         unsupportedHolloOperation(
           context,
@@ -188,19 +228,7 @@ export function createHolloAdapter(options: HolloAdapterOptions = {}): ActivityP
     },
     social: {
       ...adapter.social,
-      relationship: async (_input, context) =>
-        Promise.reject(
-          new ActivityPlugError(
-            "UNSUPPORTED_OPERATION",
-            "Hollo relationship reads are not compatible with the Mastodon relationship API.",
-            {
-              adapter: context.adapterId,
-              origin: context.origin,
-              operation: "account.relationships",
-              capability: "accounts.relationships",
-            },
-          ),
-        ),
+      relationship: async (input, context) => holloRelationship(input, context, options),
       react: async (input, context) =>
         holloReaction(input, "react", "social.reaction", context, options, adapter),
       unreact: async (input, context) =>
@@ -350,12 +378,63 @@ async function holloAccountFollows(
     pageInfo: {
       hasNextPage: false,
       hasPreviousPage: false,
-      raw: connection.pageInfo.raw,
     },
   };
 }
 
 export const holloAdapter = createHolloAdapter();
+
+async function holloRelationship(
+  input: RelationshipInput,
+  context: AdapterOperationContext,
+  options: MastodonTransportOptions,
+): Promise<Relationship> {
+  if (context.capabilities["accounts.relationships"].status !== "supported") {
+    return unsupportedHolloOperation(
+      context,
+      "account.relationships",
+      "accounts.relationships",
+      "Hollo relationship lookup is unavailable for the detected server version.",
+    );
+  }
+  const response = await requestJson<readonly MastodonRelationshipResponse[]>(
+    clientFor(context, options)
+      .get("api/v1/accounts/relationships", {
+        headers: await tokenHeader(input.session, context, "account.relationships"),
+        searchParams: { "id[]": input.accountId },
+      })
+      .json(),
+    "account.relationships",
+    context,
+  );
+  if (
+    !Array.isArray(response) ||
+    response.length !== 1 ||
+    !isCompleteHolloRelationship(response[0])
+  ) {
+    throw invalidRemoteResponse("Hollo relationship response is malformed.", {
+      context,
+      operation: "account.relationships",
+      raw: response,
+    });
+  }
+  const relationship = relationshipFromResponse(response[0], context);
+  if (relationship.account.rawId !== input.accountId) {
+    throw invalidRemoteResponse(
+      "Hollo relationship response does not match the requested account.",
+      {
+        context,
+        operation: "account.relationships",
+        raw: response,
+      },
+    );
+  }
+  return relationship;
+}
+
+function isCompleteHolloRelationship(value: unknown): value is MastodonRelationshipResponse {
+  return holloRelationshipSchema.safeParse(value).success;
+}
 
 async function holloUnreadCount(
   input: NotificationUnreadCountInput,
@@ -402,6 +481,50 @@ function unsupportedHolloOperation(
     operation,
     capability: capabilityName,
   });
+}
+
+function holloVersionCapability(
+  version: string | undefined,
+  minimum: readonly [number, number, number],
+  feature: string,
+) {
+  const parsed = parseStableVersion(version);
+  const minimumVersion = minimum.join(".");
+  if (parsed === undefined) {
+    return capability(
+      "unknown",
+      `Cannot verify ${feature} without a stable Hollo version.`,
+      undefined,
+      { software: { minimum: minimumVersion } },
+    );
+  }
+  return capability(
+    versionAtLeast(parsed, minimum) ? "supported" : "unsupported",
+    `Hollo ${minimumVersion} or newer is required for ${feature}.`,
+    undefined,
+    { software: { minimum: minimumVersion } },
+  );
+}
+
+function parseStableVersion(
+  version: string | undefined,
+): readonly [number, number, number] | undefined {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version ?? "");
+  if (match === null) return undefined;
+  const parsed = [Number(match[1]), Number(match[2]), Number(match[3])] as const;
+  return parsed.every(Number.isSafeInteger) ? parsed : undefined;
+}
+
+function versionAtLeast(
+  actual: readonly [number, number, number],
+  minimum: readonly [number, number, number],
+): boolean {
+  for (let index = 0; index < actual.length; index += 1) {
+    const actualPart = actual[index] ?? 0;
+    const minimumPart = minimum[index] ?? 0;
+    if (actualPart !== minimumPart) return actualPart > minimumPart;
+  }
+  return true;
 }
 
 async function holloReaction(

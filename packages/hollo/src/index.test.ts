@@ -7,71 +7,204 @@ import {
 import { accountMappingFixtures } from "@activityplug/test-fixtures";
 import { describe, expect, it } from "vitest";
 
-import { createHolloAdapter } from "./index.js";
+import { createHolloAdapter, holloDetectedCapabilities } from "./index.js";
 
 describe("Hollo adapter", () => {
+  it("declares every supported post creation input", () => {
+    const postCreate = createHolloAdapter().metadata.staticCapabilities["posts.create"];
+
+    expect(postCreate.status).toBe("supported");
+    expect(postCreate.constraints?.acceptedInputs).toEqual([
+      "content",
+      "summary",
+      "sensitive",
+      "visibility.public",
+      "visibility.unlisted",
+      "visibility.followers",
+      "visibility.direct",
+    ]);
+  });
+
+  it("maps the Hollo relationship endpoint without fabricating absent state", async () => {
+    const accountId = "00000000-0000-4000-8000-000000004411";
+    const adapter = createHolloAdapter();
+    const client = createActivityPlugClient({
+      adapter,
+      origin: "https://hollo.example",
+      capabilities: createCapabilitySet({
+        ...adapter.metadata.staticCapabilities,
+        ...holloDetectedCapabilities({ name: "hollo", version: "0.9.8" }),
+      }),
+      fetch: mockFetch(async (request) => {
+        const url = new URL(request.url);
+        expect(url.pathname).toBe("/api/v1/accounts/relationships");
+        expect(url.searchParams.getAll("id[]")).toEqual([accountId]);
+        expect(request.headers.get("Authorization")).toBe("Bearer token-1");
+        return jsonResponse([
+          {
+            id: accountId,
+            following: true,
+            followed_by: true,
+            requested: false,
+            blocking: true,
+            blocked_by: false,
+            muting: true,
+            muting_notifications: true,
+            domain_blocking: false,
+            showing_reblogs: false,
+            notifying: true,
+          },
+        ]);
+      }),
+    });
+    const session = await client.auth.injectToken({ accessToken: "token-1" });
+
+    await expect(
+      client.social.relationship({
+        session,
+        accountId: createEntityRef({
+          adapter: "hollo",
+          origin: "https://hollo.example",
+          type: "account",
+          id: accountId,
+        }).id,
+      }),
+    ).resolves.toMatchObject({
+      account: { rawId: accountId },
+      following: true,
+      followedBy: true,
+      requested: false,
+      blocking: true,
+      blockedBy: false,
+      muting: true,
+      mutingNotifications: true,
+      domainBlocking: false,
+      showingReblogs: false,
+      notifying: true,
+    });
+  });
+
+  it("rejects Hollo relationship responses with missing state", async () => {
+    const accountId = "00000000-0000-4000-8000-000000004411";
+    const adapter = createHolloAdapter();
+    const client = createActivityPlugClient({
+      adapter,
+      origin: "https://hollo.example",
+      capabilities: createCapabilitySet({
+        ...adapter.metadata.staticCapabilities,
+        ...holloDetectedCapabilities({ name: "hollo", version: "0.9.8" }),
+      }),
+      fetch: mockFetch(async () => jsonResponse([{ id: accountId }])),
+    });
+    const session = await client.auth.injectToken({ accessToken: "token-1" });
+
+    await expect(
+      client.social.relationship({
+        session,
+        accountId: createEntityRef({
+          adapter: "hollo",
+          origin: "https://hollo.example",
+          type: "account",
+          id: accountId,
+        }).id,
+      }),
+    ).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { operation: "account.relationships" },
+    });
+  });
+
+  it("surfaces Hollo relationship endpoint failures as typed remote errors", async () => {
+    const accountId = "00000000-0000-4000-8000-000000004411";
+    const adapter = createHolloAdapter();
+    const client = createActivityPlugClient({
+      adapter,
+      origin: "https://hollo.example",
+      capabilities: createCapabilitySet({
+        ...adapter.metadata.staticCapabilities,
+        ...holloDetectedCapabilities({ name: "hollo", version: "0.9.8" }),
+      }),
+      fetch: mockFetch(async () => jsonResponse({ error: "Record not found" }, 404)),
+    });
+    const session = await client.auth.injectToken({ accessToken: "token-1" });
+
+    await expect(
+      client.social.relationship({
+        session,
+        accountId: createEntityRef({
+          adapter: "hollo",
+          origin: "https://hollo.example",
+          type: "account",
+          id: accountId,
+        }).id,
+      }),
+    ).rejects.toMatchObject({
+      code: "NOT_FOUND",
+      context: { operation: "account.relationships" },
+    });
+  });
+
   it("reuses Mastodon-compatible account and post mapping with Hollo metadata", async () => {
     const createRequests: Record<string, unknown>[] = [];
     const client = createActivityPlugClient({
-      adapter: createHolloAdapter({
-        fetch: mockFetch(async (request) => {
-          const url = new URL(request.url);
-          if (url.pathname === "/api/v1/accounts/lookup") return holloAccount();
-          if (url.pathname === "/api/v1/accounts/hollo-109") return holloAccount();
-          if (url.pathname === "/api/v1/accounts/hollo-109/statuses") {
-            return jsonResponse([accountMappingFixtures.hollo.post]);
-          }
-          if (url.pathname === "/api/v1/statuses") {
-            const body = (await request.json()) as Record<string, unknown>;
-            createRequests.push(body);
-            return jsonResponse(
-              body["quoted_status_id"] === "hollo-900"
-                ? { ...accountMappingFixtures.hollo.post, quote_id: "hollo-900" }
-                : accountMappingFixtures.hollo.post,
-            );
-          }
-          if (url.pathname === "/api/v1/statuses/hollo-900/react/like") {
-            expect(request.method).toBe("POST");
-            expect(request.headers.get("Authorization")).toBe("Bearer token-1");
-            return jsonResponse({});
-          }
-          if (url.pathname === "/api/v1/statuses/hollo-900") {
-            return jsonResponse(accountMappingFixtures.hollo.post);
-          }
-          if (url.pathname === "/api/v2/notifications/unread_count") {
-            expect(request.headers.get("Authorization")).toBe("Bearer token-1");
-            return jsonResponse({ count: 3 });
-          }
-          if (url.pathname === "/api/v1/follow_requests") {
-            expect(request.headers.get("Authorization")).toBe("Bearer token-1");
-            return jsonResponse([accountMappingFixtures.hollo.account]);
-          }
-          if (url.pathname === "/api/v1/follow_requests/hollo-109/authorize") {
-            expect(request.headers.get("Authorization")).toBe("Bearer token-1");
-            return jsonResponse({
-              id: "hollo-109",
-              following: false,
-              followed_by: true,
-              requested: false,
-              blocking: false,
-              muting: false,
-            });
-          }
-          if (url.pathname === "/api/v1/follow_requests/hollo-109/reject") {
-            expect(request.headers.get("Authorization")).toBe("Bearer token-1");
-            return jsonResponse({
-              id: "hollo-109",
-              following: false,
-              followed_by: false,
-              requested: false,
-              blocking: false,
-              muting: false,
-            });
-          }
-          return jsonResponse({ error: "unexpected request" }, 404);
-        }),
-      }),
+      adapter: createHolloAdapter(),
       origin: "https://hollo.example",
+      fetch: mockFetch(async (request) => {
+        const url = new URL(request.url);
+        if (url.pathname === "/api/v1/accounts/lookup") return holloAccount();
+        if (url.pathname === "/api/v1/accounts/hollo-109") return holloAccount();
+        if (url.pathname === "/api/v1/accounts/hollo-109/statuses") {
+          return jsonResponse([accountMappingFixtures.hollo.post]);
+        }
+        if (url.pathname === "/api/v1/statuses") {
+          const body = (await request.json()) as Record<string, unknown>;
+          createRequests.push(body);
+          return jsonResponse(
+            body["quoted_status_id"] === "hollo-900"
+              ? { ...accountMappingFixtures.hollo.post, quote_id: "hollo-900" }
+              : accountMappingFixtures.hollo.post,
+          );
+        }
+        if (url.pathname === "/api/v1/statuses/hollo-900/react/like") {
+          expect(request.method).toBe("POST");
+          expect(request.headers.get("Authorization")).toBe("Bearer token-1");
+          return jsonResponse({});
+        }
+        if (url.pathname === "/api/v1/statuses/hollo-900") {
+          return jsonResponse(accountMappingFixtures.hollo.post);
+        }
+        if (url.pathname === "/api/v2/notifications/unread_count") {
+          expect(request.headers.get("Authorization")).toBe("Bearer token-1");
+          return jsonResponse({ count: 3 });
+        }
+        if (url.pathname === "/api/v1/follow_requests") {
+          expect(request.headers.get("Authorization")).toBe("Bearer token-1");
+          return jsonResponse([accountMappingFixtures.hollo.account]);
+        }
+        if (url.pathname === "/api/v1/follow_requests/hollo-109/authorize") {
+          expect(request.headers.get("Authorization")).toBe("Bearer token-1");
+          return jsonResponse({
+            id: "hollo-109",
+            following: false,
+            followed_by: true,
+            requested: false,
+            blocking: false,
+            muting: false,
+          });
+        }
+        if (url.pathname === "/api/v1/follow_requests/hollo-109/reject") {
+          expect(request.headers.get("Authorization")).toBe("Bearer token-1");
+          return jsonResponse({
+            id: "hollo-109",
+            following: false,
+            followed_by: false,
+            requested: false,
+            blocking: false,
+            muting: false,
+          });
+        }
+        return jsonResponse({ error: "unexpected request" }, 404);
+      }),
     });
 
     const account = await client.accounts.getByHandle({ handle: "@alice@hollo.example" });
@@ -104,7 +237,7 @@ describe("Hollo adapter", () => {
     expect(client.capabilities["posts.reply"]).toMatchObject({ status: "supported" });
     expect(client.capabilities["polls.create"]).toMatchObject({ status: "supported" });
     expect(client.capabilities["posts.quote"]).toMatchObject({ status: "supported" });
-    expect(client.capabilities["accounts.relationships"]).toMatchObject({ status: "unsupported" });
+    expect(client.capabilities["accounts.relationships"]).toMatchObject({ status: "unknown" });
     expect(client.capabilities["notifications.unreadCount"]).toMatchObject({
       status: "supported",
     });
@@ -171,7 +304,7 @@ describe("Hollo adapter", () => {
       client.posts.create({
         session,
         content: "Poll",
-        poll: { options: ["Yes", "No"] },
+        poll: { options: ["Yes", "No"], expiresInSeconds: 3600 },
       }),
     ).resolves.toMatchObject({ ref: { rawId: "hollo-900" } });
     await expect(
@@ -201,7 +334,7 @@ describe("Hollo adapter", () => {
     ]);
     let relationshipError: unknown;
     try {
-      client.social.relationship({
+      await client.social.relationship({
         session,
         accountId: createEntityRef({
           adapter: "hollo",
@@ -221,16 +354,15 @@ describe("Hollo adapter", () => {
 
   it("rejects malformed Mastodon-compatible quote payloads", async () => {
     const client = createActivityPlugClient({
-      adapter: createHolloAdapter({
-        fetch: mockFetch(async (request) => {
-          const url = new URL(request.url);
-          if (url.pathname === "/api/v1/accounts/hollo-109/statuses") {
-            return jsonResponse([{ ...accountMappingFixtures.hollo.post, quote: "invalid" }]);
-          }
-          return jsonResponse({ error: "unexpected request" }, 404);
-        }),
-      }),
+      adapter: createHolloAdapter(),
       origin: "https://hollo.example",
+      fetch: mockFetch(async (request) => {
+        const url = new URL(request.url);
+        if (url.pathname === "/api/v1/accounts/hollo-109/statuses") {
+          return jsonResponse([{ ...accountMappingFixtures.hollo.post, quote: "invalid" }]);
+        }
+        return jsonResponse({ error: "unexpected request" }, 404);
+      }),
     });
     const accountId = createEntityRef({
       adapter: "hollo",
@@ -247,16 +379,15 @@ describe("Hollo adapter", () => {
 
   it("wraps Hollo reaction failures as typed remote errors", async () => {
     const client = createActivityPlugClient({
-      adapter: createHolloAdapter({
-        fetch: mockFetch(async (request) => {
-          const url = new URL(request.url);
-          if (url.pathname === "/api/v1/statuses/hollo-900/react/like") {
-            return jsonResponse({ error: "upstream failed" }, 500);
-          }
-          return jsonResponse({ error: "unexpected request" }, 404);
-        }),
-      }),
+      adapter: createHolloAdapter(),
       origin: "https://hollo.example",
+      fetch: mockFetch(async (request) => {
+        const url = new URL(request.url);
+        if (url.pathname === "/api/v1/statuses/hollo-900/react/like") {
+          return jsonResponse({ error: "upstream failed" }, 500);
+        }
+        return jsonResponse({ error: "unexpected request" }, 404);
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
 
@@ -287,11 +418,13 @@ describe("Hollo adapter", () => {
       adapterId: "hollo",
       origin: "https://hollo.example",
       capabilities: createCapabilitySet(),
+      fetch: globalThis.fetch,
     };
     const session = {
       id: "session-1",
       adapter: "hollo",
       origin: "https://hollo.example",
+      strategy: "token" as const,
       scopes: [],
       capabilities: createCapabilitySet(),
     };
