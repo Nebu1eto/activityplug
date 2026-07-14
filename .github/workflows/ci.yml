@@ -1,0 +1,487 @@
+name: CI
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "26"
+  PNPM_VERSION: "11.12.0"
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm format:check
+      - run: pnpm typecheck
+      - run: pnpm --filter @activityplug/example-web-client build:server
+      - run: pnpm lint
+      - run: pnpm build
+      - run: pnpm test
+      - run: pnpm test:compose-pins
+      - run: >-
+          docker run --rm --volume "$PWD:/repo:ro" --workdir /repo
+          rhysd/actionlint:1.7.7@sha256:887a259a5a534f3c4f36cb02dca341673c6089431057242cdc931e9f133147e9
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:18.4-alpine3.24@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+        env:
+          POSTGRES_DB: activityplug
+          POSTGRES_PASSWORD: activityplug
+          POSTGRES_USER: activityplug
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U activityplug -d activityplug"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+      redis:
+        image: redis:8.8.0-alpine3.23@sha256:9d317178eceac8454a2284a9e6df2466b93c745529947f0cd42a0fa9609d7005
+        ports:
+          - 56379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test:integration
+
+  web-unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @activityplug/example-web-client test
+
+  web-dom:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @activityplug/example-web-client test:dom
+
+  web-playwright:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @activityplug/example-web-client exec playwright install --with-deps chromium
+      - run: pnpm --filter @activityplug/example-web-client test:e2e
+
+  production-compose:
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ACTIVITYPLUG_CADDY_IMAGE: caddy:2.11-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+      ACTIVITYPLUG_COOKIE_SIGNING_KEY: QWN0aXZpdHlQbHVnIENJIGNvb2tpZSBzaWduaW5nIGtleSAzMiEh
+      ACTIVITYPLUG_ALLOWED_REMOTE_ORIGINS: https://mastodon.example
+      ACTIVITYPLUG_NODE_IMAGE: node:26-alpine@sha256:e88a35be04478413b7c71c455cd9865de9b9360e1f43456be5951032d7ac1a66
+      ACTIVITYPLUG_PNPM_VERSION: "11.12.0"
+      ACTIVITYPLUG_POSTGRES_IMAGE: postgres:18.4-alpine3.24@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+      ACTIVITYPLUG_POSTGRES_PASSWORD: QWN0aXZpdHlQbHVnIENJIHBvc3RncmVzIGR1bW15IHNlY3JldCEh
+      ACTIVITYPLUG_REDIS_IMAGE: redis:8.8.0-alpine3.23@sha256:9d317178eceac8454a2284a9e6df2466b93c745529947f0cd42a0fa9609d7005
+      ACTIVITYPLUG_REDIS_PASSWORD: QWN0aXZpdHlQbHVnIENJIHJlZGlzIGR1bW15IHNlY3JldCEhISE
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Start and verify production Compose stacks
+        run: |
+          set -euo pipefail
+          assert_app_hardening() {
+            container="$1"
+            is_caddy="$2"
+            expected_user="$3"
+            test "$(docker inspect --format '{{.Config.User}}' "$container")" = "$expected_user"
+            test "$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' "$container")" = true
+            test "$(docker inspect --format '{{.HostConfig.RestartPolicy.Name}}' "$container")" = unless-stopped
+            test "$(docker inspect --format '{{.HostConfig.PidsLimit}}' "$container")" -gt 0
+            test "$(docker inspect --format '{{.HostConfig.Memory}}' "$container")" -gt 0
+            test "$(docker inspect --format '{{.HostConfig.NanoCpus}}' "$container")" -gt 0
+            docker inspect --format '{{json .HostConfig.CapDrop}}' "$container" | grep -Fq '"ALL"'
+            docker inspect --format '{{json .HostConfig.SecurityOpt}}' "$container" | grep -Fq 'no-new-privileges:true'
+            docker inspect --format '{{json .HostConfig.Tmpfs}}' "$container" | grep -Fq '"/tmp"'
+            if test "$is_caddy" = true; then
+              docker inspect --format '{{json .HostConfig.CapAdd}}' "$container" | grep -Fq 'NET_BIND_SERVICE'
+            else
+              test "$(docker inspect --format '{{json .HostConfig.CapAdd}}' "$container")" = null
+            fi
+          }
+          assert_public_browser_boundary() {
+            local certificate="$1"
+            local origin="$2"
+            local session_headers="$smoke_directory/session.headers"
+            local session_body="$smoke_directory/session.json"
+            local cookie_jar="$smoke_directory/cookies.txt"
+            local csrf_file="$smoke_directory/csrf.txt"
+            local error_body="$smoke_directory/error.json"
+            local session_status
+            local valid_status
+            local unsafe_status
+            local unlisted_status
+            session_status=$(curl --silent --show-error \
+              --cacert "$certificate" \
+              --cookie-jar "$cookie_jar" \
+              --dump-header "$session_headers" \
+              --output "$session_body" \
+              --write-out '%{http_code}' \
+              "$origin/v1/browser/session")
+            test "$session_status" = 200
+            node --input-type=module - "$session_headers" "$session_body" "$csrf_file" <<'NODE'
+          import { readFile, writeFile } from "node:fs/promises";
+
+          const [, , headersPath, bodyPath, csrfPath] = process.argv;
+          const payload = JSON.parse(await readFile(bodyPath, "utf8"));
+          const payloadKeys = Object.keys(payload).toSorted();
+          if (
+            payloadKeys.join(",") !== "authenticated,csrfToken" ||
+            payload.authenticated !== false ||
+            typeof payload.csrfToken !== "string" ||
+            payload.csrfToken.length === 0
+          ) {
+            throw new Error("anonymous browser session contract mismatch");
+          }
+          const headers = await readFile(headersPath, "utf8");
+          const setCookie = headers
+            .split(/\r?\n/u)
+            .find((line) => line.toLowerCase().startsWith("set-cookie:"));
+          if (setCookie === undefined) throw new Error("browser session cookie missing");
+          const [cookiePair, ...rawAttributes] = setCookie
+            .slice("set-cookie:".length)
+            .trim()
+            .split(";")
+            .map((part) => part.trim());
+          const attributes = new Set(rawAttributes.map((attribute) => attribute.toLowerCase()));
+          const cookieValue = cookiePair.slice("__Host-activityplug=".length);
+          const [encodedCookie, cookieSignature, extraCookiePart] = cookieValue.split(".");
+          let cookiePayload;
+          try {
+            cookiePayload = JSON.parse(Buffer.from(encodedCookie, "base64url").toString("utf8"));
+          } catch {
+            throw new Error("anonymous browser cookie mode mismatch");
+          }
+          if (
+            !cookiePair.startsWith("__Host-activityplug=") ||
+            typeof cookieSignature !== "string" ||
+            cookieSignature.length === 0 ||
+            extraCookiePart !== undefined ||
+            cookiePayload.v !== 1 ||
+            typeof cookiePayload.id !== "string" ||
+            typeof cookiePayload.createdAt !== "string" ||
+            typeof cookiePayload.expiresAt !== "string" ||
+            !attributes.has("httponly") ||
+            !attributes.has("secure") ||
+            !attributes.has("samesite=lax") ||
+            !attributes.has("path=/") ||
+            [...attributes].some((attribute) => attribute.startsWith("domain="))
+          ) {
+            throw new Error("browser session cookie hardening mismatch");
+          }
+          await writeFile(csrfPath, payload.csrfToken, { mode: 0o600 });
+          NODE
+            valid_status=$(curl --silent --show-error \
+              --cacert "$certificate" \
+              --cookie "$cookie_jar" \
+              --header 'Content-Type: application/json' \
+              --header "Origin: $origin" \
+              --header "X-ActivityPlug-CSRF: $(<"$csrf_file")" \
+              --request POST \
+              --data '{}' \
+              --output "$error_body" \
+              --write-out '%{http_code}' \
+              "$origin/v1/browser/logout")
+            test "$valid_status" = 200
+            unsafe_status=$(curl --silent --show-error \
+              --cacert "$certificate" \
+              --cookie "$cookie_jar" \
+              --header 'Content-Type: application/json' \
+              --header "Origin: $origin" \
+              --request POST \
+              --data '{}' \
+              --output "$error_body" \
+              --write-out '%{http_code}' \
+              "$origin/v1/browser/logout")
+            test "$unsafe_status" = 403
+            unlisted_status=$(curl --silent --show-error \
+              --cacert "$certificate" \
+              --cookie "$cookie_jar" \
+              --output "$error_body" \
+              --write-out '%{http_code}' \
+              "$origin/v1/browser/not-listed")
+            test "$unlisted_status" = 404
+          }
+          wait_for_durable_data_service() {
+            node --experimental-strip-types scripts/run-production-compose.ts durable up --wait "$1"
+            wait_for_public_health
+          }
+          wait_for_public_health() {
+            for _ in $(seq 1 30); do
+              if pnpm compose:health >/dev/null 2>&1; then
+                return 0
+              fi
+              sleep 1
+            done
+            echo "public durable health did not recover" >&2
+            return 1
+          }
+          assert_unready() {
+            for _ in $(seq 1 30); do
+              status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+                --cacert .dev/caddy-root.crt https://localhost:8443/health || true)
+              if test "$status" = 503; then
+                return 0
+              fi
+              sleep 1
+            done
+            echo "public durable health did not become unavailable" >&2
+            return 1
+          }
+          compose_service_container() {
+            docker ps -q \
+              --filter label=com.docker.compose.project=activityplug-durable \
+              --filter "label=com.docker.compose.service=$1"
+          }
+          postgres_sql() {
+            local container="$1"
+            local sql="$2"
+            docker exec "$container" sh -ec \
+              'PGPASSWORD="$POSTGRES_PASSWORD" exec psql \
+                --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" \
+                --no-psqlrc --no-align --tuples-only --quiet \
+                --set=ON_ERROR_STOP=1 --command "$1"' sh "$sql"
+          }
+          redis_command() {
+            local container="$1"
+            shift
+            docker exec "$container" sh -ec \
+              'exec redis-cli --no-auth-warning --raw --user default \
+                --pass "$REDIS_PASSWORD" "$@"' sh "$@"
+          }
+          smoke_directory=$(mktemp -d)
+          trap 'rm -rf "$smoke_directory"' EXIT
+          pnpm compose:up
+          wait_for_public_health
+          test -s .dev/caddy-root.crt
+          assert_public_browser_boundary .dev/caddy-root.crt https://localhost:8443
+          rm -rf "$smoke_directory"
+          trap - EXIT
+          docker network inspect activityplug-durable_product-data \
+            --format '{{.Internal}}' | grep -Fx true
+          durable_web=$(docker ps -q \
+            --filter label=com.docker.compose.project=activityplug-durable \
+            --filter label=com.docker.compose.service=web)
+          test -n "$durable_web"
+          durable_server=$(docker ps -q \
+            --filter label=com.docker.compose.project=activityplug-durable \
+            --filter label=com.docker.compose.service=server)
+          test -n "$durable_server"
+          assert_app_hardening "$durable_web" true activityplug
+          assert_app_hardening "$durable_server" false node
+          durable_web_networks=$(docker inspect \
+            --format '{{json .NetworkSettings.Networks}}' "$durable_web")
+          if grep -Fq product-data <<<"$durable_web_networks"; then
+            echo "durable web must not join the data network" >&2
+            exit 1
+          fi
+          durable_postgres=$(compose_service_container postgres)
+          durable_redis=$(compose_service_container redis)
+          test -n "$durable_postgres"
+          test -n "$durable_redis"
+          postgres_sql "$durable_postgres" \
+            "CREATE TABLE IF NOT EXISTS activityplug_compose_persistence_probe \
+              (marker text PRIMARY KEY); \
+              INSERT INTO activityplug_compose_persistence_probe(marker) \
+              VALUES ('compose-marker') ON CONFLICT (marker) DO NOTHING;" >/dev/null
+          test "$(redis_command "$durable_redis" SET \
+            activityplug:compose:persistence-probe compose-marker)" = OK
+          for service in postgres redis; do
+            node --experimental-strip-types scripts/run-production-compose.ts durable stop "$service"
+            assert_unready
+            node --experimental-strip-types scripts/run-production-compose.ts \
+              durable rm --force "$service"
+            wait_for_durable_data_service "$service"
+            durable_server_after_recovery=$(compose_service_container server)
+            test "$durable_server_after_recovery" = "$durable_server"
+            if test "$service" = postgres; then
+              durable_postgres=$(compose_service_container postgres)
+              test "$(postgres_sql "$durable_postgres" \
+                "SELECT marker FROM activityplug_compose_persistence_probe \
+                  WHERE marker = 'compose-marker';")" = compose-marker
+            else
+              durable_redis=$(compose_service_container redis)
+              test "$(redis_command "$durable_redis" GET \
+                activityplug:compose:persistence-probe)" = compose-marker
+            fi
+          done
+          smoke_directory=$(mktemp -d)
+          trap 'rm -rf "$smoke_directory"' EXIT
+          pnpm compose:memory:up
+          pnpm compose:memory:health
+          test -s .dev/caddy-memory-root.crt
+          assert_public_browser_boundary .dev/caddy-memory-root.crt https://localhost:8444
+          rm -rf "$smoke_directory"
+          trap - EXIT
+          if docker network inspect activityplug-memory_product-data >/dev/null 2>&1; then
+            echo "memory stack must not create a data network" >&2
+            exit 1
+          fi
+          memory_web=$(docker ps -q \
+            --filter label=com.docker.compose.project=activityplug-memory \
+            --filter label=com.docker.compose.service=web)
+          test -n "$memory_web"
+          memory_server=$(docker ps -q \
+            --filter label=com.docker.compose.project=activityplug-memory \
+            --filter label=com.docker.compose.service=server)
+          test -n "$memory_server"
+          assert_app_hardening "$memory_web" true activityplug
+          assert_app_hardening "$memory_server" false node
+      - name: Remove production Compose services
+        if: always()
+        run: |
+          status=0
+          node --experimental-strip-types scripts/run-production-compose.ts \
+            durable down --volumes --remove-orphans || status=1
+          node --experimental-strip-types scripts/run-production-compose.ts \
+            memory down --volumes --remove-orphans || status=1
+          for project in activityplug-durable activityplug-memory; do
+            if test -n "$(docker ps -aq \
+              --filter "label=com.docker.compose.project=$project")"; then
+              echo "$project containers remain after cleanup" >&2
+              status=1
+            fi
+          done
+          for network in \
+            activityplug-durable_product-edge \
+            activityplug-durable_product-data \
+            activityplug-memory_product-backend; do
+            if docker network inspect "$network" >/dev/null 2>&1; then
+              echo "$network remains after cleanup" >&2
+              status=1
+            fi
+          done
+          for volume in \
+            activityplug-durable_activityplug-caddy \
+            activityplug-durable_activityplug-caddy-config \
+            activityplug-durable_activityplug-postgres \
+            activityplug-durable_activityplug-redis \
+            activityplug-memory_activityplug-memory-caddy \
+            activityplug-memory_activityplug-memory-caddy-config; do
+            if docker volume inspect "$volume" >/dev/null 2>&1; then
+              echo "$volume remains after cleanup" >&2
+              status=1
+            fi
+          done
+          rm -f .dev/caddy-root.crt .dev/caddy-memory-root.crt
+          exit "$status"
+
+  package-release-gate:
+    needs: [quality, integration, web-unit, web-dom, web-playwright, production-compose]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm verify:tarballs
+
+  final-evidence:
+    needs: package-release-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ACTIVITYPLUG_CADDY_IMAGE: caddy:2.11-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+      ACTIVITYPLUG_COOKIE_SIGNING_KEY: QWN0aXZpdHlQbHVnLWNpLWNvb2tpZS1kdW1teQ
+      ACTIVITYPLUG_EVIDENCE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+      ACTIVITYPLUG_NODE_IMAGE: node:26-alpine@sha256:e88a35be04478413b7c71c455cd9865de9b9360e1f43456be5951032d7ac1a66
+      ACTIVITYPLUG_PNPM_VERSION: "11.12.0"
+      ACTIVITYPLUG_POSTGRES_IMAGE: postgres:18.4-alpine3.24@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+      ACTIVITYPLUG_POSTGRES_PASSWORD: QWN0aXZpdHlQbHVnLWNpLXBvc3RncmVzLWR1bW15
+      ACTIVITYPLUG_REDIS_IMAGE: redis:8.8.0-alpine3.23@sha256:9d317178eceac8454a2284a9e6df2466b93c745529947f0cd42a0fa9609d7005
+      ACTIVITYPLUG_REDIS_PASSWORD: QWN0aXZpdHlQbHVnLWNpLXJlZGlzLWR1bW15
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm verify:final-evidence -- --output artifacts/verification/platform-hardening.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: platform-hardening-evidence
+          path: artifacts/verification/platform-hardening.json
+          if-no-files-found: error
