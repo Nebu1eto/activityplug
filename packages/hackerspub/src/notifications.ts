@@ -15,7 +15,6 @@ import {
   encodeOperationCursor,
   postFromResponse,
   postSelection,
-  publicRelayPageInfo,
   relayPageVariables,
 } from "./mapping.js";
 import {
@@ -128,7 +127,6 @@ async function listFilteredNotifications(
         : {
             endCursor: encodeOperationCursor(endCursor, context, "notification.list"),
           }),
-      raw: lastConnection === undefined ? undefined : publicRelayPageInfo(lastConnection.pageInfo),
     },
   };
 }
@@ -248,7 +246,6 @@ function notificationConnectionFromResponse(
               "notification.list",
             ),
           }),
-      raw: publicRelayPageInfo(notifications.pageInfo),
     },
   };
 }

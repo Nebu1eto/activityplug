@@ -5,6 +5,7 @@ import {
   type Account,
   type ActivityPlugAdapter,
   type AdapterOperationContext,
+  type AuthAdapterContext,
   type AuthSession,
   type BoostPostInput,
   type CapabilityName,
@@ -19,10 +20,14 @@ import {
   type SearchInput,
   type SearchResult,
   type ReactPostInput,
+  type InjectTokenInput,
+  type StoredAuthSession,
+  type TokenSet,
   type UpdateProfileInput,
   type UploadMediaFromUrlInput,
 } from "@activityplug/core";
 
+import { finishPasskey, startEmailChallenge, startPasskey, verifyEmailChallenge } from "./auth.js";
 import { createHackersPubStaticCapabilities } from "./capabilities.js";
 import { createHackersPubPost } from "./compose.js";
 import {
@@ -30,6 +35,7 @@ import {
   actorByUuidDocument,
   deletePostDocument,
   searchActorsByHandleDocument,
+  uploadMediaDocument,
   viewerDocument,
 } from "./graphql-documents.js";
 import { getInstanceProfile } from "./instance.js";
@@ -46,7 +52,6 @@ import {
   postFromResponse,
   postNodeFromEdge,
   postSelection,
-  publicRelayPageInfo,
   relationshipFromActor,
   relayPageVariables,
   viewerAccountFromResponse,
@@ -68,7 +73,6 @@ import {
 import {
   type HackersPubAdapterOptions,
   type HackersPubActor,
-  type HackersPubMediaUploadResponse,
   type HackersPubPost,
   type HackersPubPostEdge,
   type HackersPubPostConnection,
@@ -77,6 +81,8 @@ import {
 export function createHackersPubAdapter(
   options: HackersPubAdapterOptions = {},
 ): ActivityPlugAdapter {
+  const ingestUrl = (input: UploadMediaFromUrlInput, context: AdapterOperationContext) =>
+    uploadMediaFromUrl(input, context, options);
   return {
     metadata: {
       id: "hackerspub",
@@ -90,8 +96,25 @@ export function createHackersPubAdapter(
       getProfile: async (_input, context) => getInstanceProfile(context, options),
     },
     auth: {
-      verifyCredentials: async (input, context) =>
-        verifyCredentials(input.session, context, options),
+      strategies: [
+        {
+          kind: "token",
+          importToken,
+          verifySession: async (input, context) => verifySession(input.session, context, options),
+        },
+        {
+          kind: "emailChallenge",
+          start: async (input, context) => startEmailChallenge(input, context, options),
+          verify: async (input, context) => verifyEmailChallenge(input, context, options),
+          verifySession: async (input, context) => verifySession(input.session, context, options),
+        },
+        {
+          kind: "passkey",
+          start: async (input, context) => startPasskey(input, context, options),
+          finish: async (input, context) => finishPasskey(input, context, options),
+          verifySession: async (input, context) => verifySession(input.session, context, options),
+        },
+      ],
     },
     accounts: {
       getById: async (input, context) => getActorById(input.id, context, options),
@@ -121,7 +144,7 @@ export function createHackersPubAdapter(
         listActorPosts(input.accountId, input.page, context, options, input.session),
     },
     posts: {
-      get: async (input, context) => getPostById(input.id, context, options),
+      get: async (input, context) => getPostById(input.id, context, options, input.session),
       create: async (input, context) => createHackersPubPost(input, context, options),
       update: async (_input, context) => {
         throw unsupportedPostUpdate(context, "posts.update");
@@ -129,7 +152,7 @@ export function createHackersPubAdapter(
       delete: async (input, context) => deletePost(input.id, input.session, context, options),
     },
     polls: {
-      get: async (input, context) => getPoll(input.id, context, options),
+      get: async (input, context) => getPoll(input.id, context, options, input.session),
       vote: async (input, context) => votePoll(input, context, options),
     },
     notifications: {
@@ -144,7 +167,8 @@ export function createHackersPubAdapter(
       search: async (input, context) => search(input, context, options),
     },
     media: {
-      uploadFromUrl: async (input, context) => uploadMediaFromUrl(input, context, options),
+      ingestUrl,
+      uploadFromUrl: ingestUrl,
     },
     social: {
       relationship: async (input, context) => relationship(input, context, options),
@@ -164,10 +188,10 @@ export function createHackersPubAdapter(
         reactToPost({ ..._input, emoji: "❤️" }, context, options, "social.favourite"),
       unfavourite: async (_input, context) =>
         unreactToPost({ ..._input, emoji: "❤️" }, context, options, "social.unfavourite"),
-      bookmark: async (input, context) =>
-        postMutation(input, "bookmarkPost", "post", context, options, "social.bookmark"),
-      unbookmark: async (input, context) =>
-        postMutation(input, "unbookmarkPost", "post", context, options, "social.unbookmark"),
+      bookmark: async (_input, context) =>
+        Promise.reject(unsupportedSocial(context, "social.bookmark", "social.bookmark")),
+      unbookmark: async (_input, context) =>
+        Promise.reject(unsupportedSocial(context, "social.unbookmark", "social.bookmark")),
       boost: async (input, context) => boostPost(input, context, options),
       unboost: async (input, context) => unboostPost(input, context, options),
       react: async (input, context) => reactToPost(input, context, options, "social.reaction"),
@@ -199,6 +223,21 @@ async function search(
   context: AdapterOperationContext,
   options: HackersPubAdapterOptions,
 ): Promise<SearchResult> {
+  if (input.page?.after !== undefined || input.page?.before !== undefined) {
+    const capability = hackersPubSearchCapability(input.type);
+    throw new ActivityPlugError(
+      "UNSUPPORTED_OPERATION",
+      "HackersPub search does not expose a reliable cursor.",
+      {
+        adapter: context.adapterId,
+        origin: context.origin,
+        operation: "search",
+        ...(input.type === undefined
+          ? { raw: { capabilities: searchCapabilities } }
+          : { capability }),
+      },
+    );
+  }
   if (input.resolve === true) {
     throw new ActivityPlugError(
       "UNSUPPORTED_OPERATION",
@@ -231,9 +270,12 @@ async function search(
     accounts,
     posts,
     hashtags: [],
+    pageInfo: { hasNextPage: false, hasPreviousPage: false },
     raw: { accounts, posts },
   };
 }
+
+const searchCapabilities = ["search.accounts", "search.posts", "search.hashtags"] as const;
 
 async function searchActors(
   input: SearchInput,
@@ -269,21 +311,27 @@ async function searchActors(
   return response.searchActorsByHandle.map((actor) => actorFromResponse(actor, context, operation));
 }
 
-async function verifyCredentials(
-  session: {
-    readonly tokenSet: {
-      readonly accessToken: string;
-      readonly tokenType?: string;
-      readonly expiresAt?: string;
-    };
-  },
-  context: { readonly origin: string; readonly adapterId: string },
+function importToken(input: InjectTokenInput): Promise<TokenSet> {
+  // Only token fields cross into the private token set; account and metadata stay session data.
+  return Promise.resolve({
+    accessToken: input.accessToken,
+    ...(input.tokenType === undefined ? {} : { tokenType: input.tokenType }),
+    ...(input.refreshToken === undefined ? {} : { refreshToken: input.refreshToken }),
+    ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
+    ...(input.scopes === undefined ? {} : { scopes: input.scopes }),
+  });
+}
+
+async function verifySession(
+  session: StoredAuthSession,
+  context: AuthAdapterContext,
   options: HackersPubAdapterOptions,
 ): Promise<Account> {
   const operationContext: AdapterOperationContext = {
     origin: context.origin,
     adapterId: context.adapterId,
     capabilities: createCapabilitySet(),
+    fetch: context.fetch,
   };
   assertAccessTokenFresh(session.tokenSet, operationContext, "auth.verifyCredentials");
   const headers = new Headers();
@@ -401,36 +449,28 @@ async function uploadMediaFromUrl(
       {
         adapter: context.adapterId,
         origin: context.origin,
-        operation: "media.uploadFromUrl",
-        capability: "media.remoteUrlUpload",
+        operation: "media.ingestUrl",
+        capability: "media.urlIngestion",
       },
     );
   }
-  const response = await graphql<{
-    readonly uploadMedia?: HackersPubMediaUploadResponse | null;
-  }>(
-    `
-      mutation ($input: UploadMediaInput!) {
-        uploadMedia(input: $input) {
-          url
-          width
-          height
-        }
-      }
-    `,
+  const response = await graphql(
+    uploadMediaDocument,
     { input: { mediaUrl: input.url } },
     context,
     options,
-    "media.uploadFromUrl",
+    "media.ingestUrl",
     input.session,
+    input.signal,
   );
   const uploaded = response.uploadMedia;
+  assertMutationSuccess(uploaded, "uploadMedia", "media.ingestUrl", context);
   if (!isRecord(uploaded) || !nonEmptyString(uploaded.url)) {
     throw activityPlugError(
       "REMOTE_ERROR",
       "HackersPub media upload response is malformed.",
       context,
-      "media.uploadFromUrl",
+      "media.ingestUrl",
       response,
     );
   }
@@ -533,8 +573,8 @@ async function actorMutation(
 
 async function postMutation(
   input: PostActionInput | BoostPostInput,
-  mutation: "bookmarkPost" | "unbookmarkPost" | "sharePost" | "unsharePost",
-  resultField: "post" | "originalPost" | "share",
+  mutation: "sharePost" | "unsharePost",
+  resultField: "originalPost" | "share",
   context: AdapterOperationContext,
   options: HackersPubAdapterOptions,
   operation: string,
@@ -610,7 +650,7 @@ async function reactToPost(
   operation: string,
 ): Promise<Post> {
   await reactionMutation(input, "addReactionToPost", context, options, operation);
-  return getPostById(input.postId, context, options);
+  return getPostById(input.postId, context, options, input.session, operation);
 }
 
 async function unreactToPost(
@@ -620,7 +660,7 @@ async function unreactToPost(
   operation: string,
 ): Promise<Post> {
   await reactionMutation(input, "removeReactionFromPost", context, options, operation);
-  return getPostById(input.postId, context, options);
+  return getPostById(input.postId, context, options, input.session, operation);
 }
 
 async function reactionMutation(
@@ -656,7 +696,7 @@ async function reactionMutation(
       operation,
       input.session,
     );
-    assertMutationSuccess(response[mutation], mutation, operation, context, response);
+    assertMutationSuccess(response[mutation], mutation, operation, context);
   });
 }
 
@@ -676,7 +716,7 @@ async function deletePost(
       session,
     );
     const deleted = response.deletePost;
-    assertMutationSuccess(deleted, "deletePost", "post.delete", context, response);
+    assertMutationSuccess(deleted, "deletePost", "post.delete", context);
     if (!isRecord(deleted) || !nonEmptyString(deleted.deletedPostId)) {
       throw activityPlugError(
         "REMOTE_ERROR",
@@ -854,7 +894,6 @@ async function listActorPosts(
       ...(posts.pageInfo?.endCursor === null || posts.pageInfo?.endCursor === undefined
         ? {}
         : { endCursor: encodeAccountPostsCursor(posts.pageInfo.endCursor, context) }),
-      raw: publicRelayPageInfo(posts.pageInfo),
     },
   };
 }
@@ -944,7 +983,6 @@ async function listActorConnections(
               operation,
             ),
           }),
-      raw: publicRelayPageInfo(actorConnection.pageInfo),
     },
   };
 }
@@ -1190,7 +1228,6 @@ async function listPostConnection(
         : {
             endCursor: encodeOperationCursor(postConnection.pageInfo.endCursor, context, operation),
           }),
-      raw: publicRelayPageInfo(postConnection.pageInfo),
     },
   };
 }

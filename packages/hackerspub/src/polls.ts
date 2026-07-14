@@ -1,4 +1,9 @@
-import { type AdapterOperationContext, type Poll, type VotePollInput } from "@activityplug/core";
+import {
+  type AdapterOperationContext,
+  type AuthSession,
+  type Poll,
+  type VotePollInput,
+} from "@activityplug/core";
 
 import { pollFromResponse } from "./mapping.js";
 import { authorizationHeader, clientFor, requestJson } from "./transport.js";
@@ -8,10 +13,16 @@ export async function getPoll(
   id: string,
   context: AdapterOperationContext,
   options: HackersPubAdapterOptions,
+  session?: AuthSession,
 ): Promise<Poll> {
   const poll = await requestJson<HackersPubPoll>(
     clientFor(context, options)
-      .get(`api/posts/${encodeURIComponent(id)}/poll`)
+      .get(
+        `api/posts/${encodeURIComponent(id)}/poll`,
+        session === undefined
+          ? undefined
+          : { headers: await authorizationHeader(session, context, "poll.get") },
+      )
       .json(),
     context,
     "poll.get",

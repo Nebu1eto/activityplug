@@ -10,7 +10,7 @@ import {
 } from "@activityplug/core";
 
 import { encodeBase64Utf8 } from "./base64.js";
-import { postGlobalIdDocument } from "./graphql-documents.js";
+import { createNoteDocument, postGlobalIdDocument } from "./graphql-documents.js";
 import { assertMutationSuccess, postFromMutationPayload } from "./mapping.js";
 import {
   activityPlugError,
@@ -76,25 +76,8 @@ export async function createHackersPubPost(
       },
     );
   }
-  const response = await graphql<Record<string, unknown>>(
-    `
-      mutation ($input: CreateNoteInput!) {
-        createNote(input: $input) {
-          __typename
-          ... on CreateNotePayload {
-            note {
-              ${notePostSelection()}
-            }
-          }
-          ... on InvalidInputError {
-            inputPath
-          }
-          ... on NotAuthenticatedError {
-            __typename
-          }
-        }
-      }
-    `,
+  const response = await graphql(
+    createNoteDocument,
     {
       input: {
         content: input.content,
@@ -127,7 +110,7 @@ export async function createHackersPubPost(
     "post.create",
     input.session,
   );
-  assertMutationSuccess(response["createNote"], "createNote", "post.create", context, response);
+  assertMutationSuccess(response["createNote"], "createNote", "post.create", context);
   const post = postFromMutationPayload(response, "createNote", "note", context, "post.create");
   const normalized = postFromResponse(post, context, "post.create");
   if (input.quoteOfId !== undefined && normalized.quoteOf?.rawId !== input.quoteOfId) {
@@ -198,7 +181,18 @@ function hackersPubVisibilityInput(
   if (visibility === "unlisted") return "UNLISTED";
   if (visibility === "followers") return "FOLLOWERS";
   if (visibility === "direct") return "DIRECT";
-  if (visibility === "none") return "NONE";
+  if (visibility === "none") {
+    throw new ActivityPlugError(
+      "UNSUPPORTED_OPERATION",
+      "HackersPub NONE visibility is reserved for internally hidden posts.",
+      {
+        adapter: context.adapterId,
+        origin: context.origin,
+        operation: "post.create",
+        capability: "posts.create",
+      },
+    );
+  }
   throw new ActivityPlugError(
     "VALIDATION_FAILED",
     "The requested visibility cannot be represented by this adapter.",
@@ -209,49 +203,6 @@ function hackersPubVisibilityInput(
       raw: { visibility },
     },
   );
-}
-
-function notePostSelection(): string {
-  return `
-    id
-    uuid
-    iri
-    url
-    content
-    summary
-    visibility
-    sensitive
-    published
-    replyTarget {
-      id
-      uuid
-      iri
-      url
-    }
-    quotedPost {
-      id
-      uuid
-      iri
-      url
-    }
-    sharedPost {
-      id
-      uuid
-      iri
-      url
-    }
-    actor {
-      id
-      uuid
-      iri
-      username
-      handle
-      rawName
-      name
-      avatarUrl
-      created
-    }
-  `;
 }
 
 async function firstPostGlobalId(

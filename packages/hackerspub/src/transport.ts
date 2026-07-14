@@ -1,15 +1,18 @@
 import {
   ActivityPlugError,
+  isAuthStrategyKind,
+  readBoundedResponseText,
   type ActivityPlugErrorCode,
   createEntityRef,
   remoteHttpErrorCodeForStatus,
   type AdapterOperationContext,
   type AuthSession,
+  type MediaAttachment,
   type Post,
 } from "@activityplug/core";
-import { createClient, fetchExchange, type TypedDocumentNode } from "@urql/core";
-import { graphql as gqlTada, type TadaDocumentNode } from "gql.tada";
+import { createClient, fetchExchange, gql, type TypedDocumentNode } from "@urql/core";
 import ky, { HTTPError, TimeoutError, type KyInstance } from "ky";
+import { z } from "zod";
 
 import { encodeBase64Utf8 } from "./base64.js";
 import { actorFromResponse, pollFromResponse } from "./mapping.js";
@@ -17,12 +20,14 @@ import {
   type HackersPubActor,
   type HackersPubAdapterOptions,
   type HackersPubPost,
+  type HackersPubPostMedium,
 } from "./types.js";
 
 const hackersPubGraphQLTimeoutMs = 10_000;
 const graphQLOperationDefinitionKind: unknown = "OperationDefinition";
 const graphQLMutationOperation: unknown = "mutation";
 const graphQLResponseBodies = new WeakMap<Response, string>();
+const remoteErrorDiagnosticBytes = 8 * 1024;
 
 export function postFromResponse(
   response: HackersPubPost,
@@ -69,6 +74,15 @@ export function postFromResponse(
   }
   const iri = optionalString(post.iri, "iri", post, context, operation);
   const postUrl = optionalString(post.url, "url", post, context, operation);
+  if (!Array.isArray(post.media)) {
+    throw activityPlugError(
+      "REMOTE_ERROR",
+      "HackersPub post response includes malformed media.",
+      context,
+      operation,
+      post,
+    );
+  }
   return {
     ref: createEntityRef({
       adapter: context.adapterId,
@@ -86,7 +100,7 @@ export function postFromResponse(
     ),
     sensitive: optionalBoolean(post.sensitive, "sensitive", post, context, operation) ?? false,
     ...optionalStringAsField(post.summary, "summary", "summary", post, context, operation),
-    media: [],
+    media: post.media.map((medium) => mediaFromResponse(medium, context, operation)),
     ...(post.poll === null || post.poll === undefined
       ? {}
       : {
@@ -108,6 +122,76 @@ export function postFromResponse(
       : { boostOf: postRelationshipRef(post.sharedPost, context, operation, "sharedPost") }),
     raw: post,
   };
+}
+
+function mediaFromResponse(
+  response: HackersPubPostMedium,
+  context: AdapterOperationContext,
+  operation: string,
+): MediaAttachment {
+  if (
+    !isRecord(response) ||
+    !nonEmptyString(response.id) ||
+    !nonEmptyString(response.type) ||
+    !nonEmptyString(response.url) ||
+    typeof response.sensitive !== "boolean"
+  ) {
+    throw activityPlugError(
+      "REMOTE_ERROR",
+      "HackersPub post media response is missing required fields.",
+      context,
+      operation,
+      response,
+    );
+  }
+  const width = optionalPositiveInteger(response.width, "width", response, context, operation);
+  const height = optionalPositiveInteger(response.height, "height", response, context, operation);
+  const previewUrl = optionalString(
+    response.thumbnailUrl,
+    "thumbnailUrl",
+    response,
+    context,
+    operation,
+  );
+  const description = optionalString(response.alt, "alt", response, context, operation);
+  return {
+    ref: createEntityRef({
+      adapter: context.adapterId,
+      origin: context.origin,
+      type: "media",
+      id: response.id,
+      rawUrl: response.url,
+    }),
+    type: response.type.startsWith("image/")
+      ? "image"
+      : response.type.startsWith("video/")
+        ? "video"
+        : "unknown",
+    url: response.url,
+    ...(previewUrl === undefined ? {} : { previewUrl }),
+    ...(description === undefined ? {} : { description }),
+    ...(width === undefined ? {} : { width }),
+    ...(height === undefined ? {} : { height }),
+    raw: response,
+  };
+}
+
+function optionalPositiveInteger(
+  value: unknown,
+  field: string,
+  raw: unknown,
+  context: AdapterOperationContext,
+  operation: string,
+): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+  throw activityPlugError(
+    "REMOTE_ERROR",
+    `HackersPub post media response includes malformed ${field}.`,
+    context,
+    operation,
+    raw,
+  );
 }
 
 function postRelationshipRef(
@@ -169,7 +253,7 @@ export async function authorizationHeader(
   operation: string,
 ): Promise<Headers> {
   const stored = await context.sessionStore?.get(session.id);
-  if (stored === undefined || stored === null) {
+  if (stored === undefined || stored === null || !isAuthStrategyKind(stored.strategy)) {
     throw new ActivityPlugError("AUTH_REQUIRED", "Auth session is not available.", {
       adapter: context.adapterId,
       origin: context.origin,
@@ -212,12 +296,13 @@ export async function graphql<
   T,
   Variables extends Readonly<Record<string, unknown>> = Readonly<Record<string, unknown>>,
 >(
-  document: string | TadaDocumentNode<T, Variables>,
+  document: string | TypedDocumentNode<T, Variables>,
   variables: Variables,
   context: AdapterOperationContext,
   options: HackersPubAdapterOptions,
   operation: string,
   sessionOrHeaders?: AuthSession | Headers,
+  signal?: AbortSignal,
 ): Promise<T> {
   try {
     const headers =
@@ -233,6 +318,7 @@ export async function graphql<
       options,
       operation,
       headers,
+      signal,
     );
     const { payload, result } = execution;
     if (
@@ -261,6 +347,9 @@ export async function graphql<
     }
     return result.data;
   } catch (cause) {
+    if (signal?.aborted === true) {
+      throw signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
+    }
     if (cause instanceof ActivityPlugError) throw cause;
     if (cause instanceof SyntaxError) {
       throw activityPlugError(
@@ -285,8 +374,8 @@ export async function graphql<
 
 export function hackersPubGraphQL<T, Variables extends Readonly<Record<string, unknown>>>(
   query: string,
-): TadaDocumentNode<T, Variables> {
-  return gqlTada(query as never) as TadaDocumentNode<T, Variables>;
+): TypedDocumentNode<T, Variables> {
+  return gql<T, Variables>(query);
 }
 
 function handleGraphQLError(
@@ -359,12 +448,13 @@ function handleGraphQLError(
 }
 
 async function executeGraphQL<T, Variables extends Readonly<Record<string, unknown>>>(
-  document: TadaDocumentNode<T, Variables>,
+  document: TypedDocumentNode<T, Variables>,
   variables: Variables,
   context: AdapterOperationContext,
   options: HackersPubAdapterOptions,
   operation: string,
   headers: Headers | undefined,
+  signal: AbortSignal | undefined,
 ) {
   let payload: Record<string, unknown> | undefined;
   const fetchHeaders = new Headers(headers);
@@ -374,19 +464,24 @@ async function executeGraphQL<T, Variables extends Readonly<Record<string, unkno
     exchanges: [fetchExchange],
     requestPolicy: "network-only",
     preferGetMethod: false,
-    fetch: graphQLFetch(context, options, operation, (nextPayload) => {
-      payload = nextPayload;
-    }),
+    fetch: graphQLFetch(
+      context,
+      options,
+      operation,
+      (nextPayload) => {
+        payload = nextPayload;
+      },
+      signal,
+    ),
     fetchOptions: {
       redirect: "manual",
       headers: fetchHeaders,
     },
   });
-  const urqlDocument = document as TypedDocumentNode<T, Variables>;
   const result =
     operationKind(document) === "mutation"
-      ? await client.mutation(urqlDocument, variables).toPromise()
-      : await client.query(urqlDocument, variables).toPromise();
+      ? await client.mutation(document, variables).toPromise()
+      : await client.query(document, variables).toPromise();
   return { payload, result };
 }
 
@@ -412,16 +507,21 @@ function isAbortError(error: Error): boolean {
 
 function graphQLFetch(
   context: AdapterOperationContext,
-  options: HackersPubAdapterOptions,
+  _options: HackersPubAdapterOptions,
   operation: string,
   onPayload: (payload: Record<string, unknown>) => void,
+  operationSignal?: AbortSignal,
 ): typeof fetch {
-  const fetcher = timeoutFetch(baseFetch(options));
+  const fetcher = timeoutFetch(requireContextFetch(context));
   return async (input, init) => {
-    const response = await fetcher(input, init);
-    const body = await response.clone().text();
-    graphQLResponseBodies.set(response, body);
+    const signal = combineAbortSignals(init?.signal, operationSignal);
+    const response = await fetcher(input, {
+      ...init,
+      ...(signal === undefined ? {} : { signal }),
+    });
     if (!response.ok) {
+      const body = await safeDiagnosticText(response);
+      if (body !== undefined) graphQLResponseBodies.set(response, body);
       throw activityPlugError(
         errorCodeForStatus(response.status),
         `HackersPub request failed with HTTP ${response.status}.`,
@@ -429,14 +529,36 @@ function graphQLFetch(
         operation,
         {
           status: response.status,
-          body,
+          ...(body === undefined ? {} : { body }),
         },
       );
     }
+    const body = await response.clone().text();
+    graphQLResponseBodies.set(response, body);
     if (response.ok) onPayload(validateGraphQLEnvelope(body, context, operation));
     return response;
   };
 }
+
+function combineAbortSignals(
+  requestSignal: AbortSignal | null | undefined,
+  operationSignal: AbortSignal | undefined,
+): AbortSignal | undefined {
+  if (requestSignal === null || requestSignal === undefined) return operationSignal;
+  if (operationSignal === undefined) return requestSignal;
+  return AbortSignal.any([requestSignal, operationSignal]);
+}
+
+async function safeDiagnosticText(response: Response): Promise<string | undefined> {
+  try {
+    return await readBoundedResponseText(response, remoteErrorDiagnosticBytes);
+  } catch {
+    return undefined;
+  }
+}
+
+const optionalGraphQLErrors = z.array(z.unknown()).optional();
+const graphQLErrorEntries = z.array(z.looseObject({ message: z.string().optional() }));
 
 function validateGraphQLEnvelope(
   body: string,
@@ -464,7 +586,7 @@ function validateGraphQLEnvelope(
       payload,
     );
   }
-  if (payload["errors"] !== undefined && !Array.isArray(payload["errors"])) {
+  if (!optionalGraphQLErrors.safeParse(payload["errors"]).success) {
     throw activityPlugError(
       "REMOTE_ERROR",
       "HackersPub GraphQL errors field was malformed.",
@@ -484,11 +606,7 @@ function validateGraphQLEnvelope(
   }
   if (
     Array.isArray(payload["errors"]) &&
-    payload["errors"].some(
-      (error) =>
-        !isRecord(error) ||
-        (error["message"] !== undefined && typeof error["message"] !== "string"),
-    )
+    !graphQLErrorEntries.safeParse(payload["errors"]).success
   ) {
     throw activityPlugError(
       "REMOTE_ERROR",
@@ -499,29 +617,6 @@ function validateGraphQLEnvelope(
     );
   }
   return payload;
-}
-
-function baseFetch(options: HackersPubAdapterOptions): typeof fetch {
-  if (options.httpClient === undefined) return options.fetch ?? globalThis.fetch;
-  const httpClient = options.httpClient;
-  return async (input, init) => {
-    const request = new Request(input, init);
-    const body =
-      request.method === "GET" || request.method === "HEAD" ? undefined : await request.text();
-    return httpClient(relativeHackersPubPath(request), {
-      method: request.method,
-      headers: request.headers,
-      signal: request.signal,
-      throwHttpErrors: false,
-      timeout: false,
-      ...(body === undefined ? {} : { body }),
-    });
-  };
-}
-
-function relativeHackersPubPath(request: Request): string {
-  const url = new URL(request.url);
-  return `${url.pathname.replace(/^\//u, "")}${url.search}`;
 }
 
 function timeoutFetch(fetcher: typeof fetch): typeof fetch {
@@ -607,8 +702,10 @@ export async function requestJson<T>(
   }
 }
 
+const jsonRecord = z.looseObject({});
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return jsonRecord.safeParse(value).success;
 }
 
 export function assertSelectedField(
@@ -660,11 +757,12 @@ export function validatedRemoteId(
   return undefined;
 }
 
-function isUuidString(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value)
-  );
+const uuidString = z
+  .string()
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu);
+
+export function isUuidString(value: unknown): value is string {
+  return uuidString.safeParse(value).success;
 }
 
 export function optionalString(
@@ -703,18 +801,15 @@ function optionalBoolean(
   );
 }
 
+const pageInfo = z.looseObject({
+  hasNextPage: z.boolean(),
+  hasPreviousPage: z.boolean(),
+  startCursor: z.union([z.string(), z.null()]).optional(),
+  endCursor: z.union([z.string(), z.null()]).optional(),
+});
+
 export function validPageInfo(value: unknown): boolean {
-  if (!isRecord(value)) return false;
-  return (
-    typeof value.hasNextPage === "boolean" &&
-    typeof value.hasPreviousPage === "boolean" &&
-    (value.startCursor === undefined ||
-      value.startCursor === null ||
-      typeof value.startCursor === "string") &&
-    (value.endCursor === undefined ||
-      value.endCursor === null ||
-      typeof value.endCursor === "string")
-  );
+  return pageInfo.safeParse(value).success;
 }
 
 export function optionalStringField(
@@ -790,11 +885,22 @@ export function actorFieldsFromResponse(
 
 export function clientFor(
   context: AdapterOperationContext,
-  options: HackersPubAdapterOptions,
+  _options: HackersPubAdapterOptions,
 ): KyInstance {
-  return (
-    options.httpClient ??
-    ky.create({ prefix: context.origin, fetch: options.fetch, redirect: "manual" })
+  // All adapter traffic must cross the client-owned vetted transport boundary.
+  return ky.create({
+    prefix: context.origin,
+    fetch: requireContextFetch(context),
+    redirect: "manual",
+  });
+}
+
+function requireContextFetch(context: AdapterOperationContext): typeof globalThis.fetch {
+  if (typeof (context as { readonly fetch?: unknown }).fetch === "function") return context.fetch;
+  throw new ActivityPlugError(
+    "INTERNAL_ERROR",
+    "Adapter operation context did not provide the required vetted fetch transport.",
+    { adapter: context.adapterId, origin: context.origin, operation: "adapter.transport" },
   );
 }
 
@@ -821,7 +927,7 @@ export function errorCodeForStatus(
 
 export async function safeResponseText(response: Response): Promise<string | undefined> {
   try {
-    return await response.text();
+    return await readBoundedResponseText(response, remoteErrorDiagnosticBytes);
   } catch {
     return undefined;
   }

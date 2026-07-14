@@ -1,0 +1,227 @@
+# Captured from HackersPub commit 116001b87fcbe3bb07989d5fd7f403fc2da67bbe.
+# This compatibility fixture intentionally contains the adapter-facing schema subset.
+scalar DateTime
+scalar HTML
+scalar JSON
+scalar Locale
+scalar Markdown
+scalar MediaType
+scalar URL
+scalar UUID
+scalar URITemplate
+
+interface Node {
+  id: ID!
+}
+
+type Actor implements Node {
+  id: ID!
+  uuid: UUID!
+  iri: URL!
+  username: String!
+  handle: String!
+  rawName: String
+  name: String
+  bio: HTML
+  avatarUrl: URL!
+  headerUrl: URL
+  automaticallyApprovesFollowers: Boolean!
+  url: URL
+  published: DateTime
+  created: DateTime!
+  viewerFollows: Boolean!
+  followsViewer: Boolean!
+  viewerBlocks: Boolean!
+  fields: [ActorField!]!
+}
+
+type ActorField {
+  name: String!
+  value: HTML!
+}
+
+type Account implements Node {
+  id: ID!
+  uuid: UUID!
+  username: String!
+  name: String
+  handle: String!
+  bio: HTML
+  avatarUrl: URL!
+  created: DateTime!
+  actor: Actor!
+}
+
+interface Post implements Node {
+  id: ID!
+  uuid: UUID!
+  iri: URL!
+  url: URL
+  content: HTML!
+  summary: String
+  visibility: PostVisibility!
+  sensitive: Boolean!
+  published: DateTime!
+  media: [PostMedium!]!
+  replyTarget: Post
+  quotedPost: Post
+  sharedPost: Post
+  actor: Actor!
+}
+
+type Note implements Node & Post {
+  id: ID!
+  uuid: UUID!
+  iri: URL!
+  url: URL
+  content: HTML!
+  summary: String
+  visibility: PostVisibility!
+  sensitive: Boolean!
+  published: DateTime!
+  media: [PostMedium!]!
+  replyTarget: Post
+  quotedPost: Post
+  sharedPost: Post
+  actor: Actor!
+}
+
+type Question implements Node & Post {
+  id: ID!
+  uuid: UUID!
+  iri: URL!
+  url: URL
+  content: HTML!
+  summary: String
+  visibility: PostVisibility!
+  sensitive: Boolean!
+  published: DateTime!
+  media: [PostMedium!]!
+  replyTarget: Post
+  quotedPost: Post
+  sharedPost: Post
+  actor: Actor!
+  poll: Poll!
+}
+
+type PostMedium implements Node {
+  id: ID!
+  alt: String
+  height: Int
+  sensitive: Boolean!
+  thumbnailUrl: String
+  type: MediaType!
+  url: URL!
+  width: Int
+}
+
+type Poll {
+  id: ID!
+  ends: DateTime!
+  multiple: Boolean!
+  votes: CountConnection!
+  voters: CountConnection!
+  options: [PollOption!]!
+}
+
+type PollOption {
+  title: String!
+  votes: CountConnection!
+}
+
+type CountConnection {
+  totalCount: Int!
+}
+
+enum PostVisibility {
+  PUBLIC
+  UNLISTED
+  FOLLOWERS
+  DIRECT
+  NONE
+}
+
+type Query {
+  searchActorsByHandle(prefix: String!, limit: Int): [Actor!]!
+  viewer: Account
+  actorByUuid(uuid: UUID!): Actor
+  actorByHandle(handle: String!, allowLocalHandle: Boolean!): Actor
+  node(id: ID!): Node
+}
+
+input DeletePostInput {
+  id: ID!
+}
+
+input CreateNoteInput {
+  content: Markdown!
+  language: Locale!
+  quotedPostId: ID
+  replyTargetId: ID
+  visibility: PostVisibility!
+}
+
+type CreateNotePayload {
+  note: Note!
+}
+
+union CreateNoteResult = CreateNotePayload | InvalidInputError | NotAuthenticatedError
+
+type DeletePostPayload {
+  deletedPostId: ID!
+}
+
+type InvalidInputError {
+  inputPath: String!
+}
+
+type NotAuthenticatedError {
+  _: Boolean
+}
+
+type SharedPostDeletionNotAllowedError {
+  inputPath: String!
+}
+
+union DeletePostResult =
+  | DeletePostPayload
+  | InvalidInputError
+  | NotAuthenticatedError
+  | SharedPostDeletionNotAllowedError
+
+input UploadMediaInput {
+  mediaUrl: URL!
+}
+
+type UploadMediaPayload {
+  url: URL!
+  width: Int!
+  height: Int!
+}
+
+union UploadMediaResult = UploadMediaPayload | InvalidInputError | NotAuthenticatedError
+
+type LoginChallenge {
+  token: UUID!
+  created: DateTime!
+}
+
+type AccountNotFoundError {
+  query: String!
+}
+
+union LoginResult = LoginChallenge | AccountNotFoundError
+
+type Session {
+  id: UUID!
+}
+
+type Mutation {
+  createNote(input: CreateNoteInput!): CreateNoteResult!
+  deletePost(input: DeletePostInput!): DeletePostResult!
+  uploadMedia(input: UploadMediaInput!): UploadMediaResult!
+  loginByEmail(email: String!, locale: Locale!, verifyUrl: URITemplate!): LoginResult!
+  completeLoginChallenge(token: UUID!, code: String!): Session
+  getPasskeyAuthenticationOptions(sessionId: UUID!): JSON!
+  loginByPasskey(sessionId: UUID!, authenticationResponse: JSON!): Session
+}

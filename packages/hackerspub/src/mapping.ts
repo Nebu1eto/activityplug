@@ -13,6 +13,7 @@ import {
   type Relationship,
 } from "@activityplug/core";
 
+import { postMediumSelection } from "./graphql-documents.js";
 import {
   activityPlugError,
   actorFieldsFromResponse,
@@ -91,22 +92,6 @@ export function postNodeFromEdge(
     );
   }
   return edge.node;
-}
-
-export function publicRelayPageInfo(
-  pageInfo:
-    | {
-        readonly hasNextPage?: boolean;
-        readonly hasPreviousPage?: boolean;
-        readonly startCursor?: string | null;
-        readonly endCursor?: string | null;
-      }
-    | undefined,
-): Record<string, unknown> {
-  return {
-    hasNextPage: pageInfo?.hasNextPage ?? false,
-    hasPreviousPage: pageInfo?.hasPreviousPage ?? false,
-  };
 }
 
 export function encodeAccountPostsCursor(cursor: string, context: AdapterOperationContext): string {
@@ -201,13 +186,13 @@ export function relationshipFromActor(
 
 export function actorFromMutationPayload(
   response: Record<string, unknown>,
-  mutation: string,
+  mutation: HackersPubMutationName,
   resultField: "followee" | "blockee",
   context: AdapterOperationContext,
   operation: string,
 ): HackersPubActor {
   const result = response[mutation];
-  assertMutationSuccess(result, mutation, operation, context, response);
+  assertMutationSuccess(result, mutation, operation, context);
   if (!isRecord(result) || !isRecord(result[resultField])) {
     throw activityPlugError(
       "REMOTE_ERROR",
@@ -217,18 +202,18 @@ export function actorFromMutationPayload(
       response,
     );
   }
-  return result[resultField] as unknown as HackersPubActor;
+  return result[resultField];
 }
 
 export function postFromMutationPayload(
   response: Record<string, unknown>,
-  mutation: string,
-  resultField: "article" | "note" | "post" | "originalPost" | "share",
+  mutation: HackersPubMutationName,
+  resultField: "note" | "originalPost" | "share",
   context: AdapterOperationContext,
   operation: string,
 ): HackersPubPost {
   const result = response[mutation];
-  assertMutationSuccess(result, mutation, operation, context, response);
+  assertMutationSuccess(result, mutation, operation, context);
   if (!isRecord(result) || !isRecord(result[resultField])) {
     throw activityPlugError(
       "REMOTE_ERROR",
@@ -238,31 +223,86 @@ export function postFromMutationPayload(
       response,
     );
   }
-  return result[resultField] as unknown as HackersPubPost;
+  return result[resultField];
 }
 
 export function assertMutationSuccess(
   result: unknown,
-  mutation: string,
+  mutation: HackersPubMutationName,
   operation: string,
   context: AdapterOperationContext,
-  raw: unknown,
 ): void {
-  if (!isRecord(result)) {
-    throw activityPlugError(
-      "REMOTE_ERROR",
-      `HackersPub ${mutation} response is malformed.`,
-      context,
-      operation,
-      raw,
-    );
+  const expectedTypename = mutationSuccessTypenames[mutation];
+  const resultRecord = isRecord(result) ? result : undefined;
+  const typename =
+    resultRecord !== undefined && typeof resultRecord["__typename"] === "string"
+      ? resultRecord["__typename"]
+      : null;
+  if (typename === null || resultRecord === undefined) {
+    throw mutationProtocolError(mutation, expectedTypename, typename, context, operation);
   }
-  const typename = optionalString(result.__typename, "__typename", result, context, operation);
-  if (typename === undefined || typename.endsWith("Payload")) return;
+  if (typename === expectedTypename) return;
+  if (!mutationErrorTypenames[mutation].has(typename)) {
+    throw mutationProtocolError(mutation, expectedTypename, typename, context, operation);
+  }
   const message =
-    optionalString(result.message, "message", result, context, operation) ??
+    optionalString(resultRecord.message, "message", resultRecord, context, operation) ??
     `HackersPub ${mutation} failed with ${typename}.`;
-  throw activityPlugError(mutationErrorCode(typename), message, context, operation, result);
+  throw activityPlugError(mutationErrorCode(typename), message, context, operation, resultRecord);
+}
+
+const mutationSuccessTypenames = {
+  addReactionToPost: "AddReactionToPostPayload",
+  blockActor: "BlockActorPayload",
+  createNote: "CreateNotePayload",
+  deletePost: "DeletePostPayload",
+  followActor: "FollowActorPayload",
+  removeReactionFromPost: "RemoveReactionFromPostPayload",
+  sharePost: "SharePostPayload",
+  unblockActor: "UnblockActorPayload",
+  unfollowActor: "UnfollowActorPayload",
+  unsharePost: "UnsharePostPayload",
+  uploadMedia: "UploadMediaPayload",
+} as const;
+
+export type HackersPubMutationName = keyof typeof mutationSuccessTypenames;
+
+const commonMutationErrorTypenames: ReadonlySet<string> = new Set([
+  "InvalidInputError",
+  "NotAuthenticatedError",
+]);
+
+const mutationErrorTypenames: Readonly<Record<HackersPubMutationName, ReadonlySet<string>>> = {
+  addReactionToPost: commonMutationErrorTypenames,
+  blockActor: commonMutationErrorTypenames,
+  createNote: commonMutationErrorTypenames,
+  deletePost: new Set([...commonMutationErrorTypenames, "SharedPostDeletionNotAllowedError"]),
+  followActor: commonMutationErrorTypenames,
+  removeReactionFromPost: commonMutationErrorTypenames,
+  sharePost: commonMutationErrorTypenames,
+  unblockActor: commonMutationErrorTypenames,
+  unfollowActor: commonMutationErrorTypenames,
+  unsharePost: commonMutationErrorTypenames,
+  uploadMedia: commonMutationErrorTypenames,
+};
+
+function mutationProtocolError(
+  mutation: HackersPubMutationName,
+  expectedTypename: string,
+  receivedTypename: string | null,
+  context: AdapterOperationContext,
+  operation: string,
+): ActivityPlugError {
+  return activityPlugError(
+    "REMOTE_PROTOCOL_ERROR",
+    `HackersPub ${mutation} returned an unexpected payload type.`,
+    context,
+    operation,
+    {
+      expectedTypename,
+      receivedTypename: receivedTypename?.slice(0, 128) ?? null,
+    },
+  );
 }
 
 export function mutationErrorCode(
@@ -464,6 +504,9 @@ export function postSelection(): string {
     visibility
     sensitive
     published
+    media {
+      ${postMediumSelection}
+    }
     replyTarget {
       id
       uuid
@@ -494,50 +537,6 @@ export function postSelection(): string {
           votes { totalCount }
         }
       }
-    }
-    actor {
-      id
-      uuid
-      iri
-      username
-      handle
-      rawName
-      name
-      avatarUrl
-      created
-    }
-  `;
-}
-
-export function articlePostSelection(): string {
-  return `
-    __typename
-    id
-    uuid
-    iri
-    url
-    content
-    summary
-    visibility
-    sensitive
-    published
-    replyTarget {
-      id
-      uuid
-      iri
-      url
-    }
-    quotedPost {
-      id
-      uuid
-      iri
-      url
-    }
-    sharedPost {
-      id
-      uuid
-      iri
-      url
     }
     actor {
       id

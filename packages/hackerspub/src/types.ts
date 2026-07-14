@@ -1,9 +1,4 @@
-import { type KyInstance } from "ky";
-
-export interface HackersPubAdapterOptions {
-  readonly fetch?: typeof globalThis.fetch;
-  readonly httpClient?: KyInstance;
-}
+export type HackersPubAdapterOptions = Readonly<Record<string, never>>;
 
 export interface HackersPubActor {
   readonly id?: string;
@@ -38,16 +33,40 @@ export interface HackersPubPost {
   readonly visibility?: string;
   readonly sensitive?: boolean | null;
   readonly published?: string;
+  readonly media?: readonly HackersPubPostMedium[];
   readonly poll?: HackersPubPoll | null;
   readonly replyTarget?: HackersPubPost | null;
   readonly quotedPost?: HackersPubPost | null;
   readonly sharedPost?: HackersPubPost | null;
 }
 
+export interface HackersPubPostMedium {
+  readonly id?: string;
+  readonly alt?: string | null;
+  readonly height?: number | null;
+  readonly sensitive?: boolean;
+  readonly thumbnailUrl?: string | null;
+  readonly type?: string;
+  readonly url?: string;
+  readonly width?: number | null;
+}
+
 export interface HackersPubMediaUploadResponse {
+  readonly __typename?: string;
   readonly url?: string;
   readonly width?: number;
   readonly height?: number;
+}
+
+export interface HackersPubLoginChallenge {
+  readonly __typename?: string;
+  readonly token?: string;
+  readonly created?: string;
+  readonly query?: string;
+}
+
+export interface HackersPubSessionResponse {
+  readonly id?: string;
 }
 
 export interface HackersPubPoll {

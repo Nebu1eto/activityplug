@@ -14,10 +14,8 @@ export function createHackersPubStaticCapabilities() {
       "unsupported",
       "HackersPub does not expose OAuth client authentication.",
     ),
-    "auth.passkey": capability(
-      "unsupported",
-      "HackersPub passkey login is not exposed through this adapter API.",
-    ),
+    "auth.emailChallenge": capability("supported"),
+    "auth.passkey": capability("supported"),
     "instance.nodeInfo": capability("supported"),
     "instance.peers": capability("unsupported", "Peer listing is not mapped by this adapter."),
     "accounts.lookupById": capability("supported"),
@@ -33,13 +31,17 @@ export function createHackersPubStaticCapabilities() {
     ),
     "media.update": capability("unsupported", "Media updates are not mapped by this adapter."),
     "media.delete": capability("unsupported", "Media deletion is not mapped by this adapter."),
-    "media.remoteUrlUpload": capability("supported"),
-    "media.urlIngestion": capability(
-      "unsupported",
-      "URL media ingestion is not mapped by this adapter.",
-    ),
+    "media.urlIngestion": capability("supported"),
     "posts.read": capability("supported"),
-    "posts.create": capability("supported"),
+    "posts.create": capability("supported", undefined, undefined, {
+      acceptedInputs: [
+        "content",
+        "visibility.public",
+        "visibility.unlisted",
+        "visibility.followers",
+        "visibility.direct",
+      ],
+    }),
     "posts.delete": capability("supported"),
     "posts.update": capability(
       "unsupported",
@@ -160,7 +162,10 @@ export function createHackersPubStaticCapabilities() {
     "social.block": capability("supported"),
     "social.mute": capability("unsupported", "HackersPub social actions are not mapped yet."),
     "social.favourite": capability("supported"),
-    "social.bookmark": capability("supported"),
+    "social.bookmark": capability(
+      "unsupported",
+      "HackersPub does not expose bookmark mutations in its public GraphQL API.",
+    ),
     "social.bookmarkFolders": capability(
       "unsupported",
       "Bookmark folders are not mapped by this adapter.",
