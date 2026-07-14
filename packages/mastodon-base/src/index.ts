@@ -3,10 +3,13 @@ import {
   capability,
   createCapabilitySet,
   createEntityRef,
+  mergeCapabilityLayers,
+  resolveSameOriginDiscoveryUrl,
   type Account,
   type ActivityPlugAdapter,
   type AdapterOperationContext,
   type AuthSession,
+  type CapabilityName,
   type CreatePostInput,
   type DeleteMediaInput,
   type DeletePostInput,
@@ -17,6 +20,7 @@ import {
   type MediaAttachment,
   type MuteAccountInput,
   type PageInput,
+  type PartialCapabilitySet,
   type Poll,
   type Post,
   type PostHistoryInput,
@@ -38,7 +42,6 @@ import ky, { type KyInstance } from "ky";
 import { createFilter, deleteFilter, getFilter, listFilters } from "./filters.js";
 import { followRequestAction, listFollowRequests } from "./follow-requests.js";
 import {
-  absoluteRemoteUrl,
   accountFromResponse,
   assertRecordResponse,
   boostPost,
@@ -49,6 +52,7 @@ import {
   errorContext,
   exchangeAuthorizationCode,
   hashtagFromResponse,
+  importToken,
   invalidRemoteResponse,
   isRecord,
   mastodonPageInfo,
@@ -73,7 +77,6 @@ import {
   relationshipFromResponse,
   requestJson,
   requestResponse,
-  requestVoid,
   revokeToken,
   tokenHeader,
   verifyCredentials,
@@ -101,8 +104,16 @@ import {
   schedulePost,
   updateScheduledPost,
 } from "./scheduled-posts.js";
-import { connectMastodonNotificationStream, connectMastodonTimelineStream } from "./streaming.js";
 import {
+  connectMastodonNotificationStream,
+  connectMastodonTimelineStream,
+  mastodonStreamingRequiresSession,
+  mastodonStreamingVersionStatus,
+  type MastodonStreamingDiscovery,
+  type MastodonStreamingOptions,
+} from "./streaming.js";
+import {
+  type DetectedMastodonSoftware,
   type MastodonAccountResponse,
   type MastodonBaseAdapterOptions,
   type MastodonInstanceResponse,
@@ -112,19 +123,23 @@ import {
   type MastodonSearchResponse,
   type MastodonStatusEditResponse,
   type MastodonStatusResponse,
+  type MastodonStreamingEndpoint,
   type NodeInfoLinksResponse,
   type NodeInfoResponse,
 } from "./types.js";
 
 export {
   clientFor,
+  invalidRemoteResponse,
   parseJsonArray,
+  relationshipFromResponse,
   requestJson,
   requestResponse,
   requestVoid,
   tokenHeader,
   type MastodonTransportOptions,
 } from "./internals.js";
+export type { MastodonRelationshipResponse } from "./types.js";
 
 export { accountFromResponse, postFromResponse } from "./internals.js";
 export type * from "./types.js";
@@ -132,6 +147,13 @@ export type * from "./types.js";
 export function createMastodonBaseAdapter(
   options: MastodonBaseAdapterOptions,
 ): ActivityPlugAdapter {
+  const loadInstanceDocuments = createInstanceDocumentLoader(options);
+  const streamingOptions: MastodonStreamingOptions = {
+    webSocket: options.webSocket,
+    authentication: options.streamingAuthentication ?? "authorization-header",
+    resolveDiscovery: async (context) =>
+      streamingDiscoveryFromDocuments(await loadInstanceDocuments(context), context, options),
+  };
   return {
     metadata: {
       id: options.id,
@@ -146,10 +168,11 @@ export function createMastodonBaseAdapter(
             ? undefined
             : "This adapter does not assume refresh-token support.",
         ),
-        "auth.oauth.clientCredentials": capability(
-          "unsupported",
-          "Client-credentials OAuth is not mapped by this adapter.",
+        "auth.oauth.revoke": capability(
+          "supported",
+          "This adapter implements OAuth token revocation independently of refresh tokens.",
         ),
+        "auth.oauth.clientCredentials": capability("supported"),
         "auth.passkey": capability("unsupported", "Passkey auth is not mapped by this adapter."),
         "auth.tokenInjection": capability("supported"),
         "instance.nodeInfo": capability("supported"),
@@ -161,9 +184,31 @@ export function createMastodonBaseAdapter(
         "accounts.followers": capability("supported"),
         "accounts.following": capability("supported"),
         "posts.read": capability("supported"),
-        "posts.create": capability("supported"),
+        "posts.context": capability(
+          "unsupported",
+          "Post context is not mapped by this adapter yet.",
+        ),
+        "posts.quotes": capability(
+          "unsupported",
+          "Quote listing is not mapped by this adapter yet.",
+        ),
+        "posts.create": capability("supported", undefined, undefined, {
+          acceptedInputs: [
+            "content",
+            "summary",
+            "sensitive",
+            "visibility.public",
+            "visibility.unlisted",
+            "visibility.followers",
+            "visibility.direct",
+            ...(options.supportsLocalVisibility === true ? ["visibility.local"] : []),
+          ],
+        }),
         "posts.delete": capability("supported"),
-        "posts.update": capability("supported"),
+        "posts.update": capability(
+          "unknown",
+          "Status editing depends on the detected server family and version.",
+        ),
         "posts.reply": capability("supported"),
         "posts.quote": capability(
           options.quoteStatusParameter === undefined ? "unsupported" : "supported",
@@ -175,18 +220,24 @@ export function createMastodonBaseAdapter(
           "unsupported",
           "Post translation is not mapped by this adapter.",
         ),
-        "posts.history": capability("supported"),
+        "posts.history": capability(
+          "unknown",
+          "Status edit history depends on the detected server family and version.",
+        ),
         "timelines.home": capability("supported"),
         "timelines.public": capability("supported"),
         "timelines.local": capability("supported"),
         "timelines.hashtag": capability("supported"),
         "timelines.list": capability("supported"),
-        "media.upload": capability("supported"),
+        "media.get": capability("unsupported", "Media lookup is not mapped by this adapter yet."),
+        "media.upload": capability(
+          "unknown",
+          "Asynchronous media upload depends on the detected server family and version.",
+        ),
         "media.update": capability("supported"),
-        "media.delete": capability("supported"),
-        "media.remoteUrlUpload": capability(
-          "unsupported",
-          "Remote URL media upload is not mapped by this adapter.",
+        "media.delete": capability(
+          "unknown",
+          "Media deletion depends on the detected server family and version.",
         ),
         "media.urlIngestion": capability(
           "unsupported",
@@ -211,7 +262,10 @@ export function createMastodonBaseAdapter(
         ),
         "notifications.dismiss": capability("supported"),
         "notifications.clear": capability("supported"),
-        "notifications.unreadCount": capability("supported"),
+        "notifications.unreadCount": capability(
+          "unknown",
+          "Unread notification counts depend on the detected server family and version.",
+        ),
         "polls.create": capability("supported"),
         "polls.read": capability("supported"),
         "polls.vote": capability("supported"),
@@ -223,13 +277,22 @@ export function createMastodonBaseAdapter(
         "followRequests.list": capability("supported"),
         "followRequests.accept": capability("supported"),
         "followRequests.reject": capability("supported"),
-        "filters.read": capability("supported"),
-        "filters.create": capability("supported"),
+        "filters.read": capability(
+          "unknown",
+          "Filter v2 support depends on the detected server family and version.",
+        ),
+        "filters.create": capability(
+          "unknown",
+          "Filter v2 support depends on the detected server family and version.",
+        ),
         "filters.update": capability(
           "unsupported",
           "Mastodon v2 filter keyword replacement is not mapped by this adapter yet.",
         ),
-        "filters.delete": capability("supported"),
+        "filters.delete": capability(
+          "unknown",
+          "Filter v2 support depends on the detected server family and version.",
+        ),
         "scheduledPosts.read": capability("supported"),
         "scheduledPosts.create": capability("supported"),
         "scheduledPosts.update": capability("supported"),
@@ -251,8 +314,14 @@ export function createMastodonBaseAdapter(
           "unsupported",
           "Mastodon-compatible base APIs do not assume emoji reaction support.",
         ),
-        "streaming.timeline": capability("supported"),
-        "streaming.notifications": capability("supported"),
+        "streaming.timeline":
+          typeof options.webSocket !== "function"
+            ? capability("unsupported", "Streaming requires an injected WebSocket factory.")
+            : capability("supported"),
+        "streaming.notifications":
+          typeof options.webSocket !== "function"
+            ? capability("unsupported", "Streaming requires an injected WebSocket factory.")
+            : capability("supported"),
         "streaming.conversations": capability(
           "unsupported",
           "Streaming is not implemented by this adapter yet.",
@@ -263,8 +332,10 @@ export function createMastodonBaseAdapter(
         : { documentationUrl: options.documentationUrl }),
     },
     instances: {
-      detect: async (_input, context) => getInstanceProfile(context, options),
-      getProfile: async (_input, context) => getInstanceProfile(context, options),
+      detect: async (_input, context) =>
+        getInstanceProfile(context, options, loadInstanceDocuments),
+      getProfile: async (_input, context) =>
+        getInstanceProfile(context, options, loadInstanceDocuments),
     },
     accounts: {
       getById: async (input, context) => getAccountById(input.id, context, options),
@@ -292,7 +363,8 @@ export function createMastodonBaseAdapter(
         listAccountPosts(input.accountId, input.page, context, options, input.session),
     },
     posts: {
-      get: async (input, context) => getPost(input.id, context, options),
+      updateSemantics: { visibility: "unsupported" },
+      get: async (input, context) => getPost(input.id, context, options, input.session),
       create: async (input, context) => createPost(input, context, options),
       update: async (input, context) => updatePost(input, context, options),
       history: async (input, context) => postHistory(input, context, options),
@@ -365,9 +437,10 @@ export function createMastodonBaseAdapter(
       delete: async (input, context) => deleteScheduledPost(input, context, options),
     },
     streams: {
-      timeline: async (input, context) => connectMastodonTimelineStream(input, context, options),
+      timeline: async (input, context) =>
+        connectMastodonTimelineStream(input, context, streamingOptions),
       notifications: async (input, context) =>
-        connectMastodonNotificationStream(input, context, options),
+        connectMastodonNotificationStream(input, context, streamingOptions),
     },
     social: {
       relationship: async (input, context) => relationship(input, context, options),
@@ -390,47 +463,102 @@ export function createMastodonBaseAdapter(
         postAction(input, "unreblog", context, options, "social.unboost"),
     },
     auth: {
-      registerOAuthClient: async (input, context) => registerOAuthClient(input, context, options),
-      createAuthorizationUrl: async (input, context) => createAuthorizationUrl(input, context),
-      exchangeAuthorizationCode: async (input, context) =>
-        exchangeAuthorizationCode(input, context, options),
-      refreshToken: async (input, context) => {
-        if (options.supportsRefreshToken !== true) {
-          throw new ActivityPlugError(
-            "UNSUPPORTED_OPERATION",
-            "This adapter does not support OAuth refresh tokens.",
-            {
-              adapter: context.adapterId,
-              origin: context.origin,
-              operation: "auth.oauth.refresh",
-              capability: "auth.oauth.refreshToken",
-            },
-          );
-        }
-        return refreshToken(input.session, context, options);
-      },
-      revokeToken: async (input, context) => revokeToken(input, context, options),
-      verifyCredentials: async (input, context) =>
-        verifyCredentials(input.session, context, options),
+      strategies: [
+        {
+          kind: "oauth",
+          registerClient: async (input, context) => registerOAuthClient(input, context, options),
+          start: async (input, context) => createAuthorizationUrl(input, context),
+          exchange: async (input, context) => exchangeAuthorizationCode(input, context, options),
+          verifySession: async (input, context) =>
+            verifyCredentials(input.session, context, options),
+          ...(options.supportsRefreshToken === true
+            ? {
+                refreshSession: async (input, context) =>
+                  refreshToken(input.session, context, options),
+              }
+            : {}),
+          revokeSession: async (input, context) => revokeToken(input, context, options),
+        },
+        {
+          kind: "token",
+          importToken: async (input) => importToken(input),
+          verifySession: async (input, context) =>
+            verifyCredentials(input.session, context, options),
+        },
+      ],
     },
   };
+}
+
+interface MastodonInstanceDocuments {
+  readonly nodeInfo: NodeInfoResponse | undefined;
+  readonly instance: MastodonInstanceResponse;
+}
+
+type LoadInstanceDocuments = (
+  context: AdapterOperationContext,
+) => Promise<MastodonInstanceDocuments>;
+
+interface CachedInstanceDocuments {
+  readonly expiresAt: number;
+  readonly documents: Promise<MastodonInstanceDocuments>;
+}
+
+const INSTANCE_DISCOVERY_TTL_MS = 5 * 60 * 1_000;
+const MAX_DISCOVERED_ORIGINS_PER_TRANSPORT = 128;
+
+function createInstanceDocumentLoader(options: MastodonBaseAdapterOptions): LoadInstanceDocuments {
+  const caches = new WeakMap<typeof globalThis.fetch, Map<string, CachedInstanceDocuments>>();
+  return (context) => {
+    const origin = new URL(context.origin).origin;
+    let cache = caches.get(context.fetch);
+    if (cache === undefined) {
+      cache = new Map();
+      caches.set(context.fetch, cache);
+    }
+    const cached = cache.get(origin);
+    if (cached !== undefined && cached.expiresAt > Date.now()) {
+      cache.delete(origin);
+      cache.set(origin, cached);
+      return cached.documents;
+    }
+    if (cached !== undefined) cache.delete(origin);
+    const documents = fetchInstanceDocuments(context, options);
+    if (cache.size >= MAX_DISCOVERED_ORIGINS_PER_TRANSPORT) {
+      const oldestOrigin = cache.keys().next().value;
+      if (oldestOrigin !== undefined) cache.delete(oldestOrigin);
+    }
+    const entry = { documents, expiresAt: Date.now() + INSTANCE_DISCOVERY_TTL_MS };
+    cache.set(origin, entry);
+    void documents.catch(() => {
+      if (cache?.get(origin) !== entry) return;
+      cache.delete(origin);
+    });
+    return documents;
+  };
+}
+
+async function fetchInstanceDocuments(
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+): Promise<MastodonInstanceDocuments> {
+  const client = clientFor(context, options);
+  // Validate discovery links before issuing any additional remote request.
+  const nodeInfo = await getNodeInfo(client, context, options);
+  const instance = await getInstanceDocument(client, context, options);
+  return { nodeInfo, instance };
 }
 
 async function getInstanceProfile(
   context: AdapterOperationContext,
   options: MastodonBaseAdapterOptions,
+  loadDocuments: LoadInstanceDocuments,
 ): Promise<InstanceProfile> {
-  const client = clientFor(context, options);
-  const [nodeInfo, instance] = await Promise.all([
-    getNodeInfo(client, context, options),
-    getInstanceDocument(client, context, options),
-  ]);
-  const software = optionalObject(
-    nodeInfo?.software,
-    "software",
-    nodeInfo,
+  const { nodeInfo, instance } = await loadDocuments(context);
+  const { detected, software, streaming } = detectedSoftwareFromDocuments(
+    { nodeInfo, instance },
     context,
-    "instance.nodeInfo",
+    options,
   );
   const registrations = optionalObject(
     instance.registrations,
@@ -439,23 +567,22 @@ async function getInstanceProfile(
     context,
     "instance.get",
   );
-  const softwareName =
-    optionalNonEmptyString(
-      software?.name,
-      "software.name",
-      nodeInfo,
-      context,
-      "instance.nodeInfo",
-    ) ??
-    options.supportedSoftware[0] ??
-    options.id;
-  const softwareVersion =
-    optionalString(instance.version, "version", instance, context, "instance.get") ??
-    optionalString(software?.version, "software.version", nodeInfo, context, "instance.nodeInfo");
+  const softwareName = detected.name;
+  const softwareVersion = detected.version;
   const domain =
     optionalNonEmptyString(instance.domain, "domain", instance, context, "instance.get") ??
     optionalNonEmptyString(instance.uri, "uri", instance, context, "instance.get") ??
     new URL(context.origin).host;
+  const detectedCapabilities = options.detectedCapabilities?.(detected);
+  const streamingCapabilities = detectedStreamingCapabilities(
+    {
+      endpoint: streaming,
+      softwareName,
+      ...(softwareVersion === undefined ? {} : { softwareVersion }),
+    },
+    context,
+    options,
+  );
   return {
     ref: createEntityRef({
       adapter: context.adapterId,
@@ -567,8 +694,188 @@ async function getInstanceProfile(
                 }),
           },
         }),
-    capabilities: context.capabilities,
-    raw: { nodeInfo, instance },
+    capabilities: mergeCapabilityLayers([
+      { source: "static", capabilities: context.capabilities },
+      ...(detectedCapabilities === undefined
+        ? []
+        : [{ source: "instance" as const, capabilities: detectedCapabilities }]),
+      { source: "instance", capabilities: streamingCapabilities },
+    ]),
+    raw: { nodeInfo, instance, streaming },
+  };
+}
+
+function detectedSoftwareFromDocuments(
+  documents: MastodonInstanceDocuments,
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+): {
+  readonly detected: DetectedMastodonSoftware;
+  readonly software: Record<string, unknown> | undefined;
+  readonly streaming: MastodonStreamingEndpoint;
+} {
+  const { instance, nodeInfo } = documents;
+  const software = optionalObject(
+    nodeInfo?.software,
+    "software",
+    nodeInfo,
+    context,
+    "instance.nodeInfo",
+  );
+  const name =
+    optionalNonEmptyString(
+      software?.["name"],
+      "software.name",
+      nodeInfo,
+      context,
+      "instance.nodeInfo",
+    ) ??
+    options.supportedSoftware[0] ??
+    options.id;
+  const version =
+    optionalString(instance.version, "version", instance, context, "instance.get") ??
+    optionalString(
+      software?.["version"],
+      "software.version",
+      nodeInfo,
+      context,
+      "instance.nodeInfo",
+    );
+  const streaming = advertisedStreamingEndpoint(instance);
+  return {
+    software,
+    streaming,
+    detected: {
+      name,
+      ...(version === undefined ? {} : { version }),
+      streamingEndpointStatus: streaming.status,
+      ...(streaming.status === "advertised" ? { streamingEndpoint: streaming.url } : {}),
+    },
+  };
+}
+
+function streamingDiscoveryFromDocuments(
+  documents: MastodonInstanceDocuments,
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+): MastodonStreamingDiscovery {
+  const { detected, streaming } = detectedSoftwareFromDocuments(documents, context, options);
+  return {
+    endpoint: streaming,
+    softwareName: detected.name,
+    ...(detected.version === undefined ? {} : { softwareVersion: detected.version }),
+  };
+}
+
+function advertisedStreamingEndpoint(
+  instance: MastodonInstanceResponse,
+): MastodonStreamingEndpoint {
+  const modern = nestedAdvertisedEndpoint(instance.configuration, "streaming");
+  if (modern !== undefined) return parseAdvertisedStreamingEndpoint(modern);
+  const legacy = nestedAdvertisedEndpoint(instance.urls, "streaming_api");
+  return legacy === undefined ? { status: "absent" } : parseAdvertisedStreamingEndpoint(legacy);
+}
+
+function nestedAdvertisedEndpoint(container: unknown, field: string): unknown | undefined {
+  if (container === undefined) return undefined;
+  if (!isRecord(container)) {
+    return null;
+  }
+  const urls = field === "streaming" ? container["urls"] : container;
+  if (urls === undefined) return undefined;
+  if (!isRecord(urls)) return null;
+  return Object.hasOwn(urls, field) ? urls[field] : undefined;
+}
+
+function parseAdvertisedStreamingEndpoint(value: unknown): MastodonStreamingEndpoint {
+  if (typeof value !== "string" || value.trim().length === 0) {
+    return {
+      status: "unusable",
+      reason: "The advertised streaming endpoint must be a non-empty absolute URL.",
+    };
+  }
+  let url: URL;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    return {
+      status: "unusable",
+      reason: "The advertised streaming endpoint must be a valid absolute URL.",
+    };
+  }
+  if (
+    url.protocol !== "https:" &&
+    url.protocol !== "http:" &&
+    url.protocol !== "wss:" &&
+    url.protocol !== "ws:"
+  ) {
+    return {
+      status: "unusable",
+      reason: "The advertised streaming endpoint has an unsupported URL scheme.",
+    };
+  }
+  if (url.username.length > 0 || url.password.length > 0 || url.hash.length > 0) {
+    return {
+      status: "unusable",
+      reason: "The advertised streaming endpoint cannot contain credentials or a fragment.",
+    };
+  }
+  return { status: "advertised", url: url.toString() };
+}
+
+function detectedStreamingCapabilities(
+  discovery: MastodonStreamingDiscovery,
+  context: AdapterOperationContext,
+  options: MastodonBaseAdapterOptions,
+): PartialCapabilitySet {
+  if (typeof options.webSocket !== "function") {
+    const decision = capability("unsupported", "Streaming requires an injected WebSocket factory.");
+    return { "streaming.timeline": decision, "streaming.notifications": decision };
+  }
+  if (discovery.endpoint.status === "unusable") {
+    const decision = capability("unsupported", "The advertised streaming endpoint is not usable.");
+    return { "streaming.timeline": decision, "streaming.notifications": decision };
+  }
+  const versionStatus = mastodonStreamingVersionStatus(discovery);
+  if (versionStatus !== "supported") {
+    const decision = capability(
+      versionStatus,
+      versionStatus === "unsupported"
+        ? "Mastodon 3.3.0 or newer is required for WebSocket streaming."
+        : "WebSocket streaming cannot be verified without a parseable Mastodon version.",
+    );
+    return { "streaming.timeline": decision, "streaming.notifications": decision };
+  }
+  const base = new URL(
+    discovery.endpoint.status === "advertised" ? discovery.endpoint.url : context.origin,
+  );
+  const encrypted = base.protocol === "https:" || base.protocol === "wss:";
+  const fallbackReason =
+    discovery.endpoint.status === "absent"
+      ? "No streaming endpoint was advertised; the same-origin fallback is available."
+      : undefined;
+  if (encrypted) {
+    return {
+      "streaming.timeline": capability("supported", fallbackReason),
+      "streaming.notifications": capability("supported", fallbackReason),
+    };
+  }
+  const notificationDecision = capability(
+    "unsupported",
+    "Authenticated streaming requires an encrypted advertised endpoint.",
+  );
+  if (mastodonStreamingRequiresSession(discovery)) {
+    return {
+      "streaming.timeline": notificationDecision,
+      "streaming.notifications": notificationDecision,
+    };
+  }
+  return {
+    "streaming.timeline": capability(
+      "supported",
+      "Only anonymous timeline streams are available over the plaintext endpoint.",
+    ),
+    "streaming.notifications": notificationDecision,
   };
 }
 
@@ -623,7 +930,7 @@ async function getInstanceDocument(
 async function getNodeInfo(
   client: KyInstance,
   context: AdapterOperationContext,
-  options: MastodonBaseAdapterOptions,
+  _options: MastodonBaseAdapterOptions,
 ): Promise<NodeInfoResponse | undefined> {
   try {
     const links = await requestJson<NodeInfoLinksResponse>(
@@ -657,9 +964,11 @@ async function getNodeInfo(
         (left, right) => nodeInfoRelPriority(right.rel) - nodeInfoRelPriority(left.rel),
       )[0]?.href;
     if (href === undefined) return undefined;
-    const nodeInfoUrl = absoluteRemoteUrl(href, context, "instance.nodeInfo");
+    // Discovery hrefs are untrusted remote input; reject cross-origin links
+    // before the schema request can cross the vetted transport boundary.
+    const nodeInfoUrl = resolveSameOriginDiscoveryUrl(href, context.origin, "instance.nodeInfo");
     const nodeInfo = await requestJson<NodeInfoResponse>(
-      ky.get(nodeInfoUrl, { fetch: options.fetch, redirect: "manual" }).json(),
+      ky.get(nodeInfoUrl, { fetch: context.fetch, redirect: "manual" }).json(),
       "instance.nodeInfo",
       context,
     );
@@ -955,6 +1264,21 @@ async function search(
   context: AdapterOperationContext,
   options: MastodonBaseAdapterOptions,
 ): Promise<SearchResult> {
+  if (input.page?.after !== undefined || input.page?.before !== undefined) {
+    const capabilityName = searchCapability(input.type);
+    throw new ActivityPlugError(
+      "UNSUPPORTED_OPERATION",
+      "Mastodon search does not expose a reliable cursor.",
+      {
+        adapter: context.adapterId,
+        origin: context.origin,
+        operation: "search",
+        ...(capabilityName === undefined
+          ? { raw: { capabilities: searchCapabilities } }
+          : { capability: capabilityName }),
+      },
+    );
+  }
   const searchParams = new URLSearchParams({
     q: input.query,
     ...(input.resolve === undefined ? {} : { resolve: String(input.resolve) }),
@@ -992,8 +1316,15 @@ async function search(
     hashtags: (optionalArray(response.hashtags, "hashtags", response, context, "search") ?? []).map(
       (hashtag) => hashtagFromResponse(hashtag, context),
     ),
+    pageInfo: { hasNextPage: false, hasPreviousPage: false },
     raw: response,
   };
+}
+
+const searchCapabilities = ["search.accounts", "search.posts", "search.hashtags"] as const;
+
+function searchCapability(type: SearchInput["type"]): CapabilityName | undefined {
+  return type === undefined ? undefined : `search.${type}`;
 }
 
 async function uploadMedia(
@@ -1098,8 +1429,8 @@ async function uploadMediaFromUrl(
     {
       adapter: context.adapterId,
       origin: context.origin,
-      operation: "media.uploadFromUrl",
-      capability: "media.remoteUrlUpload",
+      operation: "media.ingestUrl",
+      capability: "media.urlIngestion",
       raw: { url: input.url },
     },
   );

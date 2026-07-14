@@ -6,6 +6,7 @@ import {
   type Account,
   type AdapterOperationContext,
   type AuthAdapterContext,
+  type InjectTokenInput,
   type BoostPostInput,
   type Connection,
   type MediaAttachment,
@@ -24,13 +25,10 @@ import {
   type TokenSet,
 } from "@activityplug/core";
 
-import { relationshipFromResponse } from "./relationship.js";
 import {
   assertAccessTokenFresh,
   assertOptionalString,
-  assertRecordResponse,
   authorizationHeader,
-  absoluteRemoteUrl,
   clientFor,
   errorContext,
   invalidRemoteResponse,
@@ -41,16 +39,13 @@ import {
   optionalBoolean,
   optionalDateTimeString,
   optionalNonEmptyString,
-  optionalNumber,
   optionalNumberArray,
   optionalObject,
   optionalString,
-  optionalStringArray,
   renamedOptionalBoolean,
   renamedOptionalNumber,
   renamedOptionalString,
   requestJson,
-  requestResponse,
   requestVoid,
   requiredNonEmptyString,
   slashOrigin,
@@ -239,6 +234,17 @@ export async function exchangeAuthorizationCode(
     context,
   );
   return tokenSetFromResponse(response, context, "auth.oauth.exchangeCode");
+}
+
+export async function importToken(input: InjectTokenInput): Promise<TokenSet> {
+  // Token-import annotations stay in session storage, not in adapter-private credentials.
+  return {
+    accessToken: input.accessToken,
+    ...(input.tokenType === undefined ? {} : { tokenType: input.tokenType }),
+    ...(input.refreshToken === undefined ? {} : { refreshToken: input.refreshToken }),
+    ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
+    ...(input.scopes === undefined ? {} : { scopes: input.scopes }),
+  };
 }
 
 export async function refreshToken(
@@ -431,6 +437,9 @@ export function postFromResponse(
     context,
     "posts.read",
   );
+  const favourited = optionalBoolean(status.favourited, "favourited", status, context, operation);
+  const boosted = optionalBoolean(status.reblogged, "reblogged", status, context, operation);
+  const bookmarked = optionalBoolean(status.bookmarked, "bookmarked", status, context, operation);
   if (status.media_attachments !== undefined && !Array.isArray(status.media_attachments)) {
     throw invalidRemoteResponse("Mastodon media attachments response must be an array.", {
       context,
@@ -503,6 +512,15 @@ export function postFromResponse(
         operation,
       ),
     },
+    ...(favourited === undefined && boosted === undefined && bookmarked === undefined
+      ? {}
+      : {
+          viewerState: {
+            ...(favourited === undefined ? {} : { favourited }),
+            ...(boosted === undefined ? {} : { boosted }),
+            ...(bookmarked === undefined ? {} : { bookmarked }),
+          },
+        }),
     ...(status.pleroma === undefined ? {} : { extensions: { pleroma: status.pleroma } }),
     raw: status,
   };
@@ -812,27 +830,21 @@ export function mastodonPageInfo(
 }
 
 export function mastodonPageInfoForOperation(
-  response: readonly MastodonStatusResponse[],
+  _response: readonly MastodonStatusResponse[],
   headers: Headers,
   context: AdapterOperationContext,
   operation: string,
 ): Connection<Post>["pageInfo"] {
   const links = parseLinkHeader(headers.get("link"));
-  const firstId = response[0]?.id;
-  const lastId = response.at(-1)?.id;
   return {
     hasNextPage: links.next !== undefined,
     hasPreviousPage: links.prev !== undefined,
-    ...(firstId === undefined
+    ...(links.prev === undefined
       ? {}
-      : { startCursor: encodeOperationCursor(firstId, context, operation) }),
-    ...(lastId === undefined
+      : { startCursor: encodeOperationCursor(links.prev, context, operation) }),
+    ...(links.next === undefined
       ? {}
-      : { endCursor: encodeOperationCursor(lastId, context, operation) }),
-    raw: {
-      hasNextPageLink: links.next !== undefined,
-      hasPreviousPageLink: links.prev !== undefined,
-    },
+      : { endCursor: encodeOperationCursor(links.next, context, operation) }),
   };
 }
 

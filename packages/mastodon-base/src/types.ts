@@ -1,4 +1,23 @@
-import { type KyInstance } from "ky";
+import {
+  type PartialCapabilitySet,
+  type WebSocketFactory as CoreWebSocketFactory,
+} from "@activityplug/core";
+
+export type WebSocketFactory = CoreWebSocketFactory;
+
+export type MastodonStreamingAuthentication = "authorization-header" | "legacy-query";
+
+export type MastodonStreamingEndpoint =
+  | { readonly status: "absent" }
+  | { readonly status: "advertised"; readonly url: string }
+  | { readonly status: "unusable"; readonly reason: string };
+
+export interface DetectedMastodonSoftware {
+  readonly name: string;
+  readonly version?: string;
+  readonly streamingEndpoint?: string;
+  readonly streamingEndpointStatus?: MastodonStreamingEndpoint["status"];
+}
 
 export interface MastodonBaseAdapterOptions {
   readonly id: string;
@@ -6,13 +25,13 @@ export interface MastodonBaseAdapterOptions {
   readonly supportedSoftware: readonly string[];
   readonly documentationUrl?: string;
   readonly kind?: "mastodon" | "mastodon-compatible";
-  readonly fetch?: typeof globalThis.fetch;
-  readonly httpClient?: KyInstance;
-  readonly webSocket?: (url: string, protocols?: string | string[]) => WebSocket;
+  readonly webSocket?: WebSocketFactory;
+  readonly streamingAuthentication?: MastodonStreamingAuthentication;
   readonly supportsRefreshToken?: boolean;
   readonly instanceEndpointRequired?: boolean;
   readonly supportsLocalVisibility?: boolean;
   readonly quoteStatusParameter?: "quoted_status_id" | "quote_id";
+  readonly detectedCapabilities?: (software: DetectedMastodonSoftware) => PartialCapabilitySet;
 }
 
 export interface MastodonApplicationResponse {
@@ -67,6 +86,14 @@ export interface MastodonInstanceResponse {
   readonly source_url?: string;
   readonly description?: string;
   readonly languages?: readonly string[];
+  readonly urls?: {
+    readonly streaming_api?: unknown;
+  };
+  readonly configuration?: {
+    readonly urls?: {
+      readonly streaming?: unknown;
+    };
+  };
   readonly registrations?: {
     readonly enabled?: boolean;
     readonly approval_required?: boolean;
@@ -112,6 +139,9 @@ export interface MastodonStatusResponse {
   readonly replies_count?: number;
   readonly reblogs_count?: number;
   readonly favourites_count?: number;
+  readonly favourited?: boolean;
+  readonly reblogged?: boolean;
+  readonly bookmarked?: boolean;
   readonly pleroma?: unknown;
 }
 

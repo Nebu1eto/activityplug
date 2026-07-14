@@ -1,10 +1,31 @@
 {
   "name": "@activityplug/mastodon-base",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Shared Mastodon-compatible API adapter foundation for ActivityPlug.",
+  "keywords": [
+    "activitypub",
+    "fediverse",
+    "mastodon-base",
+    "typescript"
+  ],
+  "homepage": "https://github.com/Nebu1eto/activityplug",
+  "bugs": {
+    "url": "https://github.com/Nebu1eto/activityplug/issues"
+  },
   "license": "Apache-2.0 OR MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nebu1eto/activityplug.git",
+    "directory": "packages/mastodon-base"
+  },
   "files": [
-    "dist"
+    "dist/*.mjs",
+    "dist/*.d.mts",
+    "README.md",
+    "README.ko.md",
+    "README.ja.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
   ],
   "type": "module",
   "sideEffects": false,
@@ -17,16 +38,20 @@
     }
   },
   "scripts": {
-    "build": "tsdown",
+    "build": "rolldown -c ../../rolldown.config.ts --configLoader native",
     "pack:dry-run": "pnpm pack --dry-run",
     "prepack": "pnpm build",
     "test": "node --experimental-strip-types ../../scripts/run-package-tests.ts"
   },
   "dependencies": {
     "@activityplug/core": "workspace:*",
-    "ky": "^2.0.2"
+    "ky": "^2.0.2",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@activityplug/test-fixtures": "workspace:*"
+  },
+  "engines": {
+    "node": ">=26"
   }
 }

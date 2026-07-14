@@ -1,6 +1,8 @@
 import {
   ActivityPlugError,
+  isAuthStrategyKind,
   isIsoDateTimeString,
+  readBoundedResponseText,
   remoteHttpErrorCodeForStatus,
   type AdapterOperationContext,
   type AuthAdapterContext,
@@ -9,10 +11,16 @@ import {
   type TokenSet,
 } from "@activityplug/core";
 import ky, { HTTPError, TimeoutError, type KyInstance } from "ky";
+import { z } from "zod";
 
 import { type MastodonBaseAdapterOptions, type MastodonTokenResponse } from "./types.js";
 
-export type MastodonTransportOptions = Pick<MastodonBaseAdapterOptions, "fetch" | "httpClient">;
+const jsonRecord = z.looseObject({});
+const jsonArray = z.array(z.unknown());
+
+export type MastodonTransportOptions = Pick<MastodonBaseAdapterOptions, "webSocket">;
+
+const remoteErrorDiagnosticBytes = 8 * 1024;
 
 export async function tokenHeader(
   session: AuthSession,
@@ -20,7 +28,7 @@ export async function tokenHeader(
   operation: string,
 ): Promise<Record<string, string>> {
   const stored = await context.sessionStore?.get(session.id);
-  if (stored === undefined || stored === null) {
+  if (stored === undefined || stored === null || !isAuthStrategyKind(stored.strategy)) {
     throw new ActivityPlugError("AUTH_REQUIRED", "Auth session is not available.", {
       ...errorContext(context, operation),
     });
@@ -50,11 +58,24 @@ export function assertAccessTokenFresh(
 
 export function clientFor(
   context: AuthAdapterContext | AdapterOperationContext,
-  options: MastodonTransportOptions,
+  _options: MastodonTransportOptions,
 ): KyInstance {
-  return (
-    options.httpClient ??
-    ky.create({ prefix: context.origin, fetch: options.fetch, redirect: "manual" })
+  // All adapter traffic must cross the client-owned vetted transport boundary.
+  return ky.create({
+    prefix: context.origin,
+    fetch: requireContextFetch(context),
+    redirect: "manual",
+  });
+}
+
+function requireContextFetch(
+  context: AuthAdapterContext | AdapterOperationContext,
+): typeof globalThis.fetch {
+  if (typeof (context as { readonly fetch?: unknown }).fetch === "function") return context.fetch;
+  throw new ActivityPlugError(
+    "INTERNAL_ERROR",
+    "Adapter context did not provide the required vetted fetch transport.",
+    { adapter: context.adapterId, origin: context.origin, operation: "adapter.transport" },
   );
 }
 
@@ -89,7 +110,7 @@ export function tokenSetFromResponse(
 export function tokenType(value: string | undefined): AuthTokenType {
   if (value === undefined || value.length === 0) return "Bearer";
   if (value.toLowerCase() === "bearer") return "Bearer";
-  return value as AuthTokenType;
+  return value;
 }
 
 export function expiresAt(response: MastodonTokenResponse): { readonly expiresAt?: string } {
@@ -158,7 +179,7 @@ export async function parseJsonArray<T>(
       { cause },
     );
   }
-  if (!Array.isArray(parsed)) {
+  if (!jsonArray.safeParse(parsed).success) {
     throw new ActivityPlugError(
       "REMOTE_ERROR",
       "Remote ActivityPub software response did not include the expected array.",
@@ -200,6 +221,10 @@ export async function remoteError(
   operation: string,
   context: AuthAdapterContext | AdapterOperationContext,
 ): Promise<ActivityPlugError> {
+  // Security-boundary errors already carry the stable public classification.
+  // Rewrapping them as transport failures would turn policy and limit errors
+  // into misleading 502 responses.
+  if (cause instanceof ActivityPlugError) return cause;
   if (cause instanceof TimeoutError) {
     return new ActivityPlugError(
       "TIMEOUT",
@@ -249,7 +274,7 @@ export function errorContext(
 
 export async function safeResponseText(response: Response): Promise<string | undefined> {
   try {
-    return await response.text();
+    return await readBoundedResponseText(response, remoteErrorDiagnosticBytes);
   } catch {
     return undefined;
   }
@@ -270,7 +295,7 @@ export function invalidRemoteResponse(
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return jsonRecord.safeParse(value).success;
 }
 
 export function assertRecordResponse(
