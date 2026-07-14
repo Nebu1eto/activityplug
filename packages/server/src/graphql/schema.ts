@@ -1,4 +1,10 @@
-import { ActivityPlugError } from "@activityplug/core";
+import {
+  ActivityPlugError,
+  type EmailChallengeStartResult,
+  type PasskeyCredentialDescriptor,
+  type PasskeyPublicKeyRequest,
+  type PasskeyStartResult,
+} from "@activityplug/core";
 import SchemaBuilder from "@pothos/core";
 import { GraphQLError } from "graphql";
 
@@ -19,13 +25,20 @@ import {
   type PublicAccount,
   type PublicAccountField,
   type PublicAuthSession,
+  type PublicBookmarkFolder,
   type PublicEntityRef,
   type PublicFilter,
   type PublicInstanceProfile,
+  type PublicInstancePeers,
   type PublicMediaAttachment,
+  type PublicNotificationGroup,
+  type PublicOAuthClientRegistration,
+  type PublicOAuthMetadata,
   type PublicPoll,
   type PublicPollOption,
   type PublicPost,
+  type PublicPostContext,
+  type PublicPostTranslation,
   type PublicPostRevision,
   type PublicDeletedEntity,
   type PublicHashtag,
@@ -38,23 +51,33 @@ import {
   serializeStreamEvent,
   serializeDeletedEntity,
   serializeAccount,
+  serializeBookmarkFolder,
+  serializeBookmarkFolderConnection,
   serializeInstanceProfile,
+  serializeInstancePeers,
   serializeFilter,
   serializeFilterConnection,
   serializeMediaAttachment,
   serializeList,
   serializeListConnection,
   serializeNotificationConnection,
+  serializeNotificationGroupConnection,
+  serializeOAuthClientRegistration,
+  serializeOAuthMetadata,
   serializePoll,
   serializePost,
+  serializePostContext,
   serializePostConnection,
+  serializePostTranslation,
   serializePostRevision,
   serializeRelationship,
   serializeScheduledPost,
   serializeScheduledPostConnection,
   serializeSearchResult,
 } from "../api/service.js";
+import { bearerSessionId, optionalBearerSessionId } from "../http/app-helpers.js";
 import { type TokenImportOptions } from "../http/app.js";
+import { notificationTypeInput } from "./schema-inputs.js";
 import {
   accountActionResolver,
   adapterKindValue,
@@ -62,11 +85,15 @@ import {
   nonBlankString,
   normalizeAuthExchange,
   normalizeAuthStart,
+  normalizeEmailChallengeStart,
+  normalizeEmailChallengeVerify,
   normalizeBoostInput,
   normalizeCallbackInput,
   normalizeCreatePostInput,
   normalizeImportToken,
   normalizeMuteInput,
+  normalizePasskeyFinish,
+  normalizePasskeyStart,
   normalizePageInput,
   normalizeReactInput,
   normalizeSearchInput,
@@ -82,10 +109,12 @@ import { type BuilderLike, registerGraphQLOperations } from "./schema-operations
 export interface GraphQLContext {
   readonly service: ActivityPlugApiService;
   readonly request: Request;
+  readonly clientIp: string;
   readonly tokenImport?: TokenImportOptions;
+  readonly assertOAuthClientRegistrationAllowed: (origin: string) => Promise<string>;
 }
 
-export type AdapterKind = "mastodon" | "misskey" | "pleroma" | "hollo" | "hackerspub";
+export type AdapterKind = string;
 
 const builder = new SchemaBuilder<{
   Context: GraphQLContext;
@@ -94,6 +123,10 @@ const builder = new SchemaBuilder<{
     AccountField: PublicAccountField;
     AuthSession: PublicAuthSession;
     AuthStartPayload: AuthStartPayload;
+    EmailChallengeStartPayload: EmailChallengeStartResult;
+    PasskeyCredentialDescriptor: PasskeyCredentialDescriptor;
+    PasskeyPublicKeyRequest: PasskeyPublicKeyRequest;
+    PasskeyStartPayload: PasskeyStartResult;
     Capability: CapabilityListItem;
     CapabilitySet: CapabilitySetPayload;
     OAuthCallbackStateBinding: import("../api/service.js").PublicOAuthCallbackStateBinding;
@@ -116,6 +149,10 @@ const builder = new SchemaBuilder<{
     StreamEvent: PublicStreamEvent;
   };
   Scalars: {
+    AdapterId: {
+      Input: string;
+      Output: string;
+    };
     JSON: {
       Input: unknown;
       Output: unknown;
@@ -126,14 +163,19 @@ const builder = new SchemaBuilder<{
   defaultFieldNullability: false,
 });
 
-const AdapterKindEnum = builder.enumType("AdapterKind", {
-  values: {
-    MASTODON: { value: "mastodon" },
-    MISSKEY: { value: "misskey" },
-    PLEROMA: { value: "pleroma" },
-    HOLLO: { value: "hollo" },
-    HACKERSPUB: { value: "hackerspub" },
-  } as const,
+const AdapterIdScalar = builder.scalarType("AdapterId", {
+  parseValue: (value) => {
+    if (typeof value !== "string" || value.trim().length === 0) {
+      throw new GraphQLError("AdapterId must be a nonblank string.");
+    }
+    return value;
+  },
+  serialize: (value) => {
+    if (typeof value !== "string" || value.trim().length === 0) {
+      throw new GraphQLError("AdapterId must be a nonblank string.");
+    }
+    return value;
+  },
 });
 
 const CodeChallengeMethodEnum = builder.enumType("CodeChallengeMethod", {
@@ -280,17 +322,11 @@ const JsonScalar = builder.scalarType("JSON", {
   serialize: (value) => value,
 });
 
-interface ReservedEntity {
-  readonly id: string;
-  readonly raw: unknown;
-}
-
 export interface PageInfoPayload {
   readonly hasNextPage: boolean;
   readonly hasPreviousPage: boolean;
   readonly startCursor?: string;
   readonly endCursor?: string;
-  readonly raw?: unknown;
 }
 
 export interface PageInputValue {
@@ -304,8 +340,8 @@ export interface AccountConnectionPayload {
   readonly pageInfo: PageInfoPayload;
 }
 
-export interface ReservedConnectionPayload {
-  readonly nodes: readonly ReservedEntity[];
+export interface PostConnectionPayload {
+  readonly nodes: readonly PublicPost[];
   readonly pageInfo: PageInfoPayload;
 }
 
@@ -315,6 +351,67 @@ const OAuthClientInput = builder.inputType("OAuthClientInput", {
     redirectUri: t.string({ required: true }),
     scopes: t.stringList({ required: false }),
     website: t.string({ required: false }),
+  }),
+});
+
+const OAuthClientRegistrationInput = builder.inputType("OAuthClientRegistrationInput", {
+  fields: (t) => ({
+    clientName: t.string({ required: true }),
+    redirectUris: t.stringList({ required: true }),
+    scopes: t.stringList({ required: false }),
+    website: t.string({ required: false }),
+  }),
+});
+
+const RegisterOAuthClientInput = builder.inputType("RegisterOAuthClientInput", {
+  fields: (t) => ({
+    adapter: t.field({ type: AdapterIdScalar, required: false }),
+    origin: t.string({ required: true }),
+    client: t.field({ type: OAuthClientRegistrationInput, required: true }),
+  }),
+});
+
+function canonicalUriString(value: string, field: string): string {
+  nonBlankString(value, field);
+  try {
+    return new URL(value).href;
+  } catch (cause) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `GraphQL input field must be an absolute URI: ${field}.`,
+      { raw: { field } },
+      { cause },
+    );
+  }
+}
+
+const TranslatePostInput = builder.inputType("TranslatePostInput", {
+  fields: (t) => ({
+    id: t.id({ required: true }),
+    targetLanguage: t.string({ required: true }),
+    sourceLanguage: t.string({ required: false }),
+  }),
+});
+
+const CreateBookmarkFolderInput = builder.inputType("CreateBookmarkFolderInput", {
+  fields: (t) => ({
+    adapter: t.field({ type: AdapterIdScalar, required: false }),
+    origin: t.string({ required: false }),
+    name: t.string({ required: true }),
+  }),
+});
+
+const UpdateBookmarkFolderInput = builder.inputType("UpdateBookmarkFolderInput", {
+  fields: (t) => ({
+    id: t.id({ required: true }),
+    name: t.string({ required: true }),
+  }),
+});
+
+const BookmarkFolderPostInput = builder.inputType("BookmarkFolderPostInput", {
+  fields: (t) => ({
+    folderId: t.id({ required: true }),
+    postId: t.id({ required: true }),
   }),
 });
 
@@ -339,7 +436,7 @@ const TokenSetInput = builder.inputType("TokenSetInput", {
 
 const ImportTokenInput = builder.inputType("ImportTokenInput", {
   fields: (t) => ({
-    adapter: t.field({ type: AdapterKindEnum, required: true }),
+    adapter: t.field({ type: AdapterIdScalar, required: true }),
     origin: t.string({ required: true }),
     token: t.field({ type: TokenSetInput, required: true }),
   }),
@@ -347,7 +444,7 @@ const ImportTokenInput = builder.inputType("ImportTokenInput", {
 
 const AuthStartInput = builder.inputType("AuthStartInput", {
   fields: (t) => ({
-    adapter: t.field({ type: AdapterKindEnum, required: true }),
+    adapter: t.field({ type: AdapterIdScalar, required: true }),
     origin: t.string({ required: true }),
     client: t.field({ type: OAuthClientInput, required: true }),
     redirectUri: t.string({ required: false }),
@@ -355,6 +452,62 @@ const AuthStartInput = builder.inputType("AuthStartInput", {
     scopes: t.stringList({ required: false }),
     codeChallenge: t.string({ required: false }),
     codeChallengeMethod: t.field({ type: CodeChallengeMethodEnum, required: false }),
+  }),
+});
+
+const EmailChallengeStartInput = builder.inputType("EmailChallengeStartInput", {
+  fields: (t) => ({
+    adapter: t.field({ type: AdapterIdScalar, required: false }),
+    origin: t.string({ required: true }),
+    identifier: t.string({ required: true }),
+    locale: t.string({ required: false }),
+    verificationUriTemplate: t.string({ required: true }),
+  }),
+});
+
+const EmailChallengeVerifyInput = builder.inputType("EmailChallengeVerifyInput", {
+  fields: (t) => ({
+    adapter: t.field({ type: AdapterIdScalar, required: false }),
+    origin: t.string({ required: true }),
+    challengeId: t.string({ required: true }),
+    code: t.string({ required: true }),
+  }),
+});
+
+const PasskeyStartInput = builder.inputType("PasskeyStartInput", {
+  fields: (t) => ({
+    adapter: t.field({ type: AdapterIdScalar, required: false }),
+    origin: t.string({ required: true }),
+    identifier: t.string({ required: false }),
+  }),
+});
+
+const PasskeyAuthenticationResponseInput = builder.inputType("PasskeyAuthenticationResponseInput", {
+  fields: (t) => ({
+    clientDataJSON: t.string({ required: true }),
+    authenticatorData: t.string({ required: true }),
+    signature: t.string({ required: true }),
+    userHandle: t.string({ required: false }),
+  }),
+});
+
+const PasskeyCredentialInput = builder.inputType("PasskeyCredentialInput", {
+  fields: (t) => ({
+    id: t.string({ required: true }),
+    rawId: t.string({ required: true }),
+    type: t.string({ required: true }),
+    authenticatorAttachment: t.string({ required: false }),
+    response: t.field({ type: PasskeyAuthenticationResponseInput, required: true }),
+    clientExtensionResults: t.field({ type: JsonScalar, required: false }),
+  }),
+});
+
+const PasskeyFinishInput = builder.inputType("PasskeyFinishInput", {
+  fields: (t) => ({
+    adapter: t.field({ type: AdapterIdScalar, required: false }),
+    origin: t.string({ required: true }),
+    challengeId: t.string({ required: true }),
+    credential: t.field({ type: PasskeyCredentialInput, required: true }),
   }),
 });
 
@@ -376,7 +529,7 @@ const AuthCallbackInput = builder.inputType("AuthCallbackInput", {
 
 const OAuthCallbackStateBindingInput = builder.inputType("OAuthCallbackStateBindingInput", {
   fields: (t) => ({
-    adapter: t.field({ type: AdapterKindEnum, required: true }),
+    adapter: t.field({ type: AdapterIdScalar, required: true }),
     origin: t.string({ required: true }),
     clientRequestId: t.string({ required: true }),
   }),
@@ -384,7 +537,7 @@ const OAuthCallbackStateBindingInput = builder.inputType("OAuthCallbackStateBind
 
 const AuthExchangeInput = builder.inputType("AuthExchangeInput", {
   fields: (t) => ({
-    adapter: t.field({ type: AdapterKindEnum, required: true }),
+    adapter: t.field({ type: AdapterIdScalar, required: true }),
     origin: t.string({ required: true }),
     client: t.field({ type: OAuthRegisteredClientInput, required: false }),
     code: t.string({ required: false }),
@@ -408,6 +561,8 @@ const PageInput = builder.inputType("PageInput", {
 
 const SearchPageInput = builder.inputType("SearchPageInput", {
   fields: (t) => ({
+    after: t.string({ required: false }),
+    before: t.string({ required: false }),
     limit: t.int({ required: false }),
   }),
 });
@@ -415,14 +570,14 @@ const SearchPageInput = builder.inputType("SearchPageInput", {
 const DetectInstanceInput = builder.inputType("DetectInstanceInput", {
   fields: (t) => ({
     origin: t.string({ required: true }),
-    adapter: t.field({ type: AdapterKindEnum, required: false }),
+    adapter: t.field({ type: AdapterIdScalar, required: false }),
   }),
 });
 
 const SearchInput = builder.inputType("SearchInput", {
   fields: (t) => ({
     origin: t.string({ required: true }),
-    adapter: t.field({ type: AdapterKindEnum, required: false }),
+    adapter: t.field({ type: AdapterIdScalar, required: false }),
     query: t.string({ required: true }),
     type: t.field({
       type: SearchTypeEnum,
@@ -432,15 +587,13 @@ const SearchInput = builder.inputType("SearchInput", {
     }),
     resolve: t.boolean({ required: false }),
     page: t.field({ type: SearchPageInput, required: false }),
-    sessionId: t.id({ required: false }),
   }),
 });
 
 const UploadMediaInput = builder.inputType("UploadMediaInput", {
   fields: (t) => ({
     origin: t.string({ required: true }),
-    adapter: t.field({ type: AdapterKindEnum, required: false }),
-    sessionId: t.id({ required: true }),
+    adapter: t.field({ type: AdapterIdScalar, required: false }),
     fileBase64: t.string({ required: true }),
     filename: t.string({ required: false }),
     contentType: t.string({ required: false }),
@@ -452,8 +605,7 @@ const UploadMediaInput = builder.inputType("UploadMediaInput", {
 const UploadMediaFromUrlInput = builder.inputType("UploadMediaFromUrlInput", {
   fields: (t) => ({
     origin: t.string({ required: true }),
-    adapter: t.field({ type: AdapterKindEnum, required: false }),
-    sessionId: t.id({ required: true }),
+    adapter: t.field({ type: AdapterIdScalar, required: false }),
     url: t.string({ required: true }),
     description: t.string({ required: false }),
     sensitive: t.boolean({ required: false }),
@@ -463,7 +615,6 @@ const UploadMediaFromUrlInput = builder.inputType("UploadMediaFromUrlInput", {
 const UpdateMediaInput = builder.inputType("UpdateMediaInput", {
   fields: (t) => ({
     id: t.id({ required: true }),
-    sessionId: t.id({ required: true }),
     description: t.string({ required: false }),
     sensitive: t.boolean({ required: false }),
   }),
@@ -472,7 +623,6 @@ const UpdateMediaInput = builder.inputType("UpdateMediaInput", {
 const DeleteMediaInput = builder.inputType("DeleteMediaInput", {
   fields: (t) => ({
     id: t.id({ required: true }),
-    sessionId: t.id({ required: true }),
   }),
 });
 
@@ -486,8 +636,7 @@ const AccountFieldInput = builder.inputType("AccountFieldInput", {
 const UpdateProfileInput = builder.inputType("UpdateProfileInput", {
   fields: (t) => ({
     origin: t.string({ required: true }),
-    adapter: t.field({ type: AdapterKindEnum, required: false }),
-    sessionId: t.id({ required: true }),
+    adapter: t.field({ type: AdapterIdScalar, required: false }),
     displayName: t.string({ required: false }),
     note: t.string({ required: false }),
     avatarId: t.id({ required: false }),
@@ -502,15 +651,14 @@ const CreatePollInput = builder.inputType("CreatePollInput", {
   fields: (t) => ({
     options: t.stringList({ required: true }),
     multiple: t.boolean({ required: false }),
-    expiresInSeconds: t.int({ required: false }),
+    expiresInSeconds: t.int({ required: true }),
   }),
 });
 
 const CreatePostInput = builder.inputType("CreatePostInput", {
   fields: (t) => ({
     origin: t.string({ required: true }),
-    adapter: t.field({ type: AdapterKindEnum, required: false }),
-    sessionId: t.id({ required: true }),
+    adapter: t.field({ type: AdapterIdScalar, required: false }),
     content: t.string({ required: true }),
     visibility: t.field({ type: PostVisibilityInputEnum, required: false }),
     sensitive: t.boolean({ required: false }),
@@ -526,8 +674,7 @@ const UpdatePostInput = builder.inputType("UpdatePostInput", {
   fields: (t) => ({
     id: t.id({ required: true }),
     origin: t.string({ required: false }),
-    adapter: t.field({ type: AdapterKindEnum, required: false }),
-    sessionId: t.id({ required: true }),
+    adapter: t.field({ type: AdapterIdScalar, required: false }),
     content: t.string({ required: false }),
     visibility: t.field({ type: PostVisibilityInputEnum, required: false }),
     sensitive: t.boolean({ required: false }),
@@ -542,8 +689,7 @@ const UpdatePostInput = builder.inputType("UpdatePostInput", {
 const CreateListInput = builder.inputType("CreateListInput", {
   fields: (t) => ({
     origin: t.string({ required: true }),
-    adapter: t.field({ type: AdapterKindEnum, required: false }),
-    sessionId: t.id({ required: true }),
+    adapter: t.field({ type: AdapterIdScalar, required: false }),
     title: t.string({ required: true }),
     repliesPolicy: t.field({ type: ListRepliesPolicyInputEnum, required: false }),
     exclusive: t.boolean({ required: false }),
@@ -554,8 +700,7 @@ const UpdateListInput = builder.inputType("UpdateListInput", {
   fields: (t) => ({
     id: t.id({ required: true }),
     origin: t.string({ required: false }),
-    adapter: t.field({ type: AdapterKindEnum, required: false }),
-    sessionId: t.id({ required: true }),
+    adapter: t.field({ type: AdapterIdScalar, required: false }),
     title: t.string({ required: true }),
     repliesPolicy: t.field({ type: ListRepliesPolicyInputEnum, required: false }),
     exclusive: t.boolean({ required: false }),
@@ -572,8 +717,7 @@ const FilterKeywordInput = builder.inputType("FilterKeywordInput", {
 const CreateFilterInput = builder.inputType("CreateFilterInput", {
   fields: (t) => ({
     origin: t.string({ required: true }),
-    adapter: t.field({ type: AdapterKindEnum, required: false }),
-    sessionId: t.id({ required: true }),
+    adapter: t.field({ type: AdapterIdScalar, required: false }),
     title: t.string({ required: true }),
     context: t.field({ type: [FilterContextInputEnum], required: true }),
     action: t.field({ type: FilterActionInputEnum, required: false }),
@@ -586,8 +730,7 @@ const UpdateFilterInput = builder.inputType("UpdateFilterInput", {
   fields: (t) => ({
     id: t.id({ required: true }),
     origin: t.string({ required: false }),
-    adapter: t.field({ type: AdapterKindEnum, required: false }),
-    sessionId: t.id({ required: true }),
+    adapter: t.field({ type: AdapterIdScalar, required: false }),
     title: t.string({ required: true }),
     context: t.field({ type: [FilterContextInputEnum], required: true }),
     action: t.field({ type: FilterActionInputEnum, required: false }),
@@ -599,8 +742,7 @@ const UpdateFilterInput = builder.inputType("UpdateFilterInput", {
 const SchedulePostInput = builder.inputType("SchedulePostInput", {
   fields: (t) => ({
     origin: t.string({ required: true }),
-    adapter: t.field({ type: AdapterKindEnum, required: false }),
-    sessionId: t.id({ required: true }),
+    adapter: t.field({ type: AdapterIdScalar, required: false }),
     content: t.string({ required: true }),
     scheduledAt: t.string({ required: true }),
     visibility: t.field({ type: PostVisibilityInputEnum, required: false }),
@@ -616,7 +758,6 @@ const SchedulePostInput = builder.inputType("SchedulePostInput", {
 const UpdateScheduledPostInput = builder.inputType("UpdateScheduledPostInput", {
   fields: (t) => ({
     id: t.id({ required: true }),
-    sessionId: t.id({ required: true }),
     scheduledAt: t.string({ required: true }),
   }),
 });
@@ -624,7 +765,6 @@ const UpdateScheduledPostInput = builder.inputType("UpdateScheduledPostInput", {
 const ListAccountInput = builder.inputType("ListAccountInput", {
   fields: (t) => ({
     id: t.id({ required: true }),
-    sessionId: t.id({ required: true }),
     accountId: t.id({ required: true }),
   }),
 });
@@ -632,7 +772,6 @@ const ListAccountInput = builder.inputType("ListAccountInput", {
 const MuteAccountInput = builder.inputType("MuteAccountInput", {
   fields: (t) => ({
     accountId: t.id({ required: true }),
-    sessionId: t.id({ required: true }),
     notifications: t.boolean({ required: false }),
     durationSeconds: t.int({ required: false }),
   }),
@@ -641,7 +780,6 @@ const MuteAccountInput = builder.inputType("MuteAccountInput", {
 const BoostPostInput = builder.inputType("BoostPostInput", {
   fields: (t) => ({
     postId: t.id({ required: true }),
-    sessionId: t.id({ required: true }),
     visibility: t.field({ type: PostVisibilityInputEnum, required: false }),
   }),
 });
@@ -649,7 +787,6 @@ const BoostPostInput = builder.inputType("BoostPostInput", {
 const ReactPostInput = builder.inputType("ReactPostInput", {
   fields: (t) => ({
     postId: t.id({ required: true }),
-    sessionId: t.id({ required: true }),
     emoji: t.string({ required: true }),
   }),
 });
@@ -657,7 +794,6 @@ const ReactPostInput = builder.inputType("ReactPostInput", {
 const VotePollInput = builder.inputType("VotePollInput", {
   fields: (t) => ({
     id: t.id({ required: true }),
-    sessionId: t.id({ required: true }),
     choices: t.intList({ required: true }),
   }),
 });
@@ -704,7 +840,7 @@ const EntityRefType = builder.objectRef<PublicEntityRef>("EntityRef").implement(
     id: t.exposeID("id"),
     type: t.exposeString("type"),
     adapter: t.field({
-      type: AdapterKindEnum,
+      type: AdapterIdScalar,
       resolve: (ref) => adapterKindValue(ref.adapter),
     }),
     origin: t.exposeString("origin"),
@@ -717,10 +853,11 @@ const AuthSessionType = builder.objectRef<PublicAuthSession>("AuthSession").impl
   fields: (t) => ({
     id: t.exposeID("id"),
     adapter: t.field({
-      type: AdapterKindEnum,
+      type: AdapterIdScalar,
       resolve: (session) => adapterKindValue(session.adapter),
     }),
     origin: t.exposeString("origin"),
+    strategy: t.exposeString("strategy"),
     account: t.expose("account", { type: EntityRefType, nullable: true }),
     scopes: t.exposeStringList("scopes"),
     capabilities: t.field({
@@ -749,7 +886,7 @@ const AuthStartPayloadType = builder.objectRef<AuthStartPayload>("AuthStartPaylo
         .implement({
           fields: (binding) => ({
             adapter: binding.field({
-              type: AdapterKindEnum,
+              type: AdapterIdScalar,
               resolve: (value) => adapterKindValue(value.adapter),
             }),
             origin: binding.exposeString("origin"),
@@ -760,6 +897,50 @@ const AuthStartPayloadType = builder.objectRef<AuthStartPayload>("AuthStartPaylo
     }),
   }),
 });
+
+const EmailChallengeStartPayloadType = builder
+  .objectRef<EmailChallengeStartResult>("EmailChallengeStartPayload")
+  .implement({
+    fields: (t) => ({
+      challengeId: t.exposeString("challengeId"),
+      expiresAt: t.exposeString("expiresAt"),
+    }),
+  });
+
+const PasskeyCredentialDescriptorType = builder
+  .objectRef<PasskeyCredentialDescriptor>("PasskeyCredentialDescriptor")
+  .implement({
+    fields: (t) => ({
+      id: t.exposeString("id"),
+      type: t.exposeString("type"),
+      transports: t.exposeStringList("transports", { nullable: true }),
+    }),
+  });
+
+const PasskeyPublicKeyRequestType = builder
+  .objectRef<PasskeyPublicKeyRequest>("PasskeyPublicKeyRequest")
+  .implement({
+    fields: (t) => ({
+      challenge: t.exposeString("challenge"),
+      timeout: t.exposeInt("timeout", { nullable: true }),
+      rpId: t.exposeString("rpId", { nullable: true }),
+      allowCredentials: t.expose("allowCredentials", {
+        type: [PasskeyCredentialDescriptorType],
+        nullable: true,
+      }),
+      userVerification: t.exposeString("userVerification", { nullable: true }),
+    }),
+  });
+
+const PasskeyStartPayloadType = builder
+  .objectRef<PasskeyStartResult>("PasskeyStartPayload")
+  .implement({
+    fields: (t) => ({
+      challengeId: t.exposeString("challengeId"),
+      options: t.expose("options", { type: PasskeyPublicKeyRequestType }),
+      expiresAt: t.exposeString("expiresAt"),
+    }),
+  });
 
 const AccountType = builder.objectRef<PublicAccount>("Account").implement({
   fields: (t) => ({
@@ -835,33 +1016,44 @@ const InstanceType = builder.objectRef<PublicInstanceProfile>("Instance").implem
   }),
 });
 
+const OAuthMetadataType = builder.objectRef<PublicOAuthMetadata>("OAuthMetadata").implement({
+  fields: (t) => ({
+    authorizationEndpoint: t.exposeString("authorizationEndpoint"),
+    tokenEndpoint: t.exposeString("tokenEndpoint"),
+    registrationEndpoint: t.exposeString("registrationEndpoint", { nullable: true }),
+    revocationEndpoint: t.exposeString("revocationEndpoint", { nullable: true }),
+    scopesSupported: t.exposeStringList("scopesSupported"),
+    codeChallengeMethodsSupported: t.exposeStringList("codeChallengeMethodsSupported"),
+    raw: t.field({ type: JsonScalar, resolve: (value) => value.raw }),
+  }),
+});
+
+const InstancePeersType = builder.objectRef<PublicInstancePeers>("InstancePeers").implement({
+  fields: (t) => ({
+    origins: t.exposeStringList("origins"),
+    raw: t.field({ type: JsonScalar, resolve: (value) => value.raw }),
+  }),
+});
+
+const OAuthClientRegistrationType = builder
+  .objectRef<PublicOAuthClientRegistration>("OAuthClientRegistration")
+  .implement({
+    fields: (t) => ({
+      clientId: t.exposeString("clientId"),
+      redirectUris: t.exposeStringList("redirectUris"),
+      scopes: t.exposeStringList("scopes", { nullable: true }),
+    }),
+  });
+
 const PageInfoType = builder.objectRef<PageInfoPayload>("PageInfo").implement({
   fields: (t) => ({
     hasNextPage: t.exposeBoolean("hasNextPage"),
     hasPreviousPage: t.exposeBoolean("hasPreviousPage"),
     startCursor: t.exposeString("startCursor", { nullable: true }),
     endCursor: t.exposeString("endCursor", { nullable: true }),
-    raw: t.field({
-      type: JsonScalar,
-      nullable: true,
-      resolve: (value) => value.raw,
-    }),
   }),
 });
 
-function reservedObjectType(name: string) {
-  return builder.objectRef<ReservedEntity>(name).implement({
-    fields: (t) => ({
-      id: t.exposeID("id"),
-      raw: t.field({
-        type: JsonScalar,
-        resolve: (value) => value.raw,
-      }),
-    }),
-  });
-}
-
-const PostContextType = reservedObjectType("PostContext");
 const MediaAttachmentType = builder.objectRef<PublicMediaAttachment>("MediaAttachment").implement({
   fields: (t) => ({
     ref: t.expose("ref", { type: EntityRefType }),
@@ -927,6 +1119,11 @@ const PostType = builder.objectRef<PublicPost>("Post").implement({
       nullable: true,
       resolve: (post) => post.counts,
     }),
+    viewerState: t.field({
+      type: JsonScalar,
+      nullable: true,
+      resolve: (post) => post.viewerState,
+    }),
     extensions: t.field({
       type: JsonScalar,
       nullable: true,
@@ -936,6 +1133,21 @@ const PostType = builder.objectRef<PublicPost>("Post").implement({
       type: JsonScalar,
       resolve: (post) => post.raw,
     }),
+  }),
+});
+const PostContextType = builder.objectRef<PublicPostContext>("PostContext").implement({
+  fields: (t) => ({
+    ancestors: t.expose("ancestors", { type: [PostType] }),
+    descendants: t.expose("descendants", { type: [PostType] }),
+  }),
+});
+const PostTranslationType = builder.objectRef<PublicPostTranslation>("PostTranslation").implement({
+  fields: (t) => ({
+    contentHtml: t.exposeString("contentHtml"),
+    summary: t.exposeString("summary", { nullable: true }),
+    detectedSourceLanguage: t.exposeString("detectedSourceLanguage", { nullable: true }),
+    provider: t.exposeString("provider", { nullable: true }),
+    raw: t.field({ type: JsonScalar, resolve: (value) => value.raw }),
   }),
 });
 const NotificationType = builder.objectRef<PublicNotification>("Notification").implement({
@@ -951,6 +1163,16 @@ const NotificationType = builder.objectRef<PublicNotification>("Notification").i
     }),
   }),
 });
+const NotificationGroupType = builder
+  .objectRef<PublicNotificationGroup>("NotificationGroup")
+  .implement({
+    fields: (t) => ({
+      key: t.exposeString("key"),
+      type: t.exposeString("type"),
+      notifications: t.expose("notifications", { type: [NotificationType] }),
+      raw: t.field({ type: JsonScalar, resolve: (value) => value.raw }),
+    }),
+  });
 const ListType = builder.objectRef<PublicList>("List").implement({
   fields: (t) => ({
     ref: t.expose("ref", { type: EntityRefType }),
@@ -961,6 +1183,14 @@ const ListType = builder.objectRef<PublicList>("List").implement({
       type: JsonScalar,
       resolve: (value) => value.raw,
     }),
+  }),
+});
+const BookmarkFolderType = builder.objectRef<PublicBookmarkFolder>("BookmarkFolder").implement({
+  fields: (t) => ({
+    ref: t.expose("ref", { type: EntityRefType }),
+    name: t.exposeString("name"),
+    postCount: t.exposeInt("postCount", { nullable: true }),
+    raw: t.field({ type: JsonScalar, resolve: (value) => value.raw }),
   }),
 });
 const FilterKeywordType = builder
@@ -1048,6 +1278,7 @@ const SearchResultType = builder.objectRef<PublicSearchResult>("SearchResult").i
     accounts: t.expose("accounts", { type: [AccountType] }),
     posts: t.expose("posts", { type: [PostType] }),
     hashtags: t.field({ type: [HashtagType], resolve: (value) => value.hashtags }),
+    pageInfo: t.field({ type: PageInfoType, resolve: (value) => value.pageInfo }),
     raw: t.field({ type: JsonScalar, resolve: (value) => value.raw }),
   }),
 });
@@ -1117,8 +1348,8 @@ function connectionType<
   });
 }
 
-const PostConnectionType = connectionType<ReservedConnectionPayload>("PostConnection", PostType);
-const TimelineConnectionType = connectionType<ReservedConnectionPayload>(
+const PostConnectionType = connectionType<PostConnectionPayload>("PostConnection", PostType);
+const TimelineConnectionType = connectionType<PostConnectionPayload>(
   "TimelineConnection",
   PostType,
 );
@@ -1126,10 +1357,18 @@ const NotificationConnectionType = connectionType<{
   readonly nodes: readonly PublicNotification[];
   readonly pageInfo: PageInfoPayload;
 }>("NotificationConnection", NotificationType);
+const NotificationGroupConnectionType = connectionType<{
+  readonly nodes: readonly PublicNotificationGroup[];
+  readonly pageInfo: PageInfoPayload;
+}>("NotificationGroupConnection", NotificationGroupType);
 const ListConnectionType = connectionType<{
   readonly nodes: readonly PublicList[];
   readonly pageInfo: PageInfoPayload;
 }>("ListConnection", ListType);
+const BookmarkFolderConnectionType = connectionType<{
+  readonly nodes: readonly PublicBookmarkFolder[];
+  readonly pageInfo: PageInfoPayload;
+}>("BookmarkFolderConnection", BookmarkFolderType);
 const FilterConnectionType = connectionType<{
   readonly nodes: readonly PublicFilter[];
   readonly pageInfo: PageInfoPayload;
@@ -1142,13 +1381,16 @@ const ScheduledPostConnectionType = connectionType<{
 registerGraphQLOperations({
   AccountConnectionType,
   AccountType,
-  AdapterKindEnum,
+  AdapterIdScalar,
   NotificationTypeInputEnum,
   AuthCallbackInput,
   AuthExchangeInput,
   AuthSessionType,
   AuthStartInput,
   AuthStartPayloadType,
+  EmailChallengeStartInput,
+  EmailChallengeStartPayloadType,
+  EmailChallengeVerifyInput,
   BoostPostInput,
   CapabilitySet,
   CreatePostInput,
@@ -1169,10 +1411,12 @@ registerGraphQLOperations({
   MuteAccountInput,
   NotificationConnectionType,
   PageInput,
+  PasskeyFinishInput,
+  PasskeyStartInput,
+  PasskeyStartPayloadType,
   ParsedAuthCallbackType,
   PollType,
   PostConnectionType,
-  PostContextType,
   PostRevisionType,
   PostType,
   ReactPostInput,
@@ -1199,12 +1443,16 @@ registerGraphQLOperations({
   nonBlankString,
   normalizeAuthExchange,
   normalizeAuthStart,
+  normalizeEmailChallengeStart,
+  normalizeEmailChallengeVerify,
   normalizeBoostInput,
   normalizeCallbackInput,
   normalizeCreatePostInput,
   normalizeImportToken,
   normalizeMuteInput,
   normalizePageInput,
+  normalizePasskeyFinish,
+  normalizePasskeyStart,
   normalizeReactInput,
   normalizeSearchInput,
   normalizeUploadMediaInput,
@@ -1237,24 +1485,288 @@ registerGraphQLOperations({
   withGraphQLErrorContract,
 });
 
+builder.queryFields((t) => ({
+  oauthMetadata: t.field({
+    type: OAuthMetadataType,
+    args: {
+      origin: t.arg.string({ required: true }),
+      adapter: t.arg({ type: AdapterIdScalar, required: false }),
+    },
+    resolve: async (_parent, args, context) =>
+      withGraphQLErrorContract(async () =>
+        serializeOAuthMetadata(
+          await context.service.instances.oauthMetadata({
+            origin: nonBlankString(args.origin, "origin"),
+            ...(args.adapter === null || args.adapter === undefined
+              ? {}
+              : { adapter: args.adapter }),
+          }),
+        ),
+      ),
+  }),
+  peers: t.field({
+    type: InstancePeersType,
+    args: {
+      origin: t.arg.string({ required: true }),
+      adapter: t.arg({ type: AdapterIdScalar, required: false }),
+    },
+    resolve: async (_parent, args, context) =>
+      withGraphQLErrorContract(async () =>
+        serializeInstancePeers(
+          await context.service.instances.peers({
+            origin: nonBlankString(args.origin, "origin"),
+            ...(args.adapter === null || args.adapter === undefined
+              ? {}
+              : { adapter: args.adapter }),
+          }),
+        ),
+      ),
+  }),
+  postContext: t.field({
+    type: PostContextType,
+    args: { id: t.arg.id({ required: true }) },
+    resolve: async (_parent, args, context) =>
+      withGraphQLErrorContract(async () =>
+        serializePostContext(await context.service.posts.context({ id: args.id })),
+      ),
+  }),
+  postQuotes: t.field({
+    type: PostConnectionType,
+    args: { id: t.arg.id({ required: true }), page: t.arg({ type: PageInput }) },
+    resolve: async (_parent, args, context) =>
+      withGraphQLErrorContract(async () =>
+        serializePostConnection(
+          await context.service.posts.quotes({
+            id: args.id,
+            page: normalizePageInput(args.page),
+          }),
+        ),
+      ),
+  }),
+  media: t.field({
+    type: MediaAttachmentType,
+    args: { id: t.arg.id({ required: true }) },
+    resolve: async (_parent, args, context) =>
+      withGraphQLErrorContract(async () =>
+        serializeMediaAttachment(await context.service.media.get({ id: args.id })),
+      ),
+  }),
+  localTimeline: t.field({
+    type: TimelineConnectionType,
+    args: {
+      origin: t.arg.string({ required: true }),
+      adapter: t.arg({ type: AdapterIdScalar, required: false }),
+      page: t.arg({ type: PageInput }),
+    },
+    resolve: async (_parent, args, context) =>
+      withGraphQLErrorContract(async () =>
+        serializePostConnection(
+          await context.service.timelines.local({
+            origin: nonBlankString(args.origin, "origin"),
+            ...(args.adapter === null || args.adapter === undefined
+              ? {}
+              : { adapter: args.adapter }),
+            ...optionalBearerSessionId(context.request.headers.get("authorization") ?? undefined),
+            page: normalizePageInput(args.page),
+          }),
+        ),
+      ),
+  }),
+  notificationGroups: t.field({
+    type: NotificationGroupConnectionType,
+    args: {
+      origin: t.arg.string({ required: false }),
+      adapter: t.arg({ type: AdapterIdScalar, required: false }),
+      types: t.arg({ type: [NotificationTypeInputEnum] }),
+      page: t.arg({ type: PageInput }),
+    },
+    resolve: async (_parent, args, context) =>
+      withGraphQLErrorContract(async () =>
+        serializeNotificationGroupConnection(
+          await context.service.notifications.groups({
+            ...(args.origin === null || args.origin === undefined
+              ? {}
+              : { origin: nonBlankString(args.origin, "origin") }),
+            ...(args.adapter === null || args.adapter === undefined
+              ? {}
+              : { adapter: args.adapter }),
+            sessionId: bearerSessionId(context.request.headers.get("authorization") ?? undefined),
+            ...(args.types === null || args.types === undefined
+              ? {}
+              : { types: args.types.map((type) => notificationTypeInput(type)) }),
+            page: normalizePageInput(args.page),
+          }),
+        ),
+      ),
+  }),
+  bookmarkFolders: t.field({
+    type: BookmarkFolderConnectionType,
+    args: {
+      origin: t.arg.string({ required: false }),
+      adapter: t.arg({ type: AdapterIdScalar, required: false }),
+      page: t.arg({ type: PageInput }),
+    },
+    resolve: async (_parent, args, context) =>
+      withGraphQLErrorContract(async () =>
+        serializeBookmarkFolderConnection(
+          await context.service.bookmarkFolders.list({
+            ...(args.origin === null || args.origin === undefined
+              ? {}
+              : { origin: nonBlankString(args.origin, "origin") }),
+            ...(args.adapter === null || args.adapter === undefined
+              ? {}
+              : { adapter: args.adapter }),
+            sessionId: bearerSessionId(context.request.headers.get("authorization") ?? undefined),
+            page: normalizePageInput(args.page),
+          }),
+        ),
+      ),
+  }),
+}));
+
+builder.mutationFields((t) => ({
+  registerOAuthClient: t.field({
+    type: OAuthClientRegistrationType,
+    args: { input: t.arg({ type: RegisterOAuthClientInput, required: true }) },
+    resolve: async (_parent, { input }, context) =>
+      withGraphQLErrorContract(async () => {
+        if (input.client.redirectUris.length === 0) {
+          throw new ActivityPlugError(
+            "VALIDATION_FAILED",
+            "GraphQL input field must include at least one redirect URI: client.redirectUris.",
+          );
+        }
+        const origin = await context.assertOAuthClientRegistrationAllowed(
+          nonBlankString(input.origin, "origin"),
+        );
+        return serializeOAuthClientRegistration(
+          await context.service.auth.registerClient({
+            origin,
+            ...(input.adapter === null || input.adapter === undefined
+              ? {}
+              : { adapter: input.adapter }),
+            client: {
+              clientName: nonBlankString(input.client.clientName, "client.clientName"),
+              redirectUris: input.client.redirectUris.map((redirectUri, index) =>
+                canonicalUriString(redirectUri, `client.redirectUris[${index}]`),
+              ),
+              ...(input.client.scopes === null || input.client.scopes === undefined
+                ? {}
+                : { scopes: input.client.scopes }),
+              ...(input.client.website === null || input.client.website === undefined
+                ? {}
+                : { website: nonBlankString(input.client.website, "client.website") }),
+            },
+          }),
+        );
+      }),
+  }),
+  translatePost: t.field({
+    type: PostTranslationType,
+    args: { input: t.arg({ type: TranslatePostInput, required: true }) },
+    resolve: async (_parent, { input }, context) =>
+      withGraphQLErrorContract(async () =>
+        serializePostTranslation(
+          await context.service.posts.translate({
+            id: input.id,
+            sessionId: bearerSessionId(context.request.headers.get("authorization") ?? undefined),
+            targetLanguage: nonBlankString(input.targetLanguage, "targetLanguage"),
+            ...(input.sourceLanguage === null || input.sourceLanguage === undefined
+              ? {}
+              : { sourceLanguage: nonBlankString(input.sourceLanguage, "sourceLanguage") }),
+          }),
+        ),
+      ),
+  }),
+  createBookmarkFolder: t.field({
+    type: BookmarkFolderType,
+    args: { input: t.arg({ type: CreateBookmarkFolderInput, required: true }) },
+    resolve: async (_parent, { input }, context) =>
+      withGraphQLErrorContract(async () =>
+        serializeBookmarkFolder(
+          await context.service.bookmarkFolders.create({
+            ...(input.origin === null || input.origin === undefined
+              ? {}
+              : { origin: nonBlankString(input.origin, "origin") }),
+            ...(input.adapter === null || input.adapter === undefined
+              ? {}
+              : { adapter: input.adapter }),
+            sessionId: bearerSessionId(context.request.headers.get("authorization") ?? undefined),
+            name: nonBlankString(input.name, "name"),
+          }),
+        ),
+      ),
+  }),
+  updateBookmarkFolder: t.field({
+    type: BookmarkFolderType,
+    args: { input: t.arg({ type: UpdateBookmarkFolderInput, required: true }) },
+    resolve: async (_parent, { input }, context) =>
+      withGraphQLErrorContract(async () =>
+        serializeBookmarkFolder(
+          await context.service.bookmarkFolders.update({
+            id: input.id,
+            sessionId: bearerSessionId(context.request.headers.get("authorization") ?? undefined),
+            name: nonBlankString(input.name, "name"),
+          }),
+        ),
+      ),
+  }),
+  deleteBookmarkFolder: t.field({
+    type: DeletedEntityType,
+    args: { id: t.arg.id({ required: true }) },
+    resolve: async (_parent, { id }, context) =>
+      withGraphQLErrorContract(async () =>
+        serializeDeletedEntity(
+          await context.service.bookmarkFolders.delete({
+            id,
+            sessionId: bearerSessionId(context.request.headers.get("authorization") ?? undefined),
+          }),
+        ),
+      ),
+  }),
+  addPostToBookmarkFolder: t.field({
+    type: BookmarkFolderType,
+    args: { input: t.arg({ type: BookmarkFolderPostInput, required: true }) },
+    resolve: async (_parent, { input }, context) =>
+      withGraphQLErrorContract(async () =>
+        serializeBookmarkFolder(
+          await context.service.bookmarkFolders.addPost({
+            folderId: input.folderId,
+            postId: input.postId,
+            sessionId: bearerSessionId(context.request.headers.get("authorization") ?? undefined),
+          }),
+        ),
+      ),
+  }),
+  removePostFromBookmarkFolder: t.field({
+    type: BookmarkFolderType,
+    args: { input: t.arg({ type: BookmarkFolderPostInput, required: true }) },
+    resolve: async (_parent, { input }, context) =>
+      withGraphQLErrorContract(async () =>
+        serializeBookmarkFolder(
+          await context.service.bookmarkFolders.removePost({
+            folderId: input.folderId,
+            postId: input.postId,
+            sessionId: bearerSessionId(context.request.headers.get("authorization") ?? undefined),
+          }),
+        ),
+      ),
+  }),
+}));
+
 builder.subscriptionType({
   fields: (t) => ({
     timelineStream: t.field({
       type: StreamEventType,
       args: {
         origin: t.arg.string({ required: true }),
-        adapter: t.arg({ type: AdapterKindEnum, required: false }),
-        sessionId: t.arg.id({ required: false }),
+        adapter: t.arg({ type: AdapterIdScalar, required: false }),
         type: t.arg({ type: TimelineStreamKindEnum, required: true }),
         tag: t.arg.string({ required: false }),
         listId: t.arg.id({ required: false }),
       },
       subscribe: async (_parent, args, context) =>
         withGraphQLErrorContract(async () => {
-          const sessionId =
-            args.sessionId === null || args.sessionId === undefined
-              ? undefined
-              : nonBlankString(args.sessionId, "sessionId");
           const listId =
             args.listId === null || args.listId === undefined
               ? undefined
@@ -1265,7 +1777,7 @@ builder.subscriptionType({
               ...(args.adapter === null || args.adapter === undefined
                 ? {}
                 : { adapter: args.adapter }),
-              ...(sessionId === undefined ? {} : { sessionId }),
+              ...optionalBearerSessionId(context.request.headers.get("authorization") ?? undefined),
               type: normalizeTimelineStreamKind(args.type),
               ...(args.tag === null || args.tag === undefined ? {} : { tag: args.tag }),
               ...(listId === undefined ? {} : { listId }),
@@ -1277,15 +1789,14 @@ builder.subscriptionType({
     notificationStream: t.field({
       type: StreamEventType,
       args: {
-        sessionId: t.arg.id({ required: true }),
         origin: t.arg.string({ required: true }),
-        adapter: t.arg({ type: AdapterKindEnum, required: false }),
+        adapter: t.arg({ type: AdapterIdScalar, required: false }),
       },
       subscribe: async (_parent, args, context) =>
         withGraphQLErrorContract(async () => {
           return graphQLStream(
             await context.service.streams.notifications({
-              sessionId: nonBlankString(args.sessionId, "sessionId"),
+              sessionId: bearerSessionId(context.request.headers.get("authorization") ?? undefined),
               origin: nonBlankString(args.origin, "origin"),
               ...(args.adapter === null || args.adapter === undefined
                 ? {}

@@ -1,4 +1,5 @@
 import { maxPageLimit } from "@activityplug/core";
+import { z } from "zod";
 
 import { type OpenApiDocument } from "./openapi.js";
 
@@ -63,7 +64,7 @@ export function validateOperation(
     if (operationDocument.responses["101"] === undefined) {
       throw new TypeError(`OpenAPI operation ${label} must include a 101 WebSocket response.`);
     }
-    for (const status of ["400", "401", "404", "409", "429", "500", "502", "504"]) {
+    for (const status of ["400", "401", "403", "404", "409", "413", "429", "500", "502", "504"]) {
       const response = operationDocument.responses[status];
       if (!isResponseReference(response, responses)) {
         throw new TypeError(`OpenAPI operation ${label} must include ${status} error response.`);
@@ -87,7 +88,7 @@ export function validateOperation(
   ) {
     throw new TypeError(`OpenAPI operation ${label} must include a typed request body.`);
   }
-  for (const status of ["400", "401", "404", "409", "429", "500", "502", "504"]) {
+  for (const status of ["400", "401", "403", "404", "409", "413", "429", "500", "502", "504"]) {
     const response = operationDocument.responses[status];
     if (!isResponseReference(response, responses)) {
       throw new TypeError(`OpenAPI operation ${label} must include ${status} error response.`);
@@ -410,7 +411,7 @@ export function objectSchema(
 
 export function adapterSchema(): unknown {
   return {
-    $ref: "#/components/schemas/AdapterKind",
+    $ref: "#/components/schemas/AdapterId",
   };
 }
 
@@ -432,7 +433,7 @@ export function authExchangeCommonProperties(): Record<string, unknown> {
   return {
     adapter: adapterSchema(),
     origin: nonEmptyStringSchema(),
-    client: { $ref: "#/components/schemas/OAuthClientRegistration" },
+    client: { $ref: "#/components/schemas/OAuthRegisteredClientInput" },
     redirectUri: { type: "string" },
     codeVerifier: { type: "string" },
   };
@@ -457,8 +458,10 @@ export function standardErrorResponses(): Record<string, unknown> {
   return {
     "400": { $ref: "#/components/responses/BadRequest" },
     "401": { $ref: "#/components/responses/Unauthorized" },
+    "403": { $ref: "#/components/responses/Forbidden" },
     "404": { $ref: "#/components/responses/NotFound" },
     "409": { $ref: "#/components/responses/Conflict" },
+    "413": { $ref: "#/components/responses/PayloadTooLarge" },
     "429": { $ref: "#/components/responses/RateLimited" },
     "500": { $ref: "#/components/responses/InternalServerError" },
     "502": { $ref: "#/components/responses/BadGateway" },
@@ -505,8 +508,14 @@ export function getComponentMap(
   return value;
 }
 
+// The document walk deliberately treats arrays as records so that indexed
+// properties participate in $ref resolution; z.looseObject would reject them.
+const objectLikeSchema = z.custom<Record<string, unknown>>(
+  (value) => typeof value === "object" && value !== null,
+);
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+  return objectLikeSchema.safeParse(value).success;
 }
 
 export function openApiComponents(
@@ -514,9 +523,11 @@ export function openApiComponents(
 ): Record<string, unknown> {
   return {
     schemas: {
-      AdapterKind: {
+      AdapterId: {
         type: "string",
-        enum: ["mastodon", "misskey", "pleroma", "hollo", "hackerspub"],
+        minLength: 1,
+        pattern: "\\S",
+        description: "A bundled or custom adapter identifier.",
       },
       MediaAttachmentKind: {
         type: "string",
@@ -549,7 +560,7 @@ export function openApiComponents(
           followingCount: { type: "integer" },
           postsCount: { type: "integer" },
           extensions: { type: "object", additionalProperties: true },
-          raw: { type: "object", additionalProperties: true },
+          raw: {},
         },
       ),
       ActivityPlugError: objectSchema(["code", "message"], {
@@ -563,9 +574,12 @@ export function openApiComponents(
             "CAPABILITY_UNKNOWN",
             "UNSUPPORTED_OPERATION",
             "VALIDATION_FAILED",
+            "ORIGIN_NOT_ALLOWED",
+            "REQUEST_LIMIT_EXCEEDED",
             "NOT_FOUND",
             "CONFLICT",
             "RATE_LIMITED",
+            "REMOTE_PROTOCOL_ERROR",
             "REMOTE_ERROR",
             "NETWORK_ERROR",
             "TIMEOUT",
@@ -578,7 +592,6 @@ export function openApiComponents(
         operation: { type: "string" },
         capability: { type: "string" },
         status: { type: "integer" },
-        retryAfterSeconds: { type: "integer" },
       }),
       AccountField: objectSchema(["name", "valueHtml"], {
         name: { type: "string" },
@@ -594,7 +607,6 @@ export function openApiComponents(
         hasPreviousPage: { type: "boolean" },
         startCursor: { type: "string" },
         endCursor: { type: "string" },
-        raw: { type: "object", additionalProperties: true },
       }),
       MediaAttachment: objectSchema(["ref", "type", "url", "raw"], {
         ref: { $ref: "#/components/schemas/EntityRef" },
@@ -605,7 +617,7 @@ export function openApiComponents(
         blurhash: { type: "string" },
         width: { type: "integer" },
         height: { type: "integer" },
-        raw: { type: "object", additionalProperties: true },
+        raw: {},
       }),
       PollOption: objectSchema(["title"], {
         title: { type: "string" },
@@ -622,7 +634,7 @@ export function openApiComponents(
         ownVotes: { type: "array", items: { type: "integer" } },
         options: { type: "array", items: { $ref: "#/components/schemas/PollOption" } },
         extensions: { type: "object", additionalProperties: true },
-        raw: { type: "object", additionalProperties: true },
+        raw: {},
       }),
       AccountConnection: connectionSchema({ $ref: "#/components/schemas/Account" }),
       InstanceProfile: objectSchema(["ref", "software", "languages", "capabilities", "raw"], {
@@ -633,7 +645,7 @@ export function openApiComponents(
         languages: { type: "array", items: { type: "string" } },
         registrations: { type: "object", additionalProperties: true },
         capabilities: { $ref: "#/components/schemas/CapabilitySet" },
-        raw: { type: "object", additionalProperties: true },
+        raw: {},
       }),
       Post: objectSchema(
         ["ref", "author", "contentHtml", "createdAt", "visibility", "sensitive", "media", "raw"],
@@ -656,15 +668,39 @@ export function openApiComponents(
           quoteOf: { $ref: "#/components/schemas/EntityRef" },
           boostOf: { $ref: "#/components/schemas/EntityRef" },
           counts: { type: "object", additionalProperties: true },
+          viewerState: objectSchema([], {
+            favourited: { type: "boolean" },
+            boosted: { type: "boolean" },
+            bookmarked: { type: "boolean" },
+            reactions: {
+              type: "array",
+              items: objectSchema(["emoji", "me"], {
+                emoji: { type: "string" },
+                count: { type: "integer", minimum: 0 },
+                me: { type: "boolean" },
+              }),
+            },
+          }),
           extensions: { type: "object", additionalProperties: true },
-          raw: { type: "object", additionalProperties: true },
+          raw: {},
         },
       ),
       PostConnection: connectionSchema({ $ref: "#/components/schemas/Post" }),
+      PostContext: objectSchema(["ancestors", "descendants"], {
+        ancestors: { type: "array", items: { $ref: "#/components/schemas/Post" } },
+        descendants: { type: "array", items: { $ref: "#/components/schemas/Post" } },
+      }),
+      PostTranslation: objectSchema(["contentHtml", "raw"], {
+        contentHtml: { type: "string" },
+        summary: { type: "string" },
+        detectedSourceLanguage: { type: "string" },
+        provider: { type: "string" },
+        raw: {},
+      }),
       DeletedEntity: objectSchema(["ref", "deleted"], {
         ref: { $ref: "#/components/schemas/EntityRef" },
         deleted: { type: "boolean", const: true },
-        raw: { type: "object", additionalProperties: true },
+        raw: {},
       }),
       Relationship: objectSchema(
         ["account", "following", "followedBy", "requested", "blocking", "muting", "raw"],
@@ -680,7 +716,7 @@ export function openApiComponents(
           domainBlocking: { type: "boolean" },
           showingReblogs: { type: "boolean" },
           notifying: { type: "boolean" },
-          raw: { type: "object", additionalProperties: true },
+          raw: {},
         },
       ),
       Hashtag: objectSchema(["name", "history", "raw"], {
@@ -692,16 +728,17 @@ export function openApiComponents(
             day: { type: "string" },
             uses: { type: "integer" },
             accounts: { type: "integer" },
-            raw: { type: "object", additionalProperties: true },
+            raw: {},
           }),
         },
-        raw: { type: "object", additionalProperties: true },
+        raw: {},
       }),
-      SearchResult: objectSchema(["accounts", "posts", "hashtags", "raw"], {
+      SearchResult: objectSchema(["accounts", "posts", "hashtags", "pageInfo", "raw"], {
         accounts: { type: "array", items: { $ref: "#/components/schemas/Account" } },
         posts: { type: "array", items: { $ref: "#/components/schemas/Post" } },
         hashtags: { type: "array", items: { $ref: "#/components/schemas/Hashtag" } },
-        raw: { type: "object", additionalProperties: true },
+        pageInfo: { $ref: "#/components/schemas/PageInfo" },
+        raw: {},
       }),
       CreatePostRequest: objectSchema(["origin", "content"], {
         adapter: adapterSchema(),
@@ -713,7 +750,7 @@ export function openApiComponents(
         replyToId: { type: "string" },
         quoteOfId: { type: "string" },
         mediaIds: { type: "array", items: { type: "string" } },
-        poll: objectSchema(["options"], {
+        poll: objectSchema(["options", "expiresInSeconds"], {
           options: { type: "array", minItems: 2, items: nonBlankStringSchema() },
           multiple: { type: "boolean" },
           expiresInSeconds: { type: "integer", minimum: 1 },
@@ -729,7 +766,7 @@ export function openApiComponents(
         replyToId: { type: "string" },
         quoteOfId: { type: "string" },
         mediaIds: { type: "array", items: { type: "string" } },
-        poll: objectSchema(["options"], {
+        poll: objectSchema(["options", "expiresInSeconds"], {
           options: { type: "array", minItems: 2, items: nonBlankStringSchema() },
           multiple: { type: "boolean" },
           expiresInSeconds: { type: "integer", minimum: 1 },
@@ -757,6 +794,26 @@ export function openApiComponents(
         description: { type: "string" },
         sensitive: { type: "boolean" },
       }),
+      TranslatePostRequest: objectSchema(["targetLanguage"], {
+        targetLanguage: nonBlankStringSchema(),
+        sourceLanguage: nonBlankStringSchema(),
+      }),
+      RegisterOAuthClientRequest: objectSchema(["origin", "client"], {
+        adapter: adapterSchema(),
+        origin: nonEmptyStringSchema(),
+        client: { $ref: "#/components/schemas/OAuthClientInput" },
+      }),
+      CreateBookmarkFolderRequest: objectSchema(["name"], {
+        adapter: adapterSchema(),
+        origin: nonEmptyStringSchema(),
+        name: nonBlankStringSchema(),
+      }),
+      UpdateBookmarkFolderRequest: objectSchema(["name"], {
+        name: nonBlankStringSchema(),
+      }),
+      BookmarkFolderPostRequest: objectSchema(["postId"], {
+        postId: nonBlankStringSchema(),
+      }),
       SchedulePostRequest: objectSchema(["origin", "content", "scheduledAt"], {
         adapter: adapterSchema(),
         origin: nonEmptyStringSchema(),
@@ -768,7 +825,7 @@ export function openApiComponents(
         replyToId: { type: "string" },
         quoteOfId: { type: "string" },
         mediaIds: { type: "array", items: { type: "string" } },
-        poll: objectSchema(["options"], {
+        poll: objectSchema(["options", "expiresInSeconds"], {
           options: { type: "array", minItems: 2, items: nonBlankStringSchema() },
           multiple: { type: "boolean" },
           expiresInSeconds: { type: "integer", minimum: 1 },
@@ -784,23 +841,35 @@ export function openApiComponents(
       ReactPostRequest: objectSchema(["emoji"], {
         emoji: nonBlankStringSchema(),
       }),
-      SessionRequest: objectSchema(["sessionId"], {
-        sessionId: nonEmptyStringSchema(),
-      }),
       Notification: objectSchema(["ref", "type", "createdAt", "account", "raw"], {
         ref: { $ref: "#/components/schemas/EntityRef" },
         type: { type: "string" },
         createdAt: dateTimeStringSchema(),
         account: { $ref: "#/components/schemas/EntityRef" },
         post: { $ref: "#/components/schemas/EntityRef" },
-        raw: { type: "object", additionalProperties: true },
+        raw: {},
+      }),
+      NotificationGroup: objectSchema(["key", "type", "notifications", "raw"], {
+        key: { type: "string" },
+        type: { type: "string" },
+        notifications: {
+          type: "array",
+          items: { $ref: "#/components/schemas/Notification" },
+        },
+        raw: {},
+      }),
+      BookmarkFolder: objectSchema(["ref", "name", "raw"], {
+        ref: { $ref: "#/components/schemas/EntityRef" },
+        name: { type: "string" },
+        postCount: { type: "integer", minimum: 0 },
+        raw: {},
       }),
       List: objectSchema(["ref", "title", "raw"], {
         ref: { $ref: "#/components/schemas/EntityRef" },
         title: { type: "string" },
         repliesPolicy: { type: "string", enum: ["followed", "list", "none", "unknown"] },
         exclusive: { type: "boolean" },
-        raw: { type: "object", additionalProperties: true },
+        raw: {},
       }),
       Filter: objectSchema(["ref", "title", "context", "action", "keywords", "raw"], {
         ref: { $ref: "#/components/schemas/EntityRef" },
@@ -819,10 +888,10 @@ export function openApiComponents(
           items: objectSchema(["keyword", "wholeWord", "raw"], {
             keyword: { type: "string" },
             wholeWord: { type: "boolean" },
-            raw: { type: "object", additionalProperties: true },
+            raw: {},
           }),
         },
-        raw: { type: "object", additionalProperties: true },
+        raw: {},
       }),
       ScheduledPost: objectSchema(["ref", "scheduledAt", "media", "raw"], {
         ref: { $ref: "#/components/schemas/EntityRef" },
@@ -834,7 +903,7 @@ export function openApiComponents(
         media: { type: "array", items: { $ref: "#/components/schemas/MediaAttachment" } },
         poll: { $ref: "#/components/schemas/Poll" },
         replyTo: { $ref: "#/components/schemas/EntityRef" },
-        raw: { type: "object", additionalProperties: true },
+        raw: {},
       }),
       PostRevision: objectSchema(["ref", "createdAt", "media", "raw"], {
         ref: { $ref: "#/components/schemas/EntityRef" },
@@ -845,26 +914,24 @@ export function openApiComponents(
         createdAt: { type: "string", format: "date-time" },
         media: { type: "array", items: { $ref: "#/components/schemas/MediaAttachment" } },
         poll: { $ref: "#/components/schemas/Poll" },
-        raw: { type: "object", additionalProperties: true },
+        raw: {},
       }),
       TimelineConnection: connectionSchema({ type: "object", additionalProperties: true }),
       NotificationConnection: connectionSchema({ type: "object", additionalProperties: true }),
       ListConnection: connectionSchema({ type: "object", additionalProperties: true }),
       FilterConnection: connectionSchema({ type: "object", additionalProperties: true }),
       ScheduledPostConnection: connectionSchema({ type: "object", additionalProperties: true }),
-      AuthSession: objectSchema(["id", "adapter", "origin", "scopes", "capabilities"], {
-        id: nonEmptyStringSchema(),
-        adapter: adapterSchema(),
-        origin: nonEmptyStringSchema(),
-        account: { $ref: "#/components/schemas/EntityRef" },
-        scopes: { type: "array", items: { type: "string" } },
-        capabilities: { type: "object", additionalProperties: true },
-        expiresAt: { type: "string", format: "date-time" },
+      NotificationGroupConnection: connectionSchema({
+        $ref: "#/components/schemas/NotificationGroup",
       }),
-      AuthSessionInput: objectSchema(["id", "adapter", "origin", "scopes"], {
+      BookmarkFolderConnection: connectionSchema({
+        $ref: "#/components/schemas/BookmarkFolder",
+      }),
+      AuthSession: objectSchema(["id", "adapter", "origin", "strategy", "scopes", "capabilities"], {
         id: nonEmptyStringSchema(),
         adapter: adapterSchema(),
         origin: nonEmptyStringSchema(),
+        strategy: { type: "string", enum: ["oauth", "token", "emailChallenge", "passkey"] },
         account: { $ref: "#/components/schemas/EntityRef" },
         scopes: { type: "array", items: { type: "string" } },
         capabilities: { type: "object", additionalProperties: true },
@@ -922,17 +989,6 @@ export function openApiComponents(
         origin: nonEmptyStringSchema(),
         token: { $ref: "#/components/schemas/TokenSetInput" },
       }),
-      AuthRefreshRequest: objectSchema(["adapter", "origin", "session"], {
-        adapter: adapterSchema(),
-        origin: nonEmptyStringSchema(),
-        session: { $ref: "#/components/schemas/AuthSessionInput" },
-      }),
-      AuthRevokeRequest: objectSchema(["adapter", "origin", "session"], {
-        adapter: adapterSchema(),
-        origin: nonEmptyStringSchema(),
-        session: { $ref: "#/components/schemas/AuthSessionInput" },
-        tokenTypeHint: { type: "string", enum: ["access_token", "refresh_token"] },
-      }),
       AuthStartRequest: objectSchema(["adapter", "origin", "client"], {
         adapter: adapterSchema(),
         origin: nonEmptyStringSchema(),
@@ -942,6 +998,102 @@ export function openApiComponents(
         scopes: { type: "array", items: { type: "string" } },
         codeChallenge: { type: "string" },
         codeChallengeMethod: { type: "string", enum: ["S256", "plain"] },
+      }),
+      EmailChallengeStartRequest: objectSchema(
+        ["origin", "identifier", "verificationUriTemplate"],
+        {
+          adapter: adapterSchema(),
+          origin: nonEmptyStringSchema(),
+          identifier: nonBlankStringSchema(),
+          locale: nonBlankStringSchema(),
+          verificationUriTemplate: nonEmptyStringSchema(),
+        },
+      ),
+      EmailChallengeVerifyRequest: objectSchema(["origin", "challengeId", "code"], {
+        adapter: adapterSchema(),
+        origin: nonEmptyStringSchema(),
+        challengeId: nonBlankStringSchema(),
+        code: nonBlankStringSchema(),
+      }),
+      EmailChallengeStartPayload: objectSchema(["challengeId", "expiresAt"], {
+        challengeId: nonBlankStringSchema(),
+        expiresAt: dateTimeStringSchema(),
+      }),
+      PasskeyStartRequest: objectSchema(["origin"], {
+        adapter: adapterSchema(),
+        origin: nonEmptyStringSchema(),
+        identifier: nonBlankStringSchema(),
+      }),
+      PasskeyStartPayload: objectSchema(["challengeId", "options", "expiresAt"], {
+        challengeId: nonBlankStringSchema(),
+        options: { $ref: "#/components/schemas/PasskeyPublicKeyRequest" },
+        expiresAt: dateTimeStringSchema(),
+      }),
+      PasskeyPublicKeyRequest: objectSchema(["challenge"], {
+        challenge: nonBlankStringSchema(),
+        timeout: { type: "integer", minimum: 0 },
+        rpId: nonBlankStringSchema(),
+        allowCredentials: {
+          type: "array",
+          items: { $ref: "#/components/schemas/PasskeyCredentialDescriptor" },
+        },
+        userVerification: {
+          type: "string",
+          enum: ["required", "preferred", "discouraged"],
+        },
+      }),
+      PasskeyCredentialDescriptor: objectSchema(["id", "type"], {
+        id: nonBlankStringSchema(),
+        type: { type: "string", const: "public-key" },
+        transports: {
+          type: "array",
+          items: {
+            type: "string",
+            enum: ["ble", "cable", "hybrid", "internal", "nfc", "smart-card", "usb"],
+          },
+        },
+      }),
+      PasskeyFinishRequest: objectSchema(["origin", "challengeId", "credential"], {
+        adapter: adapterSchema(),
+        origin: nonEmptyStringSchema(),
+        challengeId: nonBlankStringSchema(),
+        credential: { $ref: "#/components/schemas/PasskeyCredential" },
+      }),
+      PasskeyCredential: objectSchema(["id", "rawId", "type", "response"], {
+        id: nonBlankStringSchema(),
+        rawId: nonBlankStringSchema(),
+        type: { type: "string", const: "public-key" },
+        authenticatorAttachment: {
+          type: "string",
+          enum: ["cross-platform", "platform"],
+        },
+        response: objectSchema(["clientDataJSON", "authenticatorData", "signature"], {
+          clientDataJSON: nonBlankStringSchema(),
+          authenticatorData: nonBlankStringSchema(),
+          signature: nonBlankStringSchema(),
+          userHandle: { type: "string" },
+        }),
+        clientExtensionResults: {
+          type: "object",
+          properties: {
+            appid: { type: "boolean" },
+            credProps: objectSchema([], { rk: { type: "boolean" } }),
+            hmacCreateSecret: { type: "boolean" },
+            largeBlob: objectSchema([], {
+              supported: { type: "boolean" },
+              blob: { type: "string" },
+              written: { type: "boolean" },
+            }),
+            prf: objectSchema([], {
+              enabled: { type: "boolean" },
+              results: objectSchema(["first"], {
+                first: { type: "string" },
+                second: { type: "string" },
+              }),
+            }),
+          },
+          additionalProperties: false,
+        },
       }),
       Capability: objectSchema(["name", "status", "source", "reason"], {
         name: { type: "string" },
@@ -1031,9 +1183,36 @@ export function openApiComponents(
       }),
       OAuthClientRegistration: objectSchema(["clientId", "redirectUris"], {
         clientId: { type: "string" },
+        redirectUris: { type: "array", items: { type: "string" } },
+        scopes: { type: "array", items: { type: "string" } },
+      }),
+      OAuthRegisteredClientInput: objectSchema(["clientId", "redirectUris"], {
+        clientId: { type: "string" },
         clientSecret: { type: "string" },
         redirectUris: { type: "array", items: { type: "string" } },
         scopes: { type: "array", items: { type: "string" } },
+      }),
+      OAuthMetadata: objectSchema(
+        [
+          "authorizationEndpoint",
+          "tokenEndpoint",
+          "scopesSupported",
+          "codeChallengeMethodsSupported",
+          "raw",
+        ],
+        {
+          authorizationEndpoint: { type: "string", format: "uri" },
+          tokenEndpoint: { type: "string", format: "uri" },
+          registrationEndpoint: { type: "string", format: "uri" },
+          revocationEndpoint: { type: "string", format: "uri" },
+          scopesSupported: { type: "array", items: { type: "string" } },
+          codeChallengeMethodsSupported: { type: "array", items: { type: "string" } },
+          raw: {},
+        },
+      ),
+      InstancePeers: objectSchema(["origins", "raw"], {
+        origins: { type: "array", items: { type: "string", format: "uri" } },
+        raw: {},
       }),
       OAuthCallbackStateBinding: objectSchema(["adapter", "origin", "clientRequestId"], {
         adapter: adapterSchema(),
@@ -1043,16 +1222,20 @@ export function openApiComponents(
       OAuthClientInput: {
         oneOf: [
           objectSchema(["name", "redirectUri"], {
-            name: { type: "string" },
-            redirectUri: { type: "string" },
+            name: nonBlankStringSchema(),
+            redirectUri: { type: "string", format: "uri", minLength: 1 },
             scopes: { type: "array", items: { type: "string" } },
-            website: { type: "string" },
+            website: nonBlankStringSchema(),
           }),
           objectSchema(["clientName", "redirectUris"], {
-            clientName: { type: "string" },
-            redirectUris: { type: "array", items: { type: "string" } },
+            clientName: nonBlankStringSchema(),
+            redirectUris: {
+              type: "array",
+              minItems: 1,
+              items: { type: "string", format: "uri", minLength: 1 },
+            },
             scopes: { type: "array", items: { type: "string" } },
-            website: { type: "string" },
+            website: nonBlankStringSchema(),
           }),
         ],
       },
@@ -1073,9 +1256,20 @@ export function openApiComponents(
     responses: {
       BadRequest: errorResponse("The request is invalid."),
       Unauthorized: errorResponse("Authentication is required or expired."),
+      Forbidden: errorResponse("The requested remote origin is not allowed."),
       NotFound: errorResponse("The requested resource was not found."),
       Conflict: errorResponse("The request conflicts with remote or local state."),
-      RateLimited: errorResponse("The remote or local rate limit was exceeded."),
+      PayloadTooLarge: errorResponse("The request or remote response exceeded a byte limit."),
+      RateLimited: {
+        description: "The remote or local rate limit was exceeded.",
+        headers: {
+          "Retry-After": {
+            description: "The number of seconds to wait before retrying the request.",
+            schema: { type: "integer", minimum: 1 },
+          },
+        },
+        content: jsonContent({ $ref: "#/components/schemas/ErrorResponse" }),
+      },
       BadGateway: errorResponse("The upstream ActivityPub server failed the request."),
       GatewayTimeout: errorResponse("The upstream ActivityPub server timed out."),
       InternalServerError: errorResponse("The server failed to handle the request."),

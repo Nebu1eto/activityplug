@@ -13,11 +13,22 @@ import {
   type ActivityPlugApiService,
   type AuthExchangeRequest,
   type AuthStartRequest,
+  type EmailChallengeStartRequest,
+  type EmailChallengeVerifyRequest,
   type ImportTokenRequest,
+  type PasskeyFinishRequest,
+  type PasskeyStartRequest,
   type PublicAccountFieldInput,
   serializePost,
   serializeRelationship,
 } from "../api/service.js";
+import {
+  bearerSessionId,
+  emailChallengeStartRequest,
+  emailChallengeVerifyRequest,
+  passkeyFinishRequest,
+  passkeyStartRequest,
+} from "../http/app-helpers.js";
 import { type AdapterKind, type GraphQLContext, type PageInputValue } from "./schema.js";
 
 export function unsupportedGraphQLField(
@@ -302,14 +313,13 @@ export function accountActionResolver(
     input: { readonly accountId: string; readonly sessionId: string },
   ) => Promise<import("@activityplug/core").Relationship>,
 ) {
-  return async (
-    _parent: unknown,
-    args: { readonly id: string; readonly sessionId: string },
-    context: GraphQLContext,
-  ) =>
+  return async (_parent: unknown, args: { readonly id: string }, context: GraphQLContext) =>
     withGraphQLErrorContract(async () =>
       serializeRelationship(
-        await action(context.service, { accountId: args.id, sessionId: args.sessionId }),
+        await action(context.service, {
+          accountId: args.id,
+          sessionId: bearerSessionId(context.request.headers.get("authorization") ?? undefined),
+        }),
       ),
     );
 }
@@ -320,13 +330,14 @@ export function postActionResolver(
     input: { readonly postId: string; readonly sessionId: string },
   ) => Promise<import("@activityplug/core").Post>,
 ) {
-  return async (
-    _parent: unknown,
-    args: { readonly id: string; readonly sessionId: string },
-    context: GraphQLContext,
-  ) =>
+  return async (_parent: unknown, args: { readonly id: string }, context: GraphQLContext) =>
     withGraphQLErrorContract(async () =>
-      serializePost(await action(context.service, { postId: args.id, sessionId: args.sessionId })),
+      serializePost(
+        await action(context.service, {
+          postId: args.id,
+          sessionId: bearerSessionId(context.request.headers.get("authorization") ?? undefined),
+        }),
+      ),
     );
 }
 
@@ -349,7 +360,7 @@ export function optionalJsonObject(
       `GraphQL JSON field must be an object: ${field}.`,
     );
   }
-  return value as PageInputValue;
+  return value;
 }
 
 export function jsonSelector(body: Record<string, unknown>): {
@@ -365,13 +376,7 @@ export function jsonSelector(body: Record<string, unknown>): {
 export function optionalAdapter(body: Record<string, unknown>): { readonly adapter?: AdapterKind } {
   const value = body.adapter;
   if (value === undefined || value === null) return {};
-  if (
-    value !== "mastodon" &&
-    value !== "misskey" &&
-    value !== "pleroma" &&
-    value !== "hollo" &&
-    value !== "hackerspub"
-  ) {
+  if (typeof value !== "string" || value.trim().length === 0) {
     throw new ActivityPlugError("VALIDATION_FAILED", "GraphQL adapter value is invalid.");
   }
   return { adapter: value };
@@ -528,9 +533,9 @@ export function optionalVisibility(body: Record<string, unknown>): {
 
 export function optionalJsonPoll(body: Record<string, unknown>): {
   readonly poll?: {
-    readonly options: readonly string[];
+    readonly options: readonly [string, string, ...string[]];
+    readonly expiresInSeconds: number;
     readonly multiple?: boolean;
-    readonly expiresInSeconds?: number;
   };
 } {
   if (body.poll === undefined || body.poll === null) return {};
@@ -544,11 +549,22 @@ export function optionalJsonPoll(body: Record<string, unknown>): {
   }
   return {
     poll: {
-      options,
+      options: options as [string, string, ...string[]],
+      expiresInSeconds: requiredJsonPositiveInteger(poll, "expiresInSeconds"),
       ...optionalJsonBoolean(poll, "multiple"),
-      ...optionalJsonInteger(poll, "expiresInSeconds"),
     },
   };
+}
+
+function requiredJsonPositiveInteger(body: Record<string, unknown>, field: string): number {
+  const value = body[field];
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `GraphQL input field must be a positive integer: ${field}.`,
+    );
+  }
+  return value;
 }
 
 export function requiredJsonStringArray(
@@ -625,6 +641,94 @@ export function normalizeAuthStart(input: {
       ? {}
       : { codeChallengeMethod: input.codeChallengeMethod }),
   };
+}
+
+export function normalizeEmailChallengeStart(input: {
+  readonly adapter?: AdapterKind | null;
+  readonly origin: string;
+  readonly identifier: string;
+  readonly locale?: string | null;
+  readonly verificationUriTemplate: string;
+}): EmailChallengeStartRequest {
+  return emailChallengeStartRequest({
+    ...(input.adapter === null || input.adapter === undefined ? {} : { adapter: input.adapter }),
+    origin: input.origin,
+    identifier: input.identifier,
+    ...(input.locale === null || input.locale === undefined ? {} : { locale: input.locale }),
+    verificationUriTemplate: input.verificationUriTemplate,
+  });
+}
+
+export function normalizeEmailChallengeVerify(input: {
+  readonly adapter?: AdapterKind | null;
+  readonly origin: string;
+  readonly challengeId: string;
+  readonly code: string;
+}): EmailChallengeVerifyRequest {
+  return emailChallengeVerifyRequest({
+    ...(input.adapter === null || input.adapter === undefined ? {} : { adapter: input.adapter }),
+    origin: input.origin,
+    challengeId: input.challengeId,
+    code: input.code,
+  });
+}
+
+export function normalizePasskeyStart(input: {
+  readonly adapter?: AdapterKind | null;
+  readonly origin: string;
+  readonly identifier?: string | null;
+}): PasskeyStartRequest {
+  return passkeyStartRequest({
+    ...(input.adapter === null || input.adapter === undefined ? {} : { adapter: input.adapter }),
+    origin: input.origin,
+    ...(input.identifier === null || input.identifier === undefined
+      ? {}
+      : { identifier: input.identifier }),
+  });
+}
+
+export function normalizePasskeyFinish(input: {
+  readonly adapter?: AdapterKind | null;
+  readonly origin: string;
+  readonly challengeId: string;
+  readonly credential: {
+    readonly id: string;
+    readonly rawId: string;
+    readonly type: string;
+    readonly authenticatorAttachment?: string | null;
+    readonly response: {
+      readonly clientDataJSON: string;
+      readonly authenticatorData: string;
+      readonly signature: string;
+      readonly userHandle?: string | null;
+    };
+    readonly clientExtensionResults?: unknown;
+  };
+}): PasskeyFinishRequest {
+  return passkeyFinishRequest({
+    ...(input.adapter === null || input.adapter === undefined ? {} : { adapter: input.adapter }),
+    origin: input.origin,
+    challengeId: input.challengeId,
+    credential: {
+      id: input.credential.id,
+      rawId: input.credential.rawId,
+      type: input.credential.type,
+      ...(input.credential.authenticatorAttachment === null ||
+      input.credential.authenticatorAttachment === undefined
+        ? {}
+        : { authenticatorAttachment: input.credential.authenticatorAttachment }),
+      response: {
+        clientDataJSON: input.credential.response.clientDataJSON,
+        authenticatorData: input.credential.response.authenticatorData,
+        signature: input.credential.response.signature,
+        ...(input.credential.response.userHandle === null ||
+        input.credential.response.userHandle === undefined
+          ? {}
+          : { userHandle: input.credential.response.userHandle }),
+      },
+      clientExtensionResults: input.credential.clientExtensionResults ?? {},
+    },
+  });
 }
 
 export function normalizeAuthExchange(input: {
@@ -757,14 +861,5 @@ export function normalizeCallbackInput(input: {
 }
 
 export function adapterKindValue(adapter: string): AdapterKind {
-  switch (adapter) {
-    case "mastodon":
-    case "misskey":
-    case "pleroma":
-    case "hollo":
-    case "hackerspub":
-      return adapter;
-    default:
-      throw new ActivityPlugError("VALIDATION_FAILED", `Unknown GraphQL adapter kind: ${adapter}.`);
-  }
+  return nonBlankString(adapter, "adapter");
 }

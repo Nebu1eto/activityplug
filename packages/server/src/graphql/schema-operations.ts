@@ -22,6 +22,7 @@ import {
   type serializeScheduledPostConnection,
   type serializeSearchResult,
 } from "../api/service.js";
+import { bearerSessionId, optionalBearerSessionId } from "../http/app-helpers.js";
 import {
   deleteMediaInput,
   filterInput,
@@ -41,11 +42,15 @@ import {
   type accountActionResolver,
   type normalizeAuthExchange,
   type normalizeAuthStart,
+  type normalizeEmailChallengeStart,
+  type normalizeEmailChallengeVerify,
   type normalizeBoostInput,
   type normalizeCallbackInput,
   type normalizeCreatePostInput,
   type normalizeImportToken,
   type normalizeMuteInput,
+  type normalizePasskeyFinish,
+  type normalizePasskeyStart,
   type normalizePageInput,
   type normalizeReactInput,
   type normalizeSearchInput,
@@ -93,6 +98,9 @@ type SchemaOperationDeps = {
   readonly AuthSessionType: unknown;
   readonly AuthStartInput: unknown;
   readonly AuthStartPayloadType: unknown;
+  readonly EmailChallengeStartInput: unknown;
+  readonly EmailChallengeStartPayloadType: unknown;
+  readonly EmailChallengeVerifyInput: unknown;
   readonly BoostPostInput: unknown;
   readonly CapabilitySet: unknown;
   readonly CreateFilterInput: unknown;
@@ -113,10 +121,12 @@ type SchemaOperationDeps = {
   readonly NotificationConnectionType: unknown;
   readonly NotificationTypeInputEnum: unknown;
   readonly PageInput: unknown;
+  readonly PasskeyFinishInput: unknown;
+  readonly PasskeyStartInput: unknown;
+  readonly PasskeyStartPayloadType: unknown;
   readonly ParsedAuthCallbackType: unknown;
   readonly PollType: unknown;
   readonly PostConnectionType: unknown;
-  readonly PostContextType: unknown;
   readonly PostRevisionType: unknown;
   readonly PostType: unknown;
   readonly ReactPostInput: unknown;
@@ -137,17 +147,21 @@ type SchemaOperationDeps = {
   readonly UploadMediaInput: unknown;
   readonly VotePollInput: unknown;
   readonly activityPlugApiVersion: string;
-  readonly AdapterKindEnum: unknown;
+  readonly AdapterIdScalar: unknown;
   readonly ImportTokenInput: unknown;
   readonly enforceTokenImportPolicy: (context: GraphQLContext) => Promise<void>;
   readonly nonBlankString: (value: string, field: string) => string;
   readonly normalizeAuthExchange: typeof normalizeAuthExchange;
   readonly normalizeAuthStart: typeof normalizeAuthStart;
+  readonly normalizeEmailChallengeStart: typeof normalizeEmailChallengeStart;
+  readonly normalizeEmailChallengeVerify: typeof normalizeEmailChallengeVerify;
   readonly normalizeBoostInput: typeof normalizeBoostInput;
   readonly normalizeCallbackInput: typeof normalizeCallbackInput;
   readonly normalizeCreatePostInput: typeof normalizeCreatePostInput;
   readonly normalizeImportToken: typeof normalizeImportToken;
   readonly normalizeMuteInput: typeof normalizeMuteInput;
+  readonly normalizePasskeyFinish: typeof normalizePasskeyFinish;
+  readonly normalizePasskeyStart: typeof normalizePasskeyStart;
   readonly normalizePageInput: typeof normalizePageInput;
   readonly normalizeReactInput: typeof normalizeReactInput;
   readonly normalizeSearchInput: typeof normalizeSearchInput;
@@ -183,6 +197,23 @@ type SchemaOperationDeps = {
   readonly postActionResolver: typeof postActionResolver;
 };
 
+function graphQLSessionId(context: GraphQLContext): string {
+  return bearerSessionId(context.request.headers.get("authorization") ?? undefined);
+}
+
+function withGraphQLSession(input: unknown, context: GraphQLContext): unknown {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return input;
+  return { ...input, sessionId: graphQLSessionId(context) };
+}
+
+function withOptionalGraphQLSession(input: unknown, context: GraphQLContext): unknown {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return input;
+  return {
+    ...input,
+    ...optionalBearerSessionId(context.request.headers.get("authorization") ?? undefined),
+  };
+}
+
 export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
   const {
     AccountConnectionType,
@@ -192,6 +223,9 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
     AuthSessionType,
     AuthStartInput,
     AuthStartPayloadType,
+    EmailChallengeStartInput,
+    EmailChallengeStartPayloadType,
+    EmailChallengeVerifyInput,
     BoostPostInput,
     CapabilitySet,
     CreateFilterInput,
@@ -214,7 +248,6 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
     ParsedAuthCallbackType,
     PollType,
     PostConnectionType,
-    PostContextType,
     PostRevisionType,
     PostType,
     ReactPostInput,
@@ -235,19 +268,26 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
     UploadMediaInput,
     VotePollInput,
     activityPlugApiVersion,
-    AdapterKindEnum,
+    AdapterIdScalar,
     ImportTokenInput,
     PageInput,
+    PasskeyFinishInput,
+    PasskeyStartInput,
+    PasskeyStartPayloadType,
     builder,
     enforceTokenImportPolicy,
     nonBlankString,
     normalizeAuthExchange,
     normalizeAuthStart,
+    normalizeEmailChallengeStart,
+    normalizeEmailChallengeVerify,
     normalizeBoostInput,
     normalizeCallbackInput,
     normalizeCreatePostInput,
     normalizeImportToken,
     normalizeMuteInput,
+    normalizePasskeyFinish,
+    normalizePasskeyStart,
     normalizePageInput,
     normalizeReactInput,
     normalizeSearchInput,
@@ -293,7 +333,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
       }),
       capabilities: t.field({
         args: {
-          adapter: t.arg({ type: AdapterKindEnum, required: false }),
+          adapter: t.arg({ type: AdapterIdScalar, required: false }),
           origin: t.arg.string({ required: true }),
         },
         type: CapabilitySet,
@@ -310,13 +350,13 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
           ),
       }),
       viewer: t.field({
-        args: {
-          sessionId: t.arg.id({ required: true }),
-        },
+        args: {},
         type: AccountType,
         resolve: async (_parent, args, context) =>
           withGraphQLErrorContract(async () =>
-            serializeAccount((await context.service.viewer({ sessionId: args.sessionId })).account),
+            serializeAccount(
+              (await context.service.viewer({ sessionId: graphQLSessionId(context) })).account,
+            ),
           ),
       }),
       instance: unsupportedGraphQLField(t, {
@@ -324,7 +364,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         operation: "instance.get",
         args: {
           origin: t.arg.string({ required: true }),
-          adapter: t.arg({ type: AdapterKindEnum }),
+          adapter: t.arg({ type: AdapterIdScalar }),
         },
         resolve: async (
           _parent: unknown,
@@ -380,7 +420,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         args: {
           origin: t.arg.string({ required: true }),
           handle: t.arg.string({ required: true }),
-          adapter: t.arg({ type: AdapterKindEnum }),
+          adapter: t.arg({ type: AdapterIdScalar }),
         },
         resolve: async (
           _parent: unknown,
@@ -408,7 +448,6 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         args: {
           id: t.arg.id({ required: true }),
           page: t.arg({ type: PageInput }),
-          sessionId: t.arg.id(),
         },
         resolve: async (
           _parent: unknown,
@@ -419,7 +458,6 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
               readonly before?: string | null;
               readonly limit?: number | null;
             } | null;
-            readonly sessionId?: string | null;
           },
           context: GraphQLContext,
         ) =>
@@ -428,9 +466,9 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
               await context.service.accounts.posts({
                 id: args.id,
                 page: normalizePageInput(args.page),
-                ...(args.sessionId === null || args.sessionId === undefined
-                  ? {}
-                  : { sessionId: args.sessionId }),
+                ...optionalBearerSessionId(
+                  context.request.headers.get("authorization") ?? undefined,
+                ),
               }),
             ),
           ),
@@ -441,14 +479,12 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         args: {
           id: t.arg.id({ required: true }),
           page: t.arg({ type: PageInput }),
-          sessionId: t.arg.id(),
         },
         resolve: async (
           _parent: unknown,
           args: {
             readonly id: string;
             readonly page?: PageInputValue | null;
-            readonly sessionId?: string | null;
           },
           context: GraphQLContext,
         ) =>
@@ -457,9 +493,9 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
               await context.service.accounts.followers({
                 id: args.id,
                 page: normalizePageInput(args.page),
-                ...(args.sessionId === null || args.sessionId === undefined
-                  ? {}
-                  : { sessionId: args.sessionId }),
+                ...optionalBearerSessionId(
+                  context.request.headers.get("authorization") ?? undefined,
+                ),
               }),
             ),
           ),
@@ -470,14 +506,12 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         args: {
           id: t.arg.id({ required: true }),
           page: t.arg({ type: PageInput }),
-          sessionId: t.arg.id(),
         },
         resolve: async (
           _parent: unknown,
           args: {
             readonly id: string;
             readonly page?: PageInputValue | null;
-            readonly sessionId?: string | null;
           },
           context: GraphQLContext,
         ) =>
@@ -486,9 +520,9 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
               await context.service.accounts.following({
                 id: args.id,
                 page: normalizePageInput(args.page),
-                ...(args.sessionId === null || args.sessionId === undefined
-                  ? {}
-                  : { sessionId: args.sessionId }),
+                ...optionalBearerSessionId(
+                  context.request.headers.get("authorization") ?? undefined,
+                ),
               }),
             ),
           ),
@@ -496,7 +530,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
       accountRelationship: unsupportedGraphQLField(t, {
         type: RelationshipType,
         operation: "account.relationships",
-        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        args: { id: t.arg.id({ required: true }) },
         resolve: async (
           _parent: unknown,
           args: { readonly id: string; readonly sessionId: string },
@@ -506,7 +540,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
             serializeRelationship(
               await context.service.social.relationship({
                 accountId: args.id,
-                sessionId: args.sessionId,
+                sessionId: graphQLSessionId(context),
               }),
             ),
           ),
@@ -517,19 +551,21 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         args: { id: t.arg.id({ required: true }) },
         resolve: async (_parent: unknown, args: { readonly id: string }, context: GraphQLContext) =>
           withGraphQLErrorContract(async () =>
-            serializePost(await context.service.posts.get({ id: args.id })),
+            serializePost(
+              await context.service.posts.get({
+                id: args.id,
+                ...optionalBearerSessionId(
+                  context.request.headers.get("authorization") ?? undefined,
+                ),
+              }),
+            ),
           ),
-      }),
-      postContext: unsupportedGraphQLField(t, {
-        type: PostContextType,
-        operation: "post.context",
-        args: { id: t.arg.id({ required: true }) },
       }),
       postHistory: unsupportedGraphQLField(t, {
         type: [PostRevisionType],
         nullable: true,
         operation: "post.history",
-        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id() },
+        args: { id: t.arg.id({ required: true }) },
         resolve: async (
           _parent: unknown,
           args: { readonly id: string; readonly sessionId?: string | null },
@@ -539,31 +575,24 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
             (
               await context.service.posts.history({
                 id: args.id,
-                ...(args.sessionId === null || args.sessionId === undefined
-                  ? {}
-                  : { sessionId: args.sessionId }),
+                ...optionalBearerSessionId(
+                  context.request.headers.get("authorization") ?? undefined,
+                ),
               })
             ).map((revision) => serializePostRevision(revision)),
           ),
-      }),
-      postQuotes: unsupportedGraphQLField(t, {
-        type: PostConnectionType,
-        operation: "post.quotes",
-        args: { id: t.arg.id({ required: true }), page: t.arg({ type: PageInput }) },
       }),
       homeTimeline: unsupportedGraphQLField(t, {
         type: TimelineConnectionType,
         operation: "timeline.home",
         args: {
           origin: t.arg.string({ required: true }),
-          sessionId: t.arg.id({ required: true }),
           page: t.arg({ type: PageInput }),
         },
         resolve: async (
           _parent: unknown,
           args: {
             readonly origin: string;
-            readonly sessionId: string;
             readonly page?: PageInputValue | null;
           },
           context: GraphQLContext,
@@ -572,7 +601,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
             serializePostConnection(
               await context.service.timelines.home({
                 origin: args.origin,
-                sessionId: args.sessionId,
+                sessionId: graphQLSessionId(context),
                 page: normalizePageInput(args.page),
               }),
             ),
@@ -583,8 +612,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         operation: "timeline.public",
         args: {
           origin: t.arg.string({ required: true }),
-          adapter: t.arg({ type: AdapterKindEnum }),
-          sessionId: t.arg.id(),
+          adapter: t.arg({ type: AdapterIdScalar }),
           local: t.arg.boolean(),
           page: t.arg({ type: PageInput }),
         },
@@ -593,7 +621,6 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
           args: {
             readonly origin: string;
             readonly adapter?: AdapterKind | null;
-            readonly sessionId?: string | null;
             readonly local?: boolean | null;
             readonly page?: PageInputValue | null;
           },
@@ -606,9 +633,9 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
                 ...(args.adapter === null || args.adapter === undefined
                   ? {}
                   : { adapter: args.adapter }),
-                ...(args.sessionId === null || args.sessionId === undefined
-                  ? {}
-                  : { sessionId: args.sessionId }),
+                ...optionalBearerSessionId(
+                  context.request.headers.get("authorization") ?? undefined,
+                ),
                 ...(args.local === null || args.local === undefined ? {} : { local: args.local }),
                 page: normalizePageInput(args.page),
               }),
@@ -621,7 +648,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         args: {
           origin: t.arg.string({ required: true }),
           tag: t.arg.string({ required: true }),
-          adapter: t.arg({ type: AdapterKindEnum }),
+          adapter: t.arg({ type: AdapterIdScalar }),
           page: t.arg({ type: PageInput }),
         },
         resolve: async (
@@ -652,14 +679,12 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         operation: "timeline.list",
         args: {
           listId: t.arg.id({ required: true }),
-          sessionId: t.arg.id({ required: true }),
           page: t.arg({ type: PageInput }),
         },
         resolve: async (
           _parent: unknown,
           args: {
             readonly listId: string;
-            readonly sessionId: string;
             readonly page?: PageInputValue | null;
           },
           context: GraphQLContext,
@@ -668,7 +693,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
             serializePostConnection(
               await context.service.lists.timeline({
                 id: args.listId,
-                sessionId: args.sessionId,
+                sessionId: graphQLSessionId(context),
                 page: normalizePageInput(args.page),
               }),
             ),
@@ -685,7 +710,9 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         ) =>
           withGraphQLErrorContract(async () =>
             serializeSearchResult(
-              await context.service.search.search(normalizeSearchInput(args.input)),
+              await context.service.search.search(
+                normalizeSearchInput(withOptionalGraphQLSession(args.input, context)),
+              ),
             ),
           ),
       }),
@@ -694,8 +721,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         operation: "notification.list",
         args: {
           origin: t.arg.string({ required: true }),
-          adapter: t.arg({ type: AdapterKindEnum }),
-          sessionId: t.arg.id({ required: true }),
+          adapter: t.arg({ type: AdapterIdScalar }),
           types: t.arg({ type: [NotificationTypeInputEnum] }),
           page: t.arg({ type: PageInput }),
         },
@@ -704,7 +730,6 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
           args: {
             readonly adapter?: AdapterKind | null;
             readonly origin: string;
-            readonly sessionId: string;
             readonly types?: readonly string[] | null;
             readonly page?: PageInputValue | null;
           },
@@ -717,7 +742,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
                 ...(args.adapter === null || args.adapter === undefined
                   ? {}
                   : { adapter: args.adapter }),
-                sessionId: args.sessionId,
+                sessionId: graphQLSessionId(context),
                 ...(args.types === null || args.types === undefined
                   ? {}
                   : { types: args.types.map((type) => notificationTypeInput(type)) }),
@@ -729,15 +754,13 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
       notificationUnreadCount: t.int({
         args: {
           origin: t.arg.string({ required: true }),
-          adapter: t.arg({ type: AdapterKindEnum }),
-          sessionId: t.arg.id({ required: true }),
+          adapter: t.arg({ type: AdapterIdScalar }),
         },
         resolve: async (
           _parent,
           args: {
             readonly adapter?: AdapterKind | null;
             readonly origin: string;
-            readonly sessionId: string;
           },
           context,
         ) =>
@@ -747,7 +770,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
               ...(args.adapter === null || args.adapter === undefined
                 ? {}
                 : { adapter: args.adapter }),
-              sessionId: args.sessionId,
+              sessionId: graphQLSessionId(context),
             }),
           ),
       }),
@@ -756,8 +779,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         operation: "followRequest.list",
         args: {
           origin: t.arg.string({ required: true }),
-          adapter: t.arg({ type: AdapterKindEnum }),
-          sessionId: t.arg.id({ required: true }),
+          adapter: t.arg({ type: AdapterIdScalar }),
           page: t.arg({ type: PageInput }),
         },
         resolve: async (
@@ -765,7 +787,6 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
           args: {
             readonly adapter?: AdapterKind | null;
             readonly origin: string;
-            readonly sessionId: string;
             readonly page?: PageInputValue | null;
           },
           context: GraphQLContext,
@@ -777,7 +798,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
                 ...(args.adapter === null || args.adapter === undefined
                   ? {}
                   : { adapter: args.adapter }),
-                sessionId: args.sessionId,
+                sessionId: graphQLSessionId(context),
                 page: normalizePageInput(args.page),
               }),
             ),
@@ -786,7 +807,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
       poll: unsupportedGraphQLField(t, {
         type: PollType,
         operation: "poll.get",
-        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: false }) },
+        args: { id: t.arg.id({ required: true }) },
         resolve: async (
           _parent: unknown,
           args: { readonly id: string; readonly sessionId?: string | null },
@@ -796,9 +817,9 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
             serializePoll(
               await context.service.polls.get({
                 id: args.id,
-                ...(args.sessionId === null || args.sessionId === undefined
-                  ? {}
-                  : { sessionId: args.sessionId }),
+                ...optionalBearerSessionId(
+                  context.request.headers.get("authorization") ?? undefined,
+                ),
               }),
             ),
           ),
@@ -808,8 +829,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         operation: "list.list",
         args: {
           origin: t.arg.string({ required: true }),
-          adapter: t.arg({ type: AdapterKindEnum }),
-          sessionId: t.arg.id({ required: true }),
+          adapter: t.arg({ type: AdapterIdScalar }),
           page: t.arg({ type: PageInput }),
         },
         resolve: async (
@@ -817,7 +837,6 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
           args: {
             readonly adapter?: AdapterKind | null;
             readonly origin: string;
-            readonly sessionId: string;
             readonly page?: PageInputValue | null;
           },
           context: GraphQLContext,
@@ -829,7 +848,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
                 ...(args.adapter === null || args.adapter === undefined
                   ? {}
                   : { adapter: args.adapter }),
-                sessionId: args.sessionId,
+                sessionId: graphQLSessionId(context),
                 page: normalizePageInput(args.page),
               }),
             ),
@@ -838,7 +857,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
       list: unsupportedGraphQLField(t, {
         type: ListType,
         operation: "list.get",
-        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        args: { id: t.arg.id({ required: true }) },
         resolve: async (
           _parent: unknown,
           args: { readonly id: string; readonly sessionId: string },
@@ -846,7 +865,10 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         ) =>
           withGraphQLErrorContract(async () =>
             serializeList(
-              await context.service.lists.get({ id: args.id, sessionId: args.sessionId }),
+              await context.service.lists.get({
+                id: args.id,
+                sessionId: graphQLSessionId(context),
+              }),
             ),
           ),
       }),
@@ -855,14 +877,12 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         operation: "list.accounts",
         args: {
           id: t.arg.id({ required: true }),
-          sessionId: t.arg.id({ required: true }),
           page: t.arg({ type: PageInput }),
         },
         resolve: async (
           _parent: unknown,
           args: {
             readonly id: string;
-            readonly sessionId: string;
             readonly page?: PageInputValue | null;
           },
           context: GraphQLContext,
@@ -871,7 +891,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
             serializeAccountConnection(
               await context.service.lists.accounts({
                 id: args.id,
-                sessionId: args.sessionId,
+                sessionId: graphQLSessionId(context),
                 page: normalizePageInput(args.page),
               }),
             ),
@@ -882,8 +902,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         operation: "filter.list",
         args: {
           origin: t.arg.string({ required: true }),
-          adapter: t.arg({ type: AdapterKindEnum }),
-          sessionId: t.arg.id({ required: true }),
+          adapter: t.arg({ type: AdapterIdScalar }),
           page: t.arg({ type: PageInput }),
         },
         resolve: async (
@@ -891,7 +910,6 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
           args: {
             readonly adapter?: AdapterKind | null;
             readonly origin: string;
-            readonly sessionId: string;
             readonly page?: PageInputValue | null;
           },
           context: GraphQLContext,
@@ -903,7 +921,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
                 ...(args.adapter === null || args.adapter === undefined
                   ? {}
                   : { adapter: args.adapter }),
-                sessionId: args.sessionId,
+                sessionId: graphQLSessionId(context),
                 page: normalizePageInput(args.page),
               }),
             ),
@@ -912,7 +930,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
       filter: unsupportedGraphQLField(t, {
         type: FilterType,
         operation: "filter.get",
-        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        args: { id: t.arg.id({ required: true }) },
         resolve: async (
           _parent: unknown,
           args: { readonly id: string; readonly sessionId: string },
@@ -920,7 +938,10 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         ) =>
           withGraphQLErrorContract(async () =>
             serializeFilter(
-              await context.service.filters.get({ id: args.id, sessionId: args.sessionId }),
+              await context.service.filters.get({
+                id: args.id,
+                sessionId: graphQLSessionId(context),
+              }),
             ),
           ),
       }),
@@ -929,8 +950,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         operation: "scheduledPost.list",
         args: {
           origin: t.arg.string({ required: true }),
-          adapter: t.arg({ type: AdapterKindEnum }),
-          sessionId: t.arg.id({ required: true }),
+          adapter: t.arg({ type: AdapterIdScalar }),
           page: t.arg({ type: PageInput }),
         },
         resolve: async (
@@ -938,7 +958,6 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
           args: {
             readonly adapter?: AdapterKind | null;
             readonly origin: string;
-            readonly sessionId: string;
             readonly page?: PageInputValue | null;
           },
           context: GraphQLContext,
@@ -950,7 +969,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
                 ...(args.adapter === null || args.adapter === undefined
                   ? {}
                   : { adapter: args.adapter }),
-                sessionId: args.sessionId,
+                sessionId: graphQLSessionId(context),
                 page: normalizePageInput(args.page),
               }),
             ),
@@ -959,7 +978,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
       scheduledPost: unsupportedGraphQLField(t, {
         type: ScheduledPostType,
         operation: "scheduledPost.get",
-        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        args: { id: t.arg.id({ required: true }) },
         resolve: async (
           _parent: unknown,
           args: { readonly id: string; readonly sessionId: string },
@@ -967,7 +986,10 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         ) =>
           withGraphQLErrorContract(async () =>
             serializeScheduledPost(
-              await context.service.scheduledPosts.get({ id: args.id, sessionId: args.sessionId }),
+              await context.service.scheduledPosts.get({
+                id: args.id,
+                sessionId: graphQLSessionId(context),
+              }),
             ),
           ),
       }),
@@ -995,8 +1017,76 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         },
         type: AuthStartPayloadType,
         resolve: async (_parent, args, context) =>
+          withGraphQLErrorContract(async () => {
+            const input = { ...normalizeAuthStart(args.input), clientIp: context.clientIp };
+            return serializeAuthStart(await context.service.auth.start(input));
+          }),
+      }),
+      authEmailChallengeStart: t.field({
+        args: {
+          input: t.arg({ type: EmailChallengeStartInput, required: true }),
+        },
+        type: EmailChallengeStartPayloadType,
+        resolve: async (
+          _parent: unknown,
+          args: { readonly input: Parameters<typeof normalizeEmailChallengeStart>[0] },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(() => {
+            const input = {
+              ...normalizeEmailChallengeStart(args.input),
+              clientIp: context.clientIp,
+            };
+            return context.service.auth.emailChallenge.start(input);
+          }),
+      }),
+      authEmailChallengeVerify: t.field({
+        args: {
+          input: t.arg({ type: EmailChallengeVerifyInput, required: true }),
+        },
+        type: AuthSessionType,
+        resolve: async (
+          _parent: unknown,
+          args: { readonly input: Parameters<typeof normalizeEmailChallengeVerify>[0] },
+          context: GraphQLContext,
+        ) =>
           withGraphQLErrorContract(async () =>
-            serializeAuthStart(await context.service.auth.start(normalizeAuthStart(args.input))),
+            serializeAuthSession(
+              await context.service.auth.emailChallenge.verify(
+                normalizeEmailChallengeVerify(args.input),
+              ),
+            ),
+          ),
+      }),
+      authPasskeyStart: t.field({
+        args: {
+          input: t.arg({ type: PasskeyStartInput, required: true }),
+        },
+        type: PasskeyStartPayloadType,
+        resolve: async (
+          _parent: unknown,
+          args: { readonly input: Parameters<typeof normalizePasskeyStart>[0] },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(() => {
+            const input = { ...normalizePasskeyStart(args.input), clientIp: context.clientIp };
+            return context.service.auth.passkey.start(input);
+          }),
+      }),
+      authPasskeyFinish: t.field({
+        args: {
+          input: t.arg({ type: PasskeyFinishInput, required: true }),
+        },
+        type: AuthSessionType,
+        resolve: async (
+          _parent: unknown,
+          args: { readonly input: Parameters<typeof normalizePasskeyFinish>[0] },
+          context: GraphQLContext,
+        ) =>
+          withGraphQLErrorContract(async () =>
+            serializeAuthSession(
+              await context.service.auth.passkey.finish(normalizePasskeyFinish(args.input)),
+            ),
           ),
       }),
       authParseCallback: t.field({
@@ -1024,24 +1114,20 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
           ),
       }),
       authRefresh: t.field({
-        args: {
-          sessionId: t.arg.id({ required: true }),
-        },
+        args: {},
         type: AuthSessionType,
         resolve: async (_parent, args, context) =>
           withGraphQLErrorContract(async () =>
             serializeAuthSession(
-              await context.service.auth.refreshSession({ sessionId: args.sessionId }),
+              await context.service.auth.refreshSession({ sessionId: graphQLSessionId(context) }),
             ),
           ),
       }),
       authRevoke: t.boolean({
-        args: {
-          sessionId: t.arg.id({ required: true }),
-        },
+        args: {},
         resolve: async (_parent, args, context) =>
           withGraphQLErrorContract(async () => {
-            await context.service.auth.revokeSession({ sessionId: args.sessionId });
+            await context.service.auth.revokeSession({ sessionId: graphQLSessionId(context) });
             return true;
           }),
       }),
@@ -1056,7 +1142,9 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         ) =>
           withGraphQLErrorContract(async () =>
             serializeMediaAttachment(
-              await context.service.media.upload(normalizeUploadMediaInput(args.input)),
+              await context.service.media.upload(
+                normalizeUploadMediaInput(withGraphQLSession(args.input, context)),
+              ),
             ),
           ),
       }),
@@ -1071,7 +1159,9 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         ) =>
           withGraphQLErrorContract(async () =>
             serializeMediaAttachment(
-              await context.service.media.uploadFromUrl(uploadMediaFromUrlInput(args.input)),
+              await context.service.media.uploadFromUrl(
+                uploadMediaFromUrlInput(withGraphQLSession(args.input, context)),
+              ),
             ),
           ),
       }),
@@ -1086,7 +1176,9 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         ) =>
           withGraphQLErrorContract(async () =>
             serializeMediaAttachment(
-              await context.service.media.update(updateMediaInput(args.input)),
+              await context.service.media.update(
+                updateMediaInput(withGraphQLSession(args.input, context)),
+              ),
             ),
           ),
       }),
@@ -1101,7 +1193,9 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         ) =>
           withGraphQLErrorContract(async () =>
             serializeDeletedEntity(
-              await context.service.media.delete(deleteMediaInput(args.input)),
+              await context.service.media.delete(
+                deleteMediaInput(withGraphQLSession(args.input, context)),
+              ),
             ),
           ),
       }),
@@ -1116,7 +1210,9 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         ) =>
           withGraphQLErrorContract(async () =>
             serializeAccount(
-              await context.service.accounts.updateProfile(updateProfileInput(args.input)),
+              await context.service.accounts.updateProfile(
+                updateProfileInput(withGraphQLSession(args.input, context)),
+              ),
             ),
           ),
       }),
@@ -1130,7 +1226,11 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
           context: GraphQLContext,
         ) =>
           withGraphQLErrorContract(async () =>
-            serializePost(await context.service.posts.create(normalizeCreatePostInput(args.input))),
+            serializePost(
+              await context.service.posts.create(
+                normalizeCreatePostInput(withGraphQLSession(args.input, context)),
+              ),
+            ),
           ),
       }),
       updatePost: unsupportedGraphQLField(t, {
@@ -1143,7 +1243,11 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
           context: GraphQLContext,
         ) =>
           withGraphQLErrorContract(async () =>
-            serializePost(await context.service.posts.update(postUpdateInput(args.input))),
+            serializePost(
+              await context.service.posts.update(
+                postUpdateInput(withGraphQLSession(args.input, context)),
+              ),
+            ),
           ),
       }),
       schedulePost: unsupportedGraphQLField(t, {
@@ -1157,7 +1261,9 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         ) =>
           withGraphQLErrorContract(async () =>
             serializeScheduledPost(
-              await context.service.scheduledPosts.create(schedulePostInput(args.input)),
+              await context.service.scheduledPosts.create(
+                schedulePostInput(withGraphQLSession(args.input, context)),
+              ),
             ),
           ),
       }),
@@ -1172,14 +1278,16 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         ) =>
           withGraphQLErrorContract(async () =>
             serializeScheduledPost(
-              await context.service.scheduledPosts.update(updateScheduledPostInput(args.input)),
+              await context.service.scheduledPosts.update(
+                updateScheduledPostInput(withGraphQLSession(args.input, context)),
+              ),
             ),
           ),
       }),
       deleteScheduledPost: unsupportedGraphQLField(t, {
         type: DeletedEntityType,
         operation: "scheduledPost.delete",
-        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        args: { id: t.arg.id({ required: true }) },
         resolve: async (
           _parent: unknown,
           args: { readonly id: string; readonly sessionId: string },
@@ -1189,7 +1297,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
             serializeDeletedEntity(
               await context.service.scheduledPosts.delete({
                 id: args.id,
-                sessionId: args.sessionId,
+                sessionId: graphQLSessionId(context),
               }),
             ),
           ),
@@ -1197,7 +1305,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
       deletePost: unsupportedGraphQLField(t, {
         type: DeletedEntityType,
         operation: "post.delete",
-        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        args: { id: t.arg.id({ required: true }) },
         resolve: async (
           _parent: unknown,
           args: { readonly id: string; readonly sessionId: string },
@@ -1205,32 +1313,35 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         ) =>
           withGraphQLErrorContract(async () =>
             serializeDeletedEntity(
-              await context.service.posts.delete({ id: args.id, sessionId: args.sessionId }),
+              await context.service.posts.delete({
+                id: args.id,
+                sessionId: graphQLSessionId(context),
+              }),
             ),
           ),
       }),
       followAccount: unsupportedGraphQLField(t, {
         type: RelationshipType,
         operation: "social.follow",
-        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        args: { id: t.arg.id({ required: true }) },
         resolve: accountActionResolver((service, input) => service.social.follow(input)),
       }),
       unfollowAccount: unsupportedGraphQLField(t, {
         type: RelationshipType,
         operation: "social.unfollow",
-        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        args: { id: t.arg.id({ required: true }) },
         resolve: accountActionResolver((service, input) => service.social.unfollow(input)),
       }),
       blockAccount: unsupportedGraphQLField(t, {
         type: RelationshipType,
         operation: "social.block",
-        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        args: { id: t.arg.id({ required: true }) },
         resolve: accountActionResolver((service, input) => service.social.block(input)),
       }),
       unblockAccount: unsupportedGraphQLField(t, {
         type: RelationshipType,
         operation: "social.unblock",
-        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        args: { id: t.arg.id({ required: true }) },
         resolve: accountActionResolver((service, input) => service.social.unblock(input)),
       }),
       muteAccount: unsupportedGraphQLField(t, {
@@ -1244,38 +1355,40 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         ) =>
           withGraphQLErrorContract(async () =>
             serializeRelationship(
-              await context.service.social.mute(normalizeMuteInput(args.input)),
+              await context.service.social.mute(
+                normalizeMuteInput(withGraphQLSession(args.input, context)),
+              ),
             ),
           ),
       }),
       unmuteAccount: unsupportedGraphQLField(t, {
         type: RelationshipType,
         operation: "social.unmute",
-        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        args: { id: t.arg.id({ required: true }) },
         resolve: accountActionResolver((service, input) => service.social.unmute(input)),
       }),
       favouritePost: unsupportedGraphQLField(t, {
         type: PostType,
         operation: "social.favourite",
-        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        args: { id: t.arg.id({ required: true }) },
         resolve: postActionResolver((service, input) => service.social.favourite(input)),
       }),
       unfavouritePost: unsupportedGraphQLField(t, {
         type: PostType,
         operation: "social.unfavourite",
-        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        args: { id: t.arg.id({ required: true }) },
         resolve: postActionResolver((service, input) => service.social.unfavourite(input)),
       }),
       bookmarkPost: unsupportedGraphQLField(t, {
         type: PostType,
         operation: "social.bookmark",
-        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        args: { id: t.arg.id({ required: true }) },
         resolve: postActionResolver((service, input) => service.social.bookmark(input)),
       }),
       unbookmarkPost: unsupportedGraphQLField(t, {
         type: PostType,
         operation: "social.unbookmark",
-        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        args: { id: t.arg.id({ required: true }) },
         resolve: postActionResolver((service, input) => service.social.unbookmark(input)),
       }),
       boostPost: unsupportedGraphQLField(t, {
@@ -1288,13 +1401,17 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
           context: GraphQLContext,
         ) =>
           withGraphQLErrorContract(async () =>
-            serializePost(await context.service.social.boost(normalizeBoostInput(args.input))),
+            serializePost(
+              await context.service.social.boost(
+                normalizeBoostInput(withGraphQLSession(args.input, context)),
+              ),
+            ),
           ),
       }),
       unboostPost: unsupportedGraphQLField(t, {
         type: PostType,
         operation: "social.unboost",
-        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        args: { id: t.arg.id({ required: true }) },
         resolve: postActionResolver((service, input) => service.social.unboost(input)),
       }),
       reactToPost: unsupportedGraphQLField(t, {
@@ -1307,7 +1424,11 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
           context: GraphQLContext,
         ) =>
           withGraphQLErrorContract(async () =>
-            serializePost(await context.service.social.react(normalizeReactInput(args.input))),
+            serializePost(
+              await context.service.social.react(
+                normalizeReactInput(withGraphQLSession(args.input, context)),
+              ),
+            ),
           ),
       }),
       unreactToPost: unsupportedGraphQLField(t, {
@@ -1320,7 +1441,11 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
           context: GraphQLContext,
         ) =>
           withGraphQLErrorContract(async () =>
-            serializePost(await context.service.social.unreact(normalizeReactInput(args.input))),
+            serializePost(
+              await context.service.social.unreact(
+                normalizeReactInput(withGraphQLSession(args.input, context)),
+              ),
+            ),
           ),
       }),
       votePoll: unsupportedGraphQLField(t, {
@@ -1333,13 +1458,17 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
           context: GraphQLContext,
         ) =>
           withGraphQLErrorContract(async () =>
-            serializePoll(await context.service.polls.vote(normalizeVotePollInput(args.input))),
+            serializePoll(
+              await context.service.polls.vote(
+                normalizeVotePollInput(withGraphQLSession(args.input, context)),
+              ),
+            ),
           ),
       }),
       acceptFollowRequest: unsupportedGraphQLField(t, {
         type: RelationshipType,
         operation: "followRequest.accept",
-        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        args: { id: t.arg.id({ required: true }) },
         resolve: async (
           _parent: unknown,
           args: { readonly id: string; readonly sessionId: string },
@@ -1349,7 +1478,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
             serializeRelationship(
               await context.service.followRequests.accept({
                 accountId: args.id,
-                sessionId: args.sessionId,
+                sessionId: graphQLSessionId(context),
               }),
             ),
           ),
@@ -1357,7 +1486,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
       rejectFollowRequest: unsupportedGraphQLField(t, {
         type: RelationshipType,
         operation: "followRequest.reject",
-        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        args: { id: t.arg.id({ required: true }) },
         resolve: async (
           _parent: unknown,
           args: { readonly id: string; readonly sessionId: string },
@@ -1367,7 +1496,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
             serializeRelationship(
               await context.service.followRequests.reject({
                 accountId: args.id,
-                sessionId: args.sessionId,
+                sessionId: graphQLSessionId(context),
               }),
             ),
           ),
@@ -1382,7 +1511,11 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
           context: GraphQLContext,
         ) =>
           withGraphQLErrorContract(async () =>
-            serializeList(await context.service.lists.create(listInput(args.input))),
+            serializeList(
+              await context.service.lists.create(
+                listInput(withGraphQLSession(args.input, context)),
+              ),
+            ),
           ),
       }),
       updateList: unsupportedGraphQLField(t, {
@@ -1395,13 +1528,17 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
           context: GraphQLContext,
         ) =>
           withGraphQLErrorContract(async () =>
-            serializeList(await context.service.lists.update(updateListInput(args.input))),
+            serializeList(
+              await context.service.lists.update(
+                updateListInput(withGraphQLSession(args.input, context)),
+              ),
+            ),
           ),
       }),
       deleteList: unsupportedGraphQLField(t, {
         type: DeletedEntityType,
         operation: "list.delete",
-        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        args: { id: t.arg.id({ required: true }) },
         resolve: async (
           _parent: unknown,
           args: { readonly id: string; readonly sessionId: string },
@@ -1409,7 +1546,10 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         ) =>
           withGraphQLErrorContract(async () =>
             serializeDeletedEntity(
-              await context.service.lists.delete({ id: args.id, sessionId: args.sessionId }),
+              await context.service.lists.delete({
+                id: args.id,
+                sessionId: graphQLSessionId(context),
+              }),
             ),
           ),
       }),
@@ -1423,7 +1563,11 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
           context: GraphQLContext,
         ) =>
           withGraphQLErrorContract(async () =>
-            serializeList(await context.service.lists.addAccount(listAccountInput(args.input))),
+            serializeList(
+              await context.service.lists.addAccount(
+                listAccountInput(withGraphQLSession(args.input, context)),
+              ),
+            ),
           ),
       }),
       removeListAccount: unsupportedGraphQLField(t, {
@@ -1436,7 +1580,11 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
           context: GraphQLContext,
         ) =>
           withGraphQLErrorContract(async () =>
-            serializeList(await context.service.lists.removeAccount(listAccountInput(args.input))),
+            serializeList(
+              await context.service.lists.removeAccount(
+                listAccountInput(withGraphQLSession(args.input, context)),
+              ),
+            ),
           ),
       }),
       createFilter: unsupportedGraphQLField(t, {
@@ -1449,7 +1597,11 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
           context: GraphQLContext,
         ) =>
           withGraphQLErrorContract(async () =>
-            serializeFilter(await context.service.filters.create(filterInput(args.input))),
+            serializeFilter(
+              await context.service.filters.create(
+                filterInput(withGraphQLSession(args.input, context)),
+              ),
+            ),
           ),
       }),
       updateFilter: unsupportedGraphQLField(t, {
@@ -1462,13 +1614,17 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
           context: GraphQLContext,
         ) =>
           withGraphQLErrorContract(async () =>
-            serializeFilter(await context.service.filters.update(updateFilterInput(args.input))),
+            serializeFilter(
+              await context.service.filters.update(
+                updateFilterInput(withGraphQLSession(args.input, context)),
+              ),
+            ),
           ),
       }),
       deleteFilter: unsupportedGraphQLField(t, {
         type: DeletedEntityType,
         operation: "filter.delete",
-        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        args: { id: t.arg.id({ required: true }) },
         resolve: async (
           _parent: unknown,
           args: { readonly id: string; readonly sessionId: string },
@@ -1476,14 +1632,17 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
         ) =>
           withGraphQLErrorContract(async () =>
             serializeDeletedEntity(
-              await context.service.filters.delete({ id: args.id, sessionId: args.sessionId }),
+              await context.service.filters.delete({
+                id: args.id,
+                sessionId: graphQLSessionId(context),
+              }),
             ),
           ),
       }),
       dismissNotification: unsupportedGraphQLField(t, {
         type: DeletedEntityType,
         operation: "notification.dismiss",
-        args: { id: t.arg.id({ required: true }), sessionId: t.arg.id({ required: true }) },
+        args: { id: t.arg.id({ required: true }) },
         resolve: async (
           _parent: unknown,
           args: { readonly id: string; readonly sessionId: string },
@@ -1493,7 +1652,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
             serializeDeletedEntity(
               await context.service.notifications.dismiss({
                 id: args.id,
-                sessionId: args.sessionId,
+                sessionId: graphQLSessionId(context),
               }),
             ),
           ),
@@ -1501,8 +1660,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
       clearNotifications: t.boolean({
         args: {
           origin: t.arg.string({ required: true }),
-          adapter: t.arg({ type: AdapterKindEnum }),
-          sessionId: t.arg.id({ required: true }),
+          adapter: t.arg({ type: AdapterIdScalar }),
         },
         resolve: async (_parent, args, context) =>
           withGraphQLErrorContract(async () => {
@@ -1511,7 +1669,7 @@ export function registerGraphQLOperations(deps: SchemaOperationDeps): void {
               ...(args.adapter === null || args.adapter === undefined
                 ? {}
                 : { adapter: args.adapter }),
-              sessionId: args.sessionId,
+              sessionId: graphQLSessionId(context),
             });
             return true;
           }),

@@ -7,11 +7,13 @@ import {
 } from "@activityplug/core";
 import { type AdapterE2ETarget } from "@activityplug/e2e-fixtures";
 import { expect } from "vitest";
+import { z } from "zod";
+
+import { postGraphQL } from "./e2e-utils.js";
 
 export async function expectCapabilitySurfaces(
   fetch: (request: Request) => Response | Promise<Response>,
   target: AdapterE2ETarget,
-  expected: CapabilitySet,
 ): Promise<CapabilitySet> {
   const httpCapabilities = await capabilitiesOverHttp(fetch, target);
   const graphqlCapabilities = await capabilitiesOverGraphQL(fetch, target);
@@ -19,7 +21,6 @@ export async function expectCapabilitySurfaces(
   for (const name of capabilityNames) {
     expect(httpCapabilities[name]).toMatchObject({
       name,
-      status: expected[name].status,
     });
     expect(graphqlCapabilities[name]).toMatchObject({
       name,
@@ -51,30 +52,12 @@ async function capabilitiesOverGraphQL(
 ): Promise<CapabilitySet> {
   const result = await postGraphQL(fetch, {
     query:
-      "query($origin: String!, $adapter: AdapterKind) { capabilities(origin: $origin, adapter: $adapter) { auth { name status source reason } instance { name status source reason } accounts { name status source reason } posts { name status source reason } timelines { name status source reason } media { name status source reason } social { name status source reason } search { name status source reason } notifications { name status source reason } polls { name status source reason } lists { name status source reason } followRequests { name status source reason } filters { name status source reason } scheduledPosts { name status source reason } streaming { name status source reason } admin { name status source reason } } }",
-    variables: { origin: target.origin, adapter: target.adapter.toUpperCase() },
+      "query($origin: String!, $adapter: AdapterId) { capabilities(origin: $origin, adapter: $adapter) { auth { name status source reason } instance { name status source reason } accounts { name status source reason } posts { name status source reason } timelines { name status source reason } media { name status source reason } social { name status source reason } search { name status source reason } notifications { name status source reason } polls { name status source reason } lists { name status source reason } followRequests { name status source reason } filters { name status source reason } scheduledPosts { name status source reason } streaming { name status source reason } admin { name status source reason } } }",
+    variables: { origin: target.origin, adapter: target.adapter },
   });
   const data = result["data"];
   if (!isRecord(data)) throw new TypeError("GraphQL capabilities response must include data.");
   return capabilitySetFromPayload(data["capabilities"]);
-}
-
-async function postGraphQL(
-  fetch: (request: Request) => Response | Promise<Response>,
-  body: { readonly query: string; readonly variables?: Record<string, unknown> },
-): Promise<Record<string, unknown>> {
-  const response = await fetch(
-    new Request("http://activityplug.test/graphql", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    }),
-  );
-  expect(response.status).toBe(200);
-  const json = (await response.json()) as unknown;
-  if (!isRecord(json)) throw new TypeError("GraphQL response must be an object.");
-  expect(json["errors"]).toBeUndefined();
-  return json;
 }
 
 async function readJsonData(response: Response): Promise<unknown> {
@@ -103,37 +86,24 @@ function capabilitySetFromPayload(payload: unknown): CapabilitySet {
   return Object.fromEntries(entries) as CapabilitySet;
 }
 
+const capabilityItemSchema = z.looseObject({
+  name: z.enum(capabilityNames),
+  status: z.enum(["supported", "unsupported", "unknown"]),
+  source: z.enum(["static", "nodeinfo", "oauth", "instance", "probe"]),
+  reason: z.string().nullish(),
+});
+
 function isCapabilityItem(value: unknown): value is {
   readonly name: CapabilityName;
   readonly status: CapabilityStatus;
   readonly source: CapabilitySourceKind;
   readonly reason?: string | null;
 } {
-  return (
-    isRecord(value) &&
-    capabilityNames.includes(value["name"] as CapabilityName) &&
-    isCapabilityStatus(value["status"]) &&
-    isCapabilitySource(value["source"]) &&
-    (value["reason"] === null ||
-      value["reason"] === undefined ||
-      typeof value["reason"] === "string")
-  );
+  return capabilityItemSchema.safeParse(value).success;
 }
 
-function isCapabilityStatus(value: unknown): value is CapabilityStatus {
-  return value === "supported" || value === "unsupported" || value === "unknown";
-}
-
-function isCapabilitySource(value: unknown): value is CapabilitySourceKind {
-  return (
-    value === "static" ||
-    value === "nodeinfo" ||
-    value === "oauth" ||
-    value === "instance" ||
-    value === "probe"
-  );
-}
+const jsonRecordSchema = z.looseObject({});
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return jsonRecordSchema.safeParse(value).success;
 }

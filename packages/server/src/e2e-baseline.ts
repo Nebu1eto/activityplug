@@ -1,7 +1,6 @@
 import {
   type ActivityPlugAdapter,
   type CapabilityName,
-  createActivityPlug,
   createEntityRef,
   decodeOpaqueId,
   type CapabilitySet,
@@ -31,29 +30,23 @@ import {
 } from "./e2e-social.js";
 import { type E2EFetch, isRecord, postGraphQL, readJsonData } from "./e2e-utils.js";
 import { createActivityPlugServer } from "./runtime/server.js";
+import { createOriginPolicy } from "./security/origin-policy.js";
 
 export async function expectServerBaseline(
   target: AdapterE2ETarget,
   adapter: ActivityPlugAdapter,
 ): Promise<void> {
-  const client = createActivityPlug({
-    adapter,
-    origin: target.origin,
-  });
   const server = createActivityPlugServer({
     adapters: [adapter],
-    originPolicy: () => {},
+    originPolicy: createOriginPolicy([target.origin]),
+    allowPrivateNetworks: true,
     tokenImport: { enabled: true },
   });
   const session =
     target.token === undefined ? undefined : await importTokenOverHttp(server.app.fetch, target);
   const graphqlSession =
     target.token === undefined ? undefined : await importTokenOverGraphQL(server.app.fetch, target);
-  const capabilities = await expectCapabilitySurfaces(
-    server.app.fetch,
-    target,
-    client.capabilities,
-  );
+  const capabilities = await expectCapabilitySurfaces(server.app.fetch, target);
   requireSessionsForAuthenticatedCapabilities(target, capabilities, session, graphqlSession);
   const encodedOrigin = encodeURIComponent(target.origin);
   const instanceResponse = await server.app.fetch(
@@ -78,17 +71,22 @@ export async function expectServerBaseline(
       new Request(
         `http://activityplug.test/api/v1/timelines/public?origin=${encodeURIComponent(
           target.origin,
-        )}&limit=5${session === undefined ? "" : `&sessionId=${encodeURIComponent(session.id)}`}`,
+        )}&limit=5`,
+        { headers: authorizationHeaders(session?.id) },
       ),
     );
     expect(publicTimelineResponse.status).toBe(200);
     expect(await readJsonData(publicTimelineResponse)).toEqual(expect.any(Array));
 
-    const graphqlPublicTimeline = await postGraphQL(server.app.fetch, {
-      query:
-        "query($origin: String!, $sessionId: ID) { publicTimeline(origin: $origin, sessionId: $sessionId, page: { limit: 5 }) { nodes { ref { origin rawId } } } }",
-      variables: { origin: target.origin, sessionId: graphqlSession?.id },
-    });
+    const graphqlPublicTimeline = await postGraphQL(
+      server.app.fetch,
+      {
+        query:
+          "query($origin: String!) { publicTimeline(origin: $origin, page: { limit: 5 }) { nodes { ref { origin rawId } } } }",
+        variables: { origin: target.origin },
+      },
+      graphqlSession?.id,
+    );
     expect(graphqlPublicTimeline["data"]).toMatchObject({
       publicTimeline: { nodes: expect.any(Array) },
     });
@@ -99,17 +97,22 @@ export async function expectServerBaseline(
       new Request(
         `http://activityplug.test/api/v1/timelines/local?origin=${encodeURIComponent(
           target.origin,
-        )}&limit=5${session === undefined ? "" : `&sessionId=${encodeURIComponent(session.id)}`}`,
+        )}&limit=5`,
+        { headers: authorizationHeaders(session?.id) },
       ),
     );
     expect(localTimelineResponse.status).toBe(200);
     expect(await readJsonData(localTimelineResponse)).toEqual(expect.any(Array));
 
-    const graphqlLocalTimeline = await postGraphQL(server.app.fetch, {
-      query:
-        "query($origin: String!, $sessionId: ID) { publicTimeline(origin: $origin, sessionId: $sessionId, local: true, page: { limit: 5 }) { nodes { ref { origin rawId } } } }",
-      variables: { origin: target.origin, sessionId: graphqlSession?.id },
-    });
+    const graphqlLocalTimeline = await postGraphQL(
+      server.app.fetch,
+      {
+        query:
+          "query($origin: String!) { publicTimeline(origin: $origin, local: true, page: { limit: 5 }) { nodes { ref { origin rawId } } } }",
+        variables: { origin: target.origin },
+      },
+      graphqlSession?.id,
+    );
     expect(graphqlLocalTimeline["data"]).toMatchObject({
       publicTimeline: { nodes: expect.any(Array) },
     });
@@ -149,11 +152,15 @@ export async function expectServerBaseline(
     expect(await readJsonData(homeTimelineResponse)).toEqual(expect.any(Array));
 
     if (graphqlSession !== undefined) {
-      const graphqlHomeTimeline = await postGraphQL(server.app.fetch, {
-        query:
-          "query($origin: String!, $sessionId: ID!) { homeTimeline(origin: $origin, sessionId: $sessionId, page: { limit: 5 }) { nodes { ref { origin rawId } } } }",
-        variables: { origin: target.origin, sessionId: graphqlSession.id },
-      });
+      const graphqlHomeTimeline = await postGraphQL(
+        server.app.fetch,
+        {
+          query:
+            "query($origin: String!) { homeTimeline(origin: $origin, page: { limit: 5 }) { nodes { ref { origin rawId } } } }",
+          variables: { origin: target.origin },
+        },
+        graphqlSession.id,
+      );
       expect(graphqlHomeTimeline["data"]).toMatchObject({
         homeTimeline: { nodes: expect.any(Array) },
       });
@@ -215,10 +222,13 @@ export async function expectServerBaseline(
   }
 
   if (graphqlSession !== undefined) {
-    const graphqlViewer = await postGraphQL(server.app.fetch, {
-      query: "query($sessionId: ID!) { viewer(sessionId: $sessionId) { ref { origin } } }",
-      variables: { sessionId: graphqlSession.id },
-    });
+    const graphqlViewer = await postGraphQL(
+      server.app.fetch,
+      {
+        query: "query { viewer { ref { origin } } }",
+      },
+      graphqlSession.id,
+    );
     expect(graphqlViewer["data"]).toMatchObject({ viewer: { ref: { origin: target.origin } } });
   }
 
@@ -452,28 +462,30 @@ export async function expectServerBaseline(
       new Request(
         `http://activityplug.test/api/v1/search?origin=${encodeURIComponent(
           target.origin,
-        )}&q=${encodeURIComponent(target.accountHandle)}&type=accounts&limit=20${
-          session === undefined ? "" : `&sessionId=${encodeURIComponent(session.id)}`
-        }`,
+        )}&q=${encodeURIComponent(target.accountHandle)}&type=accounts&limit=20`,
+        { headers: authorizationHeaders(session?.id) },
       ),
     );
     expect(searchResponse.status).toBe(200);
     const search = await readJsonData(searchResponse);
     expect(accountRefIds(search)).toContain(expectedAccountId);
 
-    const graphqlSearch = await postGraphQL(server.app.fetch, {
-      query:
-        "query($input: SearchInput!) { search(input: $input) { accounts { ref { id origin rawId } } } }",
-      variables: {
-        input: {
-          origin: target.origin,
-          query: target.accountHandle,
-          type: "ACCOUNTS",
-          ...(graphqlSession === undefined ? {} : { sessionId: graphqlSession.id }),
-          page: { limit: 20 },
+    const graphqlSearch = await postGraphQL(
+      server.app.fetch,
+      {
+        query:
+          "query($input: SearchInput!) { search(input: $input) { accounts { ref { id origin rawId } } } }",
+        variables: {
+          input: {
+            origin: target.origin,
+            query: target.accountHandle,
+            type: "ACCOUNTS",
+            page: { limit: 20 },
+          },
         },
       },
-    });
+      graphqlSession?.id,
+    );
     expect(graphqlAccountRefIds(graphqlSearch)).toContain(expectedAccountId);
   }
 
@@ -485,27 +497,29 @@ export async function expectServerBaseline(
       new Request(
         `http://activityplug.test/api/v1/search?origin=${encodeURIComponent(
           target.origin,
-        )}&q=${encodeURIComponent(target.hashtag)}&type=hashtags&limit=5${
-          session === undefined ? "" : `&sessionId=${encodeURIComponent(session.id)}`
-        }`,
+        )}&q=${encodeURIComponent(target.hashtag)}&type=hashtags&limit=5`,
+        { headers: authorizationHeaders(session?.id) },
       ),
     );
     expect(hashtagSearchResponse.status).toBe(200);
     const hashtagSearch = await readJsonData(hashtagSearchResponse);
     expect(hashtagNames(hashtagSearch)).toContain(normalizedHashtag(target.hashtag));
 
-    const graphqlHashtagSearch = await postGraphQL(server.app.fetch, {
-      query: "query($input: SearchInput!) { search(input: $input) { hashtags { name } } }",
-      variables: {
-        input: {
-          origin: target.origin,
-          query: target.hashtag,
-          type: "HASHTAGS",
-          ...(graphqlSession === undefined ? {} : { sessionId: graphqlSession.id }),
-          page: { limit: 5 },
+    const graphqlHashtagSearch = await postGraphQL(
+      server.app.fetch,
+      {
+        query: "query($input: SearchInput!) { search(input: $input) { hashtags { name } } }",
+        variables: {
+          input: {
+            origin: target.origin,
+            query: target.hashtag,
+            type: "HASHTAGS",
+            page: { limit: 5 },
+          },
         },
       },
-    });
+      graphqlSession?.id,
+    );
     const hashtags = (
       graphqlHashtagSearch["data"] as { readonly search?: { readonly hashtags?: unknown[] } }
     ).search?.hashtags;
@@ -538,9 +552,8 @@ export async function expectServerBaseline(
       new Request(
         `http://activityplug.test/api/v1/search?origin=${encodeURIComponent(
           target.origin,
-        )}&q=${encodeURIComponent(target.accountHandle)}&limit=20${
-          session === undefined ? "" : `&sessionId=${encodeURIComponent(session.id)}`
-        }`,
+        )}&q=${encodeURIComponent(target.accountHandle)}&limit=20`,
+        { headers: authorizationHeaders(session?.id) },
       ),
     );
     expect(broadAccountSearchResponse.status).toBe(200);
@@ -551,9 +564,8 @@ export async function expectServerBaseline(
       new Request(
         `http://activityplug.test/api/v1/search?origin=${encodeURIComponent(
           target.origin,
-        )}&q=${encodeURIComponent(target.postSearchQuery)}&limit=5${
-          session === undefined ? "" : `&sessionId=${encodeURIComponent(session.id)}`
-        }`,
+        )}&q=${encodeURIComponent(target.postSearchQuery)}&limit=5`,
+        { headers: authorizationHeaders(session?.id) },
       ),
     );
     expect(broadPostSearchResponse.status).toBe(200);
@@ -564,55 +576,63 @@ export async function expectServerBaseline(
       new Request(
         `http://activityplug.test/api/v1/search?origin=${encodeURIComponent(
           target.origin,
-        )}&q=${encodeURIComponent(target.hashtag)}&limit=5${
-          session === undefined ? "" : `&sessionId=${encodeURIComponent(session.id)}`
-        }`,
+        )}&q=${encodeURIComponent(target.hashtag)}&limit=5`,
+        { headers: authorizationHeaders(session?.id) },
       ),
     );
     expect(broadHashtagSearchResponse.status).toBe(200);
     const broadSearchResult = await readJsonData(broadHashtagSearchResponse);
     expect(hashtagNames(broadSearchResult)).toContain(normalizedHashtag(target.hashtag));
 
-    const broadAccountSearch = await postGraphQL(server.app.fetch, {
-      query: "query($input: SearchInput!) { search(input: $input) { accounts { ref { id } } } }",
-      variables: {
-        input: {
-          origin: target.origin,
-          query: target.accountHandle,
-          ...(graphqlSession === undefined ? {} : { sessionId: graphqlSession.id }),
-          page: { limit: 20 },
+    const broadAccountSearch = await postGraphQL(
+      server.app.fetch,
+      {
+        query: "query($input: SearchInput!) { search(input: $input) { accounts { ref { id } } } }",
+        variables: {
+          input: {
+            origin: target.origin,
+            query: target.accountHandle,
+            page: { limit: 20 },
+          },
         },
       },
-    });
+      graphqlSession?.id,
+    );
     expect(graphqlAccountRefIds(broadAccountSearch)).toContain(expectedBroadAccountId);
 
-    const broadPostSearch = await postGraphQL(server.app.fetch, {
-      query: "query($input: SearchInput!) { search(input: $input) { posts { ref { rawId } } } }",
-      variables: {
-        input: {
-          origin: target.origin,
-          query: target.postSearchQuery,
-          ...(graphqlSession === undefined ? {} : { sessionId: graphqlSession.id }),
-          page: { limit: 5 },
+    const broadPostSearch = await postGraphQL(
+      server.app.fetch,
+      {
+        query: "query($input: SearchInput!) { search(input: $input) { posts { ref { rawId } } } }",
+        variables: {
+          input: {
+            origin: target.origin,
+            query: target.postSearchQuery,
+            page: { limit: 5 },
+          },
         },
       },
-    });
+      graphqlSession?.id,
+    );
     const broadPosts = (
       broadPostSearch["data"] as { readonly search?: { readonly posts?: unknown[] } }
     ).search?.posts;
     expect(postRawIds({ posts: broadPosts })).toContain(target.postSearchRawId);
 
-    const broadHashtagSearch = await postGraphQL(server.app.fetch, {
-      query: "query($input: SearchInput!) { search(input: $input) { hashtags { name } } }",
-      variables: {
-        input: {
-          origin: target.origin,
-          query: target.hashtag,
-          ...(graphqlSession === undefined ? {} : { sessionId: graphqlSession.id }),
-          page: { limit: 5 },
+    const broadHashtagSearch = await postGraphQL(
+      server.app.fetch,
+      {
+        query: "query($input: SearchInput!) { search(input: $input) { hashtags { name } } }",
+        variables: {
+          input: {
+            origin: target.origin,
+            query: target.hashtag,
+            page: { limit: 5 },
+          },
         },
       },
-    });
+      graphqlSession?.id,
+    );
     const broadHashtags = (
       broadHashtagSearch["data"] as { readonly search?: { readonly hashtags?: unknown[] } }
     ).search?.hashtags;
@@ -668,9 +688,8 @@ export async function expectServerBaseline(
     new Request(
       `http://activityplug.test/api/v1/search?origin=${encodeURIComponent(
         target.origin,
-      )}&q=${encodeURIComponent(target.postSearchQuery)}&type=posts&limit=5${
-        session === undefined ? "" : `&sessionId=${encodeURIComponent(session.id)}`
-      }`,
+      )}&q=${encodeURIComponent(target.postSearchQuery)}&type=posts&limit=5`,
+      { headers: authorizationHeaders(session?.id) },
     ),
   );
   expect(postSearchResponse.status).toBe(200);
@@ -678,19 +697,22 @@ export async function expectServerBaseline(
   expect(postSearch).toMatchObject({ posts: expect.any(Array) });
   expect(postRawIds(postSearch)).toContain(target.postSearchRawId);
 
-  const graphqlPostSearch = await postGraphQL(server.app.fetch, {
-    query:
-      "query($input: SearchInput!) { search(input: $input) { posts { ref { rawId } url contentText contentHtml } } }",
-    variables: {
-      input: {
-        origin: target.origin,
-        query: target.postSearchQuery,
-        type: "POSTS",
-        ...(graphqlSession === undefined ? {} : { sessionId: graphqlSession.id }),
-        page: { limit: 5 },
+  const graphqlPostSearch = await postGraphQL(
+    server.app.fetch,
+    {
+      query:
+        "query($input: SearchInput!) { search(input: $input) { posts { ref { rawId } url contentText contentHtml } } }",
+      variables: {
+        input: {
+          origin: target.origin,
+          query: target.postSearchQuery,
+          type: "POSTS",
+          page: { limit: 5 },
+        },
       },
     },
-  });
+    graphqlSession?.id,
+  );
   expect(graphqlPostSearch["data"]).toMatchObject({
     search: { posts: expect.any(Array) },
   });
@@ -762,12 +784,12 @@ async function expectUnsupportedAuxiliaryOperations(
     );
     await expectUnsupportedGraphQL(fetch, {
       query:
-        "query($origin: String!, $adapter: AdapterKind, $sessionId: ID!) { notificationUnreadCount(origin: $origin, adapter: $adapter, sessionId: $sessionId) }",
+        "query($origin: String!, $adapter: AdapterId) { notificationUnreadCount(origin: $origin, adapter: $adapter) }",
       variables: {
         origin: target.origin,
-        adapter: adapterKind(target.adapter),
-        sessionId: authSessionId,
+        adapter: target.adapter,
       },
+      authSessionId,
       capability: "notifications.unreadCount",
     });
   }
@@ -785,12 +807,12 @@ async function expectUnsupportedAuxiliaryOperations(
     );
     await expectUnsupportedGraphQL(fetch, {
       query:
-        "mutation($origin: String!, $adapter: AdapterKind, $sessionId: ID!) { clearNotifications(origin: $origin, adapter: $adapter, sessionId: $sessionId) }",
+        "mutation($origin: String!, $adapter: AdapterId) { clearNotifications(origin: $origin, adapter: $adapter) }",
       variables: {
         origin: target.origin,
-        adapter: adapterKind(target.adapter),
-        sessionId: authSessionId,
+        adapter: target.adapter,
       },
+      authSessionId,
       capability: "notifications.clear",
     });
   }
@@ -814,10 +836,10 @@ async function expectUnsupportedAuxiliaryOperations(
       variables: {
         input: {
           id: postId,
-          sessionId: authSessionId,
           content: "ActivityPlug unsupported update check",
         },
       },
+      authSessionId,
       capability: "posts.update",
     });
   }
@@ -835,12 +857,12 @@ async function expectUnsupportedAuxiliaryOperations(
     );
     await expectUnsupportedGraphQL(fetch, {
       query:
-        "query($origin: String!, $adapter: AdapterKind, $sessionId: ID!) { filters(origin: $origin, adapter: $adapter, sessionId: $sessionId) { nodes { ref { id } } } }",
+        "query($origin: String!, $adapter: AdapterId) { filters(origin: $origin, adapter: $adapter) { nodes { ref { id } } } }",
       variables: {
         origin: target.origin,
-        adapter: adapterKind(target.adapter),
-        sessionId: authSessionId,
+        adapter: target.adapter,
       },
+      authSessionId,
       capability: "filters.read",
     });
   }
@@ -869,12 +891,12 @@ async function expectUnsupportedAuxiliaryOperations(
       variables: {
         input: {
           origin: target.origin,
-          adapter: adapterKind(target.adapter),
-          sessionId: authSessionId,
+          adapter: target.adapter,
           content: "ActivityPlug unsupported schedule check",
           scheduledAt,
         },
       },
+      authSessionId,
       capability: "scheduledPosts.create",
     });
   }
@@ -894,13 +916,17 @@ async function expectUnsupportedGraphQL(
   input: {
     readonly query: string;
     readonly variables: Record<string, unknown>;
+    readonly authSessionId: string;
     readonly capability: CapabilityName;
   },
 ): Promise<void> {
   const response = await fetch(
     new Request("http://activityplug.test/graphql", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        authorization: `Bearer ${input.authSessionId}`,
+        "content-type": "application/json",
+      },
       body: JSON.stringify({ query: input.query, variables: input.variables }),
     }),
   );
@@ -954,7 +980,7 @@ async function importTokenOverGraphQL(
     variables: {
       input: {
         origin: target.origin,
-        adapter: adapterKind(target.adapter),
+        adapter: target.adapter,
         token: {
           accessToken: target.token,
           tokenType: "Bearer",
@@ -1095,20 +1121,23 @@ async function createPostOverGraphQL(
   authSessionId: string,
   mediaId?: string,
 ): Promise<string> {
-  const result = await postGraphQL(fetch, {
-    query:
-      "mutation($input: CreatePostInput!) { createPost(input: $input) { ref { id origin rawId } media { ref { id } } } }",
-    variables: {
-      input: {
-        origin: target.origin,
-        adapter: adapterKind(target.adapter),
-        sessionId: authSessionId,
-        content: `ActivityPlug server GraphQL E2E ${Date.now()}`,
-        visibility: "PUBLIC",
-        ...(mediaId === undefined ? {} : { mediaIds: [mediaId] }),
+  const result = await postGraphQL(
+    fetch,
+    {
+      query:
+        "mutation($input: CreatePostInput!) { createPost(input: $input) { ref { id origin rawId } media { ref { id } } } }",
+      variables: {
+        input: {
+          origin: target.origin,
+          adapter: target.adapter,
+          content: `ActivityPlug server GraphQL E2E ${Date.now()}`,
+          visibility: "PUBLIC",
+          ...(mediaId === undefined ? {} : { mediaIds: [mediaId] }),
+        },
       },
     },
-  });
+    authSessionId,
+  );
   const data = result["data"];
   if (!isRecord(data)) throw new TypeError("GraphQL createPost response must include data.");
   const created = data["createPost"];
@@ -1123,17 +1152,20 @@ async function updatePostOverGraphQL(
   id: string,
   authSessionId: string,
 ): Promise<void> {
-  const result = await postGraphQL(fetch, {
-    query:
-      "mutation($input: UpdatePostInput!) { updatePost(input: $input) { ref { id } contentText contentHtml } }",
-    variables: {
-      input: {
-        id,
-        sessionId: authSessionId,
-        content: `ActivityPlug server GraphQL update E2E ${Date.now()}`,
+  const result = await postGraphQL(
+    fetch,
+    {
+      query:
+        "mutation($input: UpdatePostInput!) { updatePost(input: $input) { ref { id } contentText contentHtml } }",
+      variables: {
+        input: {
+          id,
+          content: `ActivityPlug server GraphQL update E2E ${Date.now()}`,
+        },
       },
     },
-  });
+    authSessionId,
+  );
   const data = result["data"];
   if (!isRecord(data)) throw new TypeError("GraphQL updatePost response must include data.");
   const post = data["updatePost"];
@@ -1146,11 +1178,14 @@ async function expectPostHistoryOverGraphQL(
   id: string,
   authSessionId: string,
 ): Promise<void> {
-  const result = await postGraphQL(fetch, {
-    query:
-      "query($id: ID!, $sessionId: ID!) { postHistory(id: $id, sessionId: $sessionId) { ref { id } } }",
-    variables: { id, sessionId: authSessionId },
-  });
+  const result = await postGraphQL(
+    fetch,
+    {
+      query: "query($id: ID!) { postHistory(id: $id) { ref { id } } }",
+      variables: { id },
+    },
+    authSessionId,
+  );
   const data = result["data"];
   if (!isRecord(data) || !Array.isArray(data["postHistory"])) {
     throw new TypeError("GraphQL postHistory response must include revisions.");
@@ -1164,20 +1199,23 @@ async function createQuotePostOverGraphQL(
   authSessionId: string,
   quoteOfId: string,
 ): Promise<string> {
-  const result = await postGraphQL(fetch, {
-    query:
-      "mutation($input: CreatePostInput!) { createPost(input: $input) { ref { id } quoteOf { rawId } } }",
-    variables: {
-      input: {
-        origin: target.origin,
-        adapter: adapterKind(target.adapter),
-        sessionId: authSessionId,
-        content: `ActivityPlug server GraphQL quote E2E ${Date.now()}`,
-        visibility: "PUBLIC",
-        quoteOfId,
+  const result = await postGraphQL(
+    fetch,
+    {
+      query:
+        "mutation($input: CreatePostInput!) { createPost(input: $input) { ref { id } quoteOf { rawId } } }",
+      variables: {
+        input: {
+          origin: target.origin,
+          adapter: target.adapter,
+          content: `ActivityPlug server GraphQL quote E2E ${Date.now()}`,
+          visibility: "PUBLIC",
+          quoteOfId,
+        },
       },
     },
-  });
+    authSessionId,
+  );
   const data = result["data"];
   if (!isRecord(data)) throw new TypeError("GraphQL createPost response must include data.");
   const created = data["createPost"];
@@ -1222,24 +1260,27 @@ async function createPollPostOverGraphQL(
   target: AdapterE2ETarget,
   authSessionId: string,
 ): Promise<string> {
-  const result = await postGraphQL(fetch, {
-    query:
-      "mutation($input: CreatePostInput!) { createPost(input: $input) { ref { id } poll { ref { id } multiple options { title } } } }",
-    variables: {
-      input: {
-        origin: target.origin,
-        adapter: adapterKind(target.adapter),
-        sessionId: authSessionId,
-        content: `ActivityPlug server GraphQL poll E2E ${Date.now()}`,
-        visibility: "PUBLIC",
-        poll: {
-          options: ["TypeScript", "ActivityPub"],
-          multiple: false,
-          expiresInSeconds: 3600,
+  const result = await postGraphQL(
+    fetch,
+    {
+      query:
+        "mutation($input: CreatePostInput!) { createPost(input: $input) { ref { id } poll { ref { id } multiple options { title } } } }",
+      variables: {
+        input: {
+          origin: target.origin,
+          adapter: target.adapter,
+          content: `ActivityPlug server GraphQL poll E2E ${Date.now()}`,
+          visibility: "PUBLIC",
+          poll: {
+            options: ["TypeScript", "ActivityPub"],
+            multiple: false,
+            expiresInSeconds: 3600,
+          },
         },
       },
     },
-  });
+    authSessionId,
+  );
   const data = result["data"];
   if (!isRecord(data)) throw new TypeError("GraphQL createPost response must include data.");
   const created = data["createPost"];
@@ -1308,15 +1349,18 @@ async function expectFollowRequestsOverGraphQL(
   target: AdapterE2ETarget,
   authSessionId: string,
 ): Promise<void> {
-  const result = await postGraphQL(fetch, {
-    query:
-      "query($origin: String!, $adapter: AdapterKind, $sessionId: ID!) { followRequests(origin: $origin, adapter: $adapter, sessionId: $sessionId, page: { limit: 5 }) { nodes { ref { id } } pageInfo { hasNextPage hasPreviousPage } } }",
-    variables: {
-      origin: target.origin,
-      adapter: adapterKind(target.adapter),
-      sessionId: authSessionId,
+  const result = await postGraphQL(
+    fetch,
+    {
+      query:
+        "query($origin: String!, $adapter: AdapterId) { followRequests(origin: $origin, adapter: $adapter, page: { limit: 5 }) { nodes { ref { id } } pageInfo { hasNextPage hasPreviousPage } } }",
+      variables: {
+        origin: target.origin,
+        adapter: target.adapter,
+      },
     },
-  });
+    authSessionId,
+  );
   const data = result["data"];
   if (!isRecord(data)) throw new TypeError("GraphQL followRequests response must include data.");
   expect(data["followRequests"]).toMatchObject({
@@ -1352,14 +1396,16 @@ async function expectFollowRequestAcceptOverGraphQL(
   if (target.followRequestGraphqlAcceptRawId === undefined) {
     throw new TypeError("Fediverse server E2E target must provide a GraphQL accept request.");
   }
-  const result = await postGraphQL(fetch, {
-    query:
-      "mutation($id: ID!, $sessionId: ID!) { acceptFollowRequest(id: $id, sessionId: $sessionId) { followedBy } }",
-    variables: {
-      id: publicAccountId(target, target.followRequestGraphqlAcceptRawId),
-      sessionId: authSessionId,
+  const result = await postGraphQL(
+    fetch,
+    {
+      query: "mutation($id: ID!) { acceptFollowRequest(id: $id) { followedBy } }",
+      variables: {
+        id: publicAccountId(target, target.followRequestGraphqlAcceptRawId),
+      },
     },
-  });
+    authSessionId,
+  );
   expect(result["data"]).toMatchObject({ acceptFollowRequest: { followedBy: true } });
 }
 
@@ -1390,14 +1436,16 @@ async function expectFollowRequestRejectOverGraphQL(
   if (target.followRequestGraphqlRejectRawId === undefined) {
     throw new TypeError("Fediverse server E2E target must provide a GraphQL reject request.");
   }
-  const result = await postGraphQL(fetch, {
-    query:
-      "mutation($id: ID!, $sessionId: ID!) { rejectFollowRequest(id: $id, sessionId: $sessionId) { followedBy } }",
-    variables: {
-      id: publicAccountId(target, target.followRequestGraphqlRejectRawId),
-      sessionId: authSessionId,
+  const result = await postGraphQL(
+    fetch,
+    {
+      query: "mutation($id: ID!) { rejectFollowRequest(id: $id) { followedBy } }",
+      variables: {
+        id: publicAccountId(target, target.followRequestGraphqlRejectRawId),
+      },
     },
-  });
+    authSessionId,
+  );
   expect(result["data"]).toMatchObject({ rejectFollowRequest: { followedBy: false } });
 }
 
@@ -1412,15 +1460,18 @@ async function expectNotificationsOverGraphQL(
   if (target.notificationAccountRawId === undefined) {
     throw new TypeError("Fediverse server E2E target must provide a notification account fixture.");
   }
-  const result = await postGraphQL(fetch, {
-    query:
-      "query($origin: String!, $adapter: AdapterKind, $sessionId: ID!) { notifications(origin: $origin, adapter: $adapter, sessionId: $sessionId, page: { limit: 20 }) { nodes { ref { rawId } type post { rawId } account { rawId } } pageInfo { hasNextPage hasPreviousPage } } }",
-    variables: {
-      origin: target.origin,
-      adapter: adapterKind(target.adapter),
-      sessionId: authSessionId,
+  const result = await postGraphQL(
+    fetch,
+    {
+      query:
+        "query($origin: String!, $adapter: AdapterId) { notifications(origin: $origin, adapter: $adapter, page: { limit: 20 }) { nodes { ref { rawId } type post { rawId } account { rawId } } pageInfo { hasNextPage hasPreviousPage } } }",
+      variables: {
+        origin: target.origin,
+        adapter: target.adapter,
+      },
     },
-  });
+    authSessionId,
+  );
   const data = result["data"];
   if (!isRecord(data) || !isRecord(data["notifications"])) {
     throw new TypeError("GraphQL notifications response must include data.");
@@ -1470,15 +1521,18 @@ async function expectNotificationUnreadCountOverGraphQL(
   target: AdapterE2ETarget,
   authSessionId: string,
 ): Promise<void> {
-  const result = await postGraphQL(fetch, {
-    query:
-      "query($origin: String!, $adapter: AdapterKind, $sessionId: ID!) { notificationUnreadCount(origin: $origin, adapter: $adapter, sessionId: $sessionId) }",
-    variables: {
-      origin: target.origin,
-      adapter: adapterKind(target.adapter),
-      sessionId: authSessionId,
+  const result = await postGraphQL(
+    fetch,
+    {
+      query:
+        "query($origin: String!, $adapter: AdapterId) { notificationUnreadCount(origin: $origin, adapter: $adapter) }",
+      variables: {
+        origin: target.origin,
+        adapter: target.adapter,
+      },
     },
-  });
+    authSessionId,
+  );
   const data = result["data"];
   if (!isRecord(data)) throw new TypeError("GraphQL unread count response must include data.");
   expect(data["notificationUnreadCount"]).toEqual(expect.any(Number));
@@ -1518,11 +1572,14 @@ async function expectNotificationDismissOverGraphQL(
     throw new TypeError("Fediverse server E2E target must provide a GraphQL dismiss fixture.");
   }
   const notificationId = publicNotificationId(target, target.notificationGraphqlDismissRawId);
-  const result = await postGraphQL(fetch, {
-    query:
-      "mutation($id: ID!, $sessionId: ID!) { dismissNotification(id: $id, sessionId: $sessionId) { deleted ref { id } } }",
-    variables: { id: notificationId, sessionId: authSessionId },
-  });
+  const result = await postGraphQL(
+    fetch,
+    {
+      query: "mutation($id: ID!) { dismissNotification(id: $id) { deleted ref { id } } }",
+      variables: { id: notificationId },
+    },
+    authSessionId,
+  );
   expect(result["data"]).toMatchObject({
     dismissNotification: { deleted: true, ref: { id: notificationId } },
   });
@@ -1575,15 +1632,18 @@ async function expectNotificationClearOverGraphQL(
   if (target.adapter === "misskey") {
     await expectMisskeyUnreadFlag(target, true);
   }
-  const result = await postGraphQL(fetch, {
-    query:
-      "mutation($origin: String!, $adapter: AdapterKind, $sessionId: ID!) { clearNotifications(origin: $origin, adapter: $adapter, sessionId: $sessionId) }",
-    variables: {
-      origin: target.origin,
-      adapter: adapterKind(target.adapter),
-      sessionId: authSessionId,
+  const result = await postGraphQL(
+    fetch,
+    {
+      query:
+        "mutation($origin: String!, $adapter: AdapterId) { clearNotifications(origin: $origin, adapter: $adapter) }",
+      variables: {
+        origin: target.origin,
+        adapter: target.adapter,
+      },
     },
-  });
+    authSessionId,
+  );
   const data = result["data"];
   if (!isRecord(data))
     throw new TypeError("GraphQL clearNotifications response must include data.");
@@ -1773,30 +1833,37 @@ async function expectListLifecycleOverGraphQL(
   accountId: string,
 ): Promise<void> {
   const title = `ActivityPlug server GraphQL list E2E ${Date.now()}`;
-  const createResult = await postGraphQL(fetch, {
-    query: "mutation($input: CreateListInput!) { createList(input: $input) { ref { id } title } }",
-    variables: {
-      input: {
-        origin: target.origin,
-        adapter: adapterKind(target.adapter),
-        sessionId: authSessionId,
-        title,
+  const createResult = await postGraphQL(
+    fetch,
+    {
+      query:
+        "mutation($input: CreateListInput!) { createList(input: $input) { ref { id } title } }",
+      variables: {
+        input: {
+          origin: target.origin,
+          adapter: target.adapter,
+          title,
+        },
       },
     },
-  });
+    authSessionId,
+  );
   const createData = createResult["data"];
   if (!isRecord(createData)) throw new TypeError("GraphQL createList response must include data.");
   expect(createData["createList"]).toMatchObject({ title });
   const listId = refId(createData["createList"]);
-  const listResult = await postGraphQL(fetch, {
-    query:
-      "query($origin: String!, $adapter: AdapterKind, $sessionId: ID!) { lists(origin: $origin, adapter: $adapter, sessionId: $sessionId, page: { limit: 20 }) { nodes { ref { id } } } }",
-    variables: {
-      origin: target.origin,
-      adapter: adapterKind(target.adapter),
-      sessionId: authSessionId,
+  const listResult = await postGraphQL(
+    fetch,
+    {
+      query:
+        "query($origin: String!, $adapter: AdapterId) { lists(origin: $origin, adapter: $adapter, page: { limit: 20 }) { nodes { ref { id } } } }",
+      variables: {
+        origin: target.origin,
+        adapter: target.adapter,
+      },
     },
-  });
+    authSessionId,
+  );
   const listData = listResult["data"];
   if (!isRecord(listData) || !isRecord(listData["lists"])) {
     throw new TypeError("GraphQL lists response must include data.");
@@ -1804,37 +1871,57 @@ async function expectListLifecycleOverGraphQL(
   const lists = listData["lists"]["nodes"];
   if (!Array.isArray(lists)) throw new TypeError("GraphQL lists must include nodes.");
   expect(lists.some((list) => refId(list) === listId)).toBe(true);
-  const getResult = await postGraphQL(fetch, {
-    query:
-      "query($id: ID!, $sessionId: ID!) { list(id: $id, sessionId: $sessionId) { ref { id } title } }",
-    variables: { id: listId, sessionId: authSessionId },
-  });
+  const getResult = await postGraphQL(
+    fetch,
+    {
+      query: "query($id: ID!) { list(id: $id) { ref { id } title } }",
+      variables: { id: listId },
+    },
+    authSessionId,
+  );
   expect(getResult["data"]).toMatchObject({ list: { ref: { id: listId }, title } });
   const updatedTitle = `${title} updated`;
-  const updateResult = await postGraphQL(fetch, {
-    query: "mutation($input: UpdateListInput!) { updateList(input: $input) { ref { id } title } }",
-    variables: { input: { id: listId, sessionId: authSessionId, title: updatedTitle } },
-  });
+  const updateResult = await postGraphQL(
+    fetch,
+    {
+      query:
+        "mutation($input: UpdateListInput!) { updateList(input: $input) { ref { id } title } }",
+      variables: { input: { id: listId, title: updatedTitle } },
+    },
+    authSessionId,
+  );
   expect(updateResult["data"]).toMatchObject({
     updateList: { ref: { id: listId }, title: updatedTitle },
   });
-  await postGraphQL(fetch, {
-    query: "mutation($input: ListAccountInput!) { addListAccount(input: $input) { ref { id } } }",
-    variables: { input: { id: listId, sessionId: authSessionId, accountId } },
-  });
-  const timelineResult = await postGraphQL(fetch, {
-    query:
-      "query($listId: ID!, $sessionId: ID!) { listTimeline(listId: $listId, sessionId: $sessionId, page: { limit: 5 }) { nodes { ref { id } } } }",
-    variables: { listId, sessionId: authSessionId },
-  });
+  await postGraphQL(
+    fetch,
+    {
+      query: "mutation($input: ListAccountInput!) { addListAccount(input: $input) { ref { id } } }",
+      variables: { input: { id: listId, accountId } },
+    },
+    authSessionId,
+  );
+  const timelineResult = await postGraphQL(
+    fetch,
+    {
+      query:
+        "query($listId: ID!) { listTimeline(listId: $listId, page: { limit: 5 }) { nodes { ref { id } } } }",
+      variables: { listId },
+    },
+    authSessionId,
+  );
   expect(timelineResult["data"]).toMatchObject({
     listTimeline: { nodes: expect.any(Array) },
   });
-  const accountsResult = await postGraphQL(fetch, {
-    query:
-      "query($id: ID!, $sessionId: ID!) { listAccounts(id: $id, sessionId: $sessionId, page: { limit: 20 }) { nodes { ref { id } } } }",
-    variables: { id: listId, sessionId: authSessionId },
-  });
+  const accountsResult = await postGraphQL(
+    fetch,
+    {
+      query:
+        "query($id: ID!) { listAccounts(id: $id, page: { limit: 20 }) { nodes { ref { id } } } }",
+      variables: { id: listId },
+    },
+    authSessionId,
+  );
   const accountsData = accountsResult["data"];
   if (!isRecord(accountsData) || !isRecord(accountsData["listAccounts"])) {
     throw new TypeError("GraphQL listAccounts response must include data.");
@@ -1842,16 +1929,23 @@ async function expectListLifecycleOverGraphQL(
   const accounts = accountsData["listAccounts"]["nodes"];
   if (!Array.isArray(accounts)) throw new TypeError("GraphQL listAccounts must include nodes.");
   expect(accounts.some((account) => refId(account) === accountId)).toBe(true);
-  await postGraphQL(fetch, {
-    query:
-      "mutation($input: ListAccountInput!) { removeListAccount(input: $input) { ref { id } } }",
-    variables: { input: { id: listId, sessionId: authSessionId, accountId } },
-  });
-  const deleteResult = await postGraphQL(fetch, {
-    query:
-      "mutation($id: ID!, $sessionId: ID!) { deleteList(id: $id, sessionId: $sessionId) { ref { id } deleted } }",
-    variables: { id: listId, sessionId: authSessionId },
-  });
+  await postGraphQL(
+    fetch,
+    {
+      query:
+        "mutation($input: ListAccountInput!) { removeListAccount(input: $input) { ref { id } } }",
+      variables: { input: { id: listId, accountId } },
+    },
+    authSessionId,
+  );
+  const deleteResult = await postGraphQL(
+    fetch,
+    {
+      query: "mutation($id: ID!) { deleteList(id: $id) { ref { id } deleted } }",
+      variables: { id: listId },
+    },
+    authSessionId,
+  );
   const deleteData = deleteResult["data"];
   if (!isRecord(deleteData)) throw new TypeError("GraphQL deleteList response must include data.");
   expect(deleteData["deleteList"]).toMatchObject({ deleted: true });
@@ -1946,36 +2040,42 @@ async function expectFilterLifecycleOverGraphQL(
   updateSupported: boolean,
 ): Promise<void> {
   const keyword = `activityplug-server-graphql-${Date.now()}`;
-  const createdResult = await postGraphQL(fetch, {
-    query:
-      "mutation($input: CreateFilterInput!) { createFilter(input: $input) { ref { id } title } }",
-    variables: {
-      input: {
-        origin: target.origin,
-        adapter: adapterKind(target.adapter),
-        sessionId: authSessionId,
-        title: keyword,
-        context: ["HOME"],
-        action: "WARN",
-        keywords: [{ keyword }],
+  const createdResult = await postGraphQL(
+    fetch,
+    {
+      query:
+        "mutation($input: CreateFilterInput!) { createFilter(input: $input) { ref { id } title } }",
+      variables: {
+        input: {
+          origin: target.origin,
+          adapter: target.adapter,
+          title: keyword,
+          context: ["HOME"],
+          action: "WARN",
+          keywords: [{ keyword }],
+        },
       },
     },
-  });
+    authSessionId,
+  );
   const createdData = createdResult["data"];
   if (!isRecord(createdData))
     throw new TypeError("GraphQL createFilter response must include data.");
   const createdId = refId(createdData["createFilter"]);
   expect(createdData["createFilter"]).toMatchObject({ title: keyword });
 
-  const listResult = await postGraphQL(fetch, {
-    query:
-      "query($origin: String!, $adapter: AdapterKind, $sessionId: ID!) { filters(origin: $origin, adapter: $adapter, sessionId: $sessionId, page: { limit: 5 }) { nodes { ref { id } title } pageInfo { hasNextPage hasPreviousPage } } }",
-    variables: {
-      origin: target.origin,
-      adapter: adapterKind(target.adapter),
-      sessionId: authSessionId,
+  const listResult = await postGraphQL(
+    fetch,
+    {
+      query:
+        "query($origin: String!, $adapter: AdapterId) { filters(origin: $origin, adapter: $adapter, page: { limit: 5 }) { nodes { ref { id } title } pageInfo { hasNextPage hasPreviousPage } } }",
+      variables: {
+        origin: target.origin,
+        adapter: target.adapter,
+      },
     },
-  });
+    authSessionId,
+  );
   expect(listResult["data"]).toMatchObject({
     filters: {
       nodes: expect.any(Array),
@@ -1990,40 +2090,49 @@ async function expectFilterLifecycleOverGraphQL(
   if (!Array.isArray(listNodes)) throw new TypeError("GraphQL filter list must include nodes.");
   expect(listNodes.some((filter) => isRecord(filter) && refId(filter) === createdId)).toBe(true);
 
-  const getResult = await postGraphQL(fetch, {
-    query:
-      "query($id: ID!, $sessionId: ID!) { filter(id: $id, sessionId: $sessionId) { ref { id } title } }",
-    variables: { id: createdId, sessionId: authSessionId },
-  });
+  const getResult = await postGraphQL(
+    fetch,
+    {
+      query: "query($id: ID!) { filter(id: $id) { ref { id } title } }",
+      variables: { id: createdId },
+    },
+    authSessionId,
+  );
   expect(getResult["data"]).toMatchObject({ filter: { title: keyword } });
 
   if (updateSupported) {
     const updatedKeyword = `${keyword}-updated`;
-    const updateResult = await postGraphQL(fetch, {
-      query:
-        "mutation($input: UpdateFilterInput!) { updateFilter(input: $input) { ref { id } title } }",
-      variables: {
-        input: {
-          id: createdId,
-          sessionId: authSessionId,
-          title: updatedKeyword,
-          context: ["HOME"],
-          action: "HIDE",
-          keywords: [{ keyword: updatedKeyword }],
+    const updateResult = await postGraphQL(
+      fetch,
+      {
+        query:
+          "mutation($input: UpdateFilterInput!) { updateFilter(input: $input) { ref { id } title } }",
+        variables: {
+          input: {
+            id: createdId,
+            title: updatedKeyword,
+            context: ["HOME"],
+            action: "HIDE",
+            keywords: [{ keyword: updatedKeyword }],
+          },
         },
       },
-    });
+      authSessionId,
+    );
     const updatedData = updateResult["data"];
     if (!isRecord(updatedData))
       throw new TypeError("GraphQL updateFilter response must include data.");
     expect(refId(updatedData["updateFilter"])).toBe(createdId);
   }
 
-  const deleteResult = await postGraphQL(fetch, {
-    query:
-      "mutation($id: ID!, $sessionId: ID!) { deleteFilter(id: $id, sessionId: $sessionId) { ref { id } deleted } }",
-    variables: { id: createdId, sessionId: authSessionId },
-  });
+  const deleteResult = await postGraphQL(
+    fetch,
+    {
+      query: "mutation($id: ID!) { deleteFilter(id: $id) { ref { id } deleted } }",
+      variables: { id: createdId },
+    },
+    authSessionId,
+  );
   expect(deleteResult["data"]).toMatchObject({ deleteFilter: { deleted: true } });
 }
 
@@ -2032,11 +2141,14 @@ async function deletePostOverGraphQL(
   id: string,
   authSessionId: string,
 ): Promise<void> {
-  const result = await postGraphQL(fetch, {
-    query:
-      "mutation($id: ID!, $sessionId: ID!) { deletePost(id: $id, sessionId: $sessionId) { ref { id } deleted } }",
-    variables: { id, sessionId: authSessionId },
-  });
+  const result = await postGraphQL(
+    fetch,
+    {
+      query: "mutation($id: ID!) { deletePost(id: $id) { ref { id } deleted } }",
+      variables: { id },
+    },
+    authSessionId,
+  );
   expect(result["data"]).toMatchObject({ deletePost: { deleted: true } });
   const data = result["data"];
   if (!isRecord(data)) throw new TypeError("GraphQL deletePost response must include data.");
@@ -2231,8 +2343,8 @@ function futureIsoDate(minutesFromNow: number): string {
   return date.toISOString();
 }
 
-function adapterKind(adapter: string): string {
-  return adapter.toUpperCase();
+function authorizationHeaders(sessionId: string | undefined): HeadersInit {
+  return sessionId === undefined ? {} : { authorization: `Bearer ${sessionId}` };
 }
 
 async function waitForPostOverHttp(fetch: E2EFetch, postId: string): Promise<void> {

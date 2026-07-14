@@ -2,31 +2,46 @@ import {
   ActivityPlugError,
   capabilityNames,
   parseOAuthCallback,
+  type AuthStrategyKind,
   type AuthSession,
   type Account,
+  type BookmarkFolder,
   type CapabilityDecision,
   type CapabilitySet,
   type Connection,
   type DeletedEntity,
   type EntityRef,
+  type EmailChallengeStartInput,
+  type EmailChallengeStartResult,
+  type EmailChallengeVerifyInput,
   type InstanceProfile,
+  type InstancePeers,
   type MediaAttachment,
   type Notification,
+  type NotificationGroup,
   type NotificationTypeInput,
   type InjectTokenInput,
   type OAuthCallbackInput,
   type OAuthCallbackResult,
   type OAuthCallbackStateBinding,
+  type OAuthClientRegistration,
   type OAuthClientRegistrationInput,
   type OAuthCodeExchangeInput,
   type OAuthRefreshInput,
   type OAuthRevokeInput,
+  type PasskeyFinishInput,
+  type PasskeyStartInput,
+  type PasskeyStartResult,
   type Poll,
+  type PollCreateInput,
   type PostVisibility,
   type Post,
+  type PostContext,
   type AccountList,
   type Filter,
+  type OAuthMetadata,
   type PostRevision,
+  type PostTranslation,
   type Relationship,
   type ScheduledPost,
   type SearchResult,
@@ -40,7 +55,11 @@ import { type AuthStartResult } from "../auth/endpoints.js";
 
 export const activityPlugApiVersion = "v1";
 
-export interface InstanceSelector {
+export interface ActivityPlugServiceCallOptions {
+  readonly signal?: AbortSignal;
+}
+
+export interface InstanceSelector extends ActivityPlugServiceCallOptions {
   readonly adapter?: string;
   readonly origin: string;
 }
@@ -66,6 +85,7 @@ export interface ActivityPlugApiService {
   readonly followRequests: ActivityPlugFollowRequestApiService;
   readonly filters: ActivityPlugFilterApiService;
   readonly scheduledPosts: ActivityPlugScheduledPostApiService;
+  readonly bookmarkFolders: ActivityPlugBookmarkFolderApiService;
   readonly streams: ActivityPlugStreamApiService;
   readonly auth: ActivityPlugAuthApiService;
   readonly viewer: (input: ViewerInput) => Promise<VerifyCredentialsResult>;
@@ -74,6 +94,8 @@ export interface ActivityPlugApiService {
 export interface ActivityPlugInstanceApiService {
   readonly detect: (input: InstanceSelector) => Promise<InstanceProfile>;
   readonly get: (input: InstanceSelector) => Promise<InstanceProfile>;
+  readonly oauthMetadata: (input: InstanceSelector) => Promise<OAuthMetadata>;
+  readonly peers: (input: InstanceSelector) => Promise<InstancePeers>;
 }
 
 export interface ActivityPlugAccountApiService {
@@ -86,11 +108,14 @@ export interface ActivityPlugAccountApiService {
 }
 
 export interface ActivityPlugPostApiService {
-  readonly get: (input: PostIdRequest) => Promise<Post>;
+  readonly get: (input: GetPostRequest) => Promise<Post>;
   readonly create: (input: CreatePostRequest) => Promise<Post>;
   readonly update: (input: UpdatePostRequest) => Promise<Post>;
   readonly history: (input: PostHistoryRequest) => Promise<readonly PostRevision[]>;
   readonly delete: (input: DeletePostRequest) => Promise<DeletedEntity>;
+  readonly context: (input: PostContextRequest) => Promise<PostContext>;
+  readonly quotes: (input: PostQuotesRequest) => Promise<Connection<Post>>;
+  readonly translate: (input: TranslatePostRequest) => Promise<PostTranslation>;
 }
 
 export interface ActivityPlugTimelineApiService {
@@ -106,6 +131,7 @@ export interface ActivityPlugSearchApiService {
 }
 
 export interface ActivityPlugMediaApiService {
+  readonly get: (input: MediaLookupRequest) => Promise<MediaAttachment>;
   readonly upload: (input: UploadMediaRequest) => Promise<MediaAttachment>;
   readonly update: (input: UpdateMediaRequest) => Promise<MediaAttachment>;
   readonly delete: (input: MediaIdRequest) => Promise<DeletedEntity>;
@@ -119,6 +145,7 @@ export interface ActivityPlugPollApiService {
 
 export interface ActivityPlugNotificationApiService {
   readonly list: (input: NotificationsRequest) => Promise<Connection<Notification>>;
+  readonly groups: (input: NotificationGroupsRequest) => Promise<Connection<NotificationGroup>>;
   readonly unreadCount: (input: SessionSelectorRequest) => Promise<number>;
   readonly dismiss: (input: NotificationIdRequest) => Promise<DeletedEntity>;
   readonly clear: (input: SessionSelectorRequest) => Promise<void>;
@@ -158,6 +185,15 @@ export interface ActivityPlugScheduledPostApiService {
   readonly delete: (input: ScheduledPostIdRequest) => Promise<DeletedEntity>;
 }
 
+export interface ActivityPlugBookmarkFolderApiService {
+  readonly list: (input: BookmarkFoldersRequest) => Promise<Connection<BookmarkFolder>>;
+  readonly create: (input: CreateBookmarkFolderRequest) => Promise<BookmarkFolder>;
+  readonly update: (input: UpdateBookmarkFolderRequest) => Promise<BookmarkFolder>;
+  readonly delete: (input: BookmarkFolderIdRequest) => Promise<DeletedEntity>;
+  readonly addPost: (input: BookmarkFolderPostRequest) => Promise<BookmarkFolder>;
+  readonly removePost: (input: BookmarkFolderPostRequest) => Promise<BookmarkFolder>;
+}
+
 export interface ActivityPlugStreamApiService {
   readonly timeline: (input: TimelineStreamRequest) => Promise<StreamConnection>;
   readonly notifications: (input: SessionStreamRequest) => Promise<StreamConnection>;
@@ -184,6 +220,7 @@ export interface ActivityPlugSocialApiService {
 
 export interface ActivityPlugAuthApiService {
   readonly importToken: (input: ImportTokenRequest) => Promise<AuthSession>;
+  readonly registerClient: (input: RegisterOAuthClientRequest) => Promise<OAuthClientRegistration>;
   readonly start: (input: AuthStartRequest) => Promise<AuthStartResult>;
   readonly parseCallback: (input: AuthParseCallbackRequest) => OAuthCallbackResult;
   readonly exchange: (input: AuthExchangeRequest) => Promise<AuthSession>;
@@ -191,6 +228,18 @@ export interface ActivityPlugAuthApiService {
   readonly refreshSession: (input: AuthSessionIdRequest) => Promise<AuthSession>;
   readonly revoke: (input: AuthRevokeRequest) => Promise<void>;
   readonly revokeSession: (input: AuthSessionIdRequest) => Promise<void>;
+  readonly emailChallenge: ActivityPlugEmailChallengeAuthApiService;
+  readonly passkey: ActivityPlugPasskeyAuthApiService;
+}
+
+export interface ActivityPlugEmailChallengeAuthApiService {
+  readonly start: (input: EmailChallengeStartRequest) => Promise<EmailChallengeStartResult>;
+  readonly verify: (input: EmailChallengeVerifyRequest) => Promise<AuthSession>;
+}
+
+export interface ActivityPlugPasskeyAuthApiService {
+  readonly start: (input: PasskeyStartRequest) => Promise<PasskeyStartResult>;
+  readonly finish: (input: PasskeyFinishRequest) => Promise<AuthSession>;
 }
 
 export interface CapabilityListItem extends Omit<CapabilityDecision, "raw" | "reason"> {
@@ -261,10 +310,17 @@ export interface PublicAuthSession {
   readonly id: string;
   readonly adapter: string;
   readonly origin: string;
+  readonly strategy: AuthStrategyKind;
   readonly account?: PublicEntityRef;
   readonly scopes: readonly string[];
   readonly capabilities: Readonly<Record<string, unknown>>;
   readonly expiresAt?: string;
+}
+
+export interface PublicOAuthClientRegistration {
+  readonly clientId: string;
+  readonly redirectUris: readonly string[];
+  readonly scopes?: readonly string[];
 }
 
 export interface PublicInstanceProfile {
@@ -338,6 +394,7 @@ export interface PublicPost {
     readonly reblogs?: number;
     readonly favourites?: number;
   };
+  readonly viewerState?: Post["viewerState"];
   readonly extensions?: Readonly<Record<string, unknown>>;
   readonly raw: unknown;
 }
@@ -438,6 +495,7 @@ export interface PublicSearchResult {
   readonly accounts: readonly PublicAccount[];
   readonly posts: readonly PublicPost[];
   readonly hashtags: readonly PublicHashtag[];
+  readonly pageInfo: PublicPageInfo;
   readonly raw: unknown;
 }
 
@@ -458,12 +516,41 @@ export interface PublicPageInfo {
   readonly hasPreviousPage: boolean;
   readonly startCursor?: string;
   readonly endCursor?: string;
-  readonly raw?: unknown;
 }
 
 export interface PublicConnection<Node> {
   readonly nodes: readonly Node[];
   readonly pageInfo: PublicPageInfo;
+}
+
+export interface PublicOAuthMetadata {
+  readonly authorizationEndpoint: string;
+  readonly tokenEndpoint: string;
+  readonly registrationEndpoint?: string;
+  readonly revocationEndpoint?: string;
+  readonly scopesSupported: readonly string[];
+  readonly codeChallengeMethodsSupported: readonly string[];
+  readonly raw: unknown;
+}
+
+export interface PublicInstancePeers {
+  readonly origins: readonly string[];
+  readonly raw: unknown;
+}
+
+export interface PublicPostContext {
+  readonly ancestors: readonly PublicPost[];
+  readonly descendants: readonly PublicPost[];
+}
+
+export interface PublicPostTranslation extends PostTranslation {}
+
+export interface PublicNotificationGroup extends Omit<NotificationGroup, "notifications"> {
+  readonly notifications: readonly PublicNotification[];
+}
+
+export interface PublicBookmarkFolder extends Omit<BookmarkFolder, "ref"> {
+  readonly ref: PublicEntityRef;
 }
 
 export interface AuthStartPayload {
@@ -492,6 +579,10 @@ export interface ParsedAuthCallback {
 }
 
 export type ImportTokenRequest = InstanceSelector & InjectTokenInput;
+
+export interface RegisterOAuthClientRequest extends InstanceSelector {
+  readonly client: OAuthClientRegistrationInput;
+}
 
 export interface AuthStartRequest extends InstanceSelector {
   readonly client: OAuthClientRegistrationInput;
@@ -522,15 +613,23 @@ export type AuthRefreshRequest = InstanceSelector & OAuthRefreshInput;
 
 export type AuthRevokeRequest = InstanceSelector & OAuthRevokeInput;
 
-export interface AuthSessionIdRequest {
+export interface AuthSessionIdRequest extends ActivityPlugServiceCallOptions {
   readonly sessionId: string;
 }
 
-export interface ViewerInput {
+export type EmailChallengeStartRequest = InstanceSelector & EmailChallengeStartInput;
+
+export type EmailChallengeVerifyRequest = InstanceSelector & EmailChallengeVerifyInput;
+
+export type PasskeyStartRequest = InstanceSelector & PasskeyStartInput;
+
+export type PasskeyFinishRequest = InstanceSelector & PasskeyFinishInput;
+
+export interface ViewerInput extends ActivityPlugServiceCallOptions {
   readonly sessionId: string;
 }
 
-export interface AccountIdRequest {
+export interface AccountIdRequest extends ActivityPlugServiceCallOptions {
   readonly id: string;
 }
 
@@ -544,11 +643,9 @@ export interface PageRequest {
   readonly limit?: number;
 }
 
-export interface SearchPageRequest {
-  readonly limit?: number;
-}
+export type SearchPageRequest = PageRequest;
 
-export interface AccountPostsRequest {
+export interface AccountPostsRequest extends ActivityPlugServiceCallOptions {
   readonly id: string;
   readonly page?: PageRequest;
   readonly sessionId?: string;
@@ -567,15 +664,19 @@ export interface UpdateProfileRequest extends InstanceSelector {
   readonly fields?: readonly PublicAccountFieldInput[];
 }
 
-export interface SessionPageRequest {
+export interface SessionPageRequest extends ActivityPlugServiceCallOptions {
   readonly sessionId: string;
   readonly adapter?: string;
   readonly origin?: string;
   readonly page?: PageRequest;
 }
 
-export interface PostIdRequest {
+export interface PostIdRequest extends ActivityPlugServiceCallOptions {
   readonly id: string;
+}
+
+export interface GetPostRequest extends PostIdRequest {
+  readonly sessionId?: string;
 }
 
 export interface DeletePostRequest extends PostIdRequest {
@@ -591,11 +692,7 @@ export interface CreatePostRequest extends InstanceSelector {
   readonly replyToId?: string;
   readonly quoteOfId?: string;
   readonly mediaIds?: readonly string[];
-  readonly poll?: {
-    readonly options: readonly string[];
-    readonly multiple?: boolean;
-    readonly expiresInSeconds?: number;
-  };
+  readonly poll?: PollCreateInput;
 }
 
 export interface UpdatePostRequest extends Partial<
@@ -608,6 +705,18 @@ export interface UpdatePostRequest extends Partial<
 
 export interface PostHistoryRequest extends PostIdRequest {
   readonly sessionId?: string;
+}
+
+export type PostContextRequest = PostIdRequest;
+
+export interface PostQuotesRequest extends PostIdRequest {
+  readonly page?: PageRequest;
+}
+
+export interface TranslatePostRequest extends PostIdRequest {
+  readonly sessionId: string;
+  readonly targetLanguage: string;
+  readonly sourceLanguage?: string;
 }
 
 export interface PublicTimelineRequest extends InstanceSelector {
@@ -650,14 +759,16 @@ export interface UploadMediaRequest extends InstanceSelector {
   readonly sensitive?: boolean;
 }
 
-export interface UpdateMediaRequest {
+export type MediaLookupRequest = PostIdRequest;
+
+export interface UpdateMediaRequest extends ActivityPlugServiceCallOptions {
   readonly sessionId: string;
   readonly id: string;
   readonly description?: string;
   readonly sensitive?: boolean;
 }
 
-export interface MediaIdRequest {
+export interface MediaIdRequest extends ActivityPlugServiceCallOptions {
   readonly sessionId: string;
   readonly id: string;
 }
@@ -669,7 +780,7 @@ export interface UploadMediaFromUrlRequest extends InstanceSelector {
   readonly sensitive?: boolean;
 }
 
-export interface PollIdRequest {
+export interface PollIdRequest extends ActivityPlugServiceCallOptions {
   readonly id: string;
   readonly sessionId?: string;
 }
@@ -687,12 +798,14 @@ export interface NotificationsRequest extends SessionPageRequest {
   readonly types?: readonly NotificationTypeInput[];
 }
 
-export interface NotificationIdRequest {
+export type NotificationGroupsRequest = NotificationsRequest;
+
+export interface NotificationIdRequest extends ActivityPlugServiceCallOptions {
   readonly id: string;
   readonly sessionId: string;
 }
 
-export interface ListIdRequest {
+export interface ListIdRequest extends ActivityPlugServiceCallOptions {
   readonly id: string;
   readonly sessionId: string;
 }
@@ -720,7 +833,7 @@ export interface ListTimelineRequest extends ListIdRequest {
   readonly page?: PageRequest;
 }
 
-export interface FilterIdRequest {
+export interface FilterIdRequest extends ActivityPlugServiceCallOptions {
   readonly id: string;
   readonly sessionId: string;
 }
@@ -748,8 +861,30 @@ export interface UpdateFilterRequest extends Omit<CreateFilterRequest, "origin">
   readonly origin?: string;
 }
 
-export interface ScheduledPostIdRequest {
+export interface ScheduledPostIdRequest extends ActivityPlugServiceCallOptions {
   readonly id: string;
+  readonly sessionId: string;
+}
+
+export type BookmarkFoldersRequest = SessionPageRequest;
+
+export interface CreateBookmarkFolderRequest extends Omit<SessionSelectorRequest, "origin"> {
+  readonly origin?: string;
+  readonly name: string;
+}
+
+export interface UpdateBookmarkFolderRequest extends CreateBookmarkFolderRequest {
+  readonly id: string;
+}
+
+export interface BookmarkFolderIdRequest extends ActivityPlugServiceCallOptions {
+  readonly id: string;
+  readonly sessionId: string;
+}
+
+export interface BookmarkFolderPostRequest extends ActivityPlugServiceCallOptions {
+  readonly folderId: string;
+  readonly postId: string;
   readonly sessionId: string;
 }
 
@@ -761,7 +896,7 @@ export interface UpdateScheduledPostRequest extends ScheduledPostIdRequest {
   readonly scheduledAt: string;
 }
 
-export interface RelationshipRequest {
+export interface RelationshipRequest extends ActivityPlugServiceCallOptions {
   readonly sessionId: string;
   readonly accountId: string;
 }
@@ -771,7 +906,7 @@ export interface MuteAccountRequest extends RelationshipRequest {
   readonly durationSeconds?: number;
 }
 
-export interface PostActionRequest {
+export interface PostActionRequest extends ActivityPlugServiceCallOptions {
   readonly sessionId: string;
   readonly postId: string;
 }
@@ -784,23 +919,27 @@ export interface ReactPostRequest extends PostActionRequest {
   readonly emoji: string;
 }
 
+const unsupportedAuth = async (): Promise<never> => {
+  throw new ActivityPlugError("AUTH_UNSUPPORTED", "No ActivityPlug auth service is configured.");
+};
+
+const unsupportedApiOperation = (operation: string) => async (): Promise<never> => {
+  throw new ActivityPlugError(
+    "UNSUPPORTED_OPERATION",
+    `ActivityPlug operation service is not configured: ${operation}.`,
+    { operation },
+  );
+};
+
 export function createDefaultApiService(capabilities: CapabilitySet): ActivityPlugApiService {
-  const unsupportedAuth = async (): Promise<never> => {
-    throw new ActivityPlugError("AUTH_UNSUPPORTED", "No ActivityPlug auth service is configured.");
-  };
-  const unsupportedApiOperation = (operation: string) => async (): Promise<never> => {
-    throw new ActivityPlugError(
-      "UNSUPPORTED_OPERATION",
-      `ActivityPlug operation service is not configured: ${operation}.`,
-      { operation },
-    );
-  };
   return {
     health: () => ({ ok: true, version: activityPlugApiVersion }),
     capabilities: () => capabilities,
     instances: {
       detect: unsupportedApiOperation("instance.detect"),
       get: unsupportedApiOperation("instance.get"),
+      oauthMetadata: unsupportedApiOperation("instance.oauthMetadata"),
+      peers: unsupportedApiOperation("instance.peers"),
     },
     accounts: {
       get: unsupportedApiOperation("account.get"),
@@ -816,6 +955,9 @@ export function createDefaultApiService(capabilities: CapabilitySet): ActivityPl
       update: unsupportedApiOperation("post.update"),
       history: unsupportedApiOperation("post.history"),
       delete: unsupportedApiOperation("post.delete"),
+      context: unsupportedApiOperation("post.context"),
+      quotes: unsupportedApiOperation("post.quotes"),
+      translate: unsupportedApiOperation("post.translate"),
     },
     timelines: {
       home: unsupportedApiOperation("timeline.home"),
@@ -828,10 +970,11 @@ export function createDefaultApiService(capabilities: CapabilitySet): ActivityPl
       search: unsupportedApiOperation("search"),
     },
     media: {
+      get: unsupportedApiOperation("media.get"),
       upload: unsupportedApiOperation("media.upload"),
       update: unsupportedApiOperation("media.update"),
       delete: unsupportedApiOperation("media.delete"),
-      uploadFromUrl: unsupportedApiOperation("media.uploadFromUrl"),
+      uploadFromUrl: unsupportedApiOperation("media.ingestUrl"),
     },
     polls: {
       get: unsupportedApiOperation("poll.get"),
@@ -856,6 +999,7 @@ export function createDefaultApiService(capabilities: CapabilitySet): ActivityPl
     },
     notifications: {
       list: unsupportedApiOperation("notification.list"),
+      groups: unsupportedApiOperation("notification.groups"),
       unreadCount: unsupportedApiOperation("notification.unreadCount"),
       dismiss: unsupportedApiOperation("notification.dismiss"),
       clear: unsupportedApiOperation("notification.clear"),
@@ -890,6 +1034,14 @@ export function createDefaultApiService(capabilities: CapabilitySet): ActivityPl
       update: unsupportedApiOperation("scheduledPost.update"),
       delete: unsupportedApiOperation("scheduledPost.delete"),
     },
+    bookmarkFolders: {
+      list: unsupportedApiOperation("bookmarkFolder.list"),
+      create: unsupportedApiOperation("bookmarkFolder.create"),
+      update: unsupportedApiOperation("bookmarkFolder.update"),
+      delete: unsupportedApiOperation("bookmarkFolder.delete"),
+      addPost: unsupportedApiOperation("bookmarkFolder.addPost"),
+      removePost: unsupportedApiOperation("bookmarkFolder.removePost"),
+    },
     streams: {
       timeline: unsupportedApiOperation("stream.timeline"),
       notifications: unsupportedApiOperation("stream.notifications"),
@@ -897,6 +1049,7 @@ export function createDefaultApiService(capabilities: CapabilitySet): ActivityPl
     },
     auth: {
       importToken: unsupportedAuth,
+      registerClient: unsupportedApiOperation("auth.registerClient"),
       start: unsupportedAuth,
       parseCallback: (input) => parseOAuthCallback(input),
       exchange: unsupportedAuth,
@@ -904,6 +1057,8 @@ export function createDefaultApiService(capabilities: CapabilitySet): ActivityPl
       refreshSession: unsupportedAuth,
       revoke: unsupportedAuth,
       revokeSession: unsupportedAuth,
+      emailChallenge: { start: unsupportedAuth, verify: unsupportedAuth },
+      passkey: { start: unsupportedAuth, finish: unsupportedAuth },
     },
     viewer: unsupportedAuth,
   };
@@ -986,6 +1141,26 @@ export function serializeInstanceProfile(profile: InstanceProfile): PublicInstan
   };
 }
 
+export function serializeOAuthMetadata(metadata: OAuthMetadata): PublicOAuthMetadata {
+  return {
+    authorizationEndpoint: metadata.authorizationEndpoint,
+    tokenEndpoint: metadata.tokenEndpoint,
+    ...(metadata.registrationEndpoint === undefined
+      ? {}
+      : { registrationEndpoint: metadata.registrationEndpoint }),
+    ...(metadata.revocationEndpoint === undefined
+      ? {}
+      : { revocationEndpoint: metadata.revocationEndpoint }),
+    scopesSupported: metadata.scopesSupported,
+    codeChallengeMethodsSupported: metadata.codeChallengeMethodsSupported,
+    raw: metadata.raw,
+  };
+}
+
+export function serializeInstancePeers(peers: InstancePeers): PublicInstancePeers {
+  return { origins: peers.origins, raw: peers.raw };
+}
+
 export function serializePoll(poll: Poll): PublicPoll {
   return {
     ref: serializeEntityRef(poll.ref),
@@ -1019,9 +1194,21 @@ export function serializePost(post: Post): PublicPost {
     ...(post.quoteOf === undefined ? {} : { quoteOf: serializeEntityRef(post.quoteOf) }),
     ...(post.boostOf === undefined ? {} : { boostOf: serializeEntityRef(post.boostOf) }),
     ...(post.counts === undefined ? {} : { counts: post.counts }),
+    ...(post.viewerState === undefined ? {} : { viewerState: post.viewerState }),
     ...(post.extensions === undefined ? {} : { extensions: post.extensions }),
     raw: post.raw,
   };
+}
+
+export function serializePostContext(context: PostContext): PublicPostContext {
+  return {
+    ancestors: context.ancestors.map((post) => serializePost(post)),
+    descendants: context.descendants.map((post) => serializePost(post)),
+  };
+}
+
+export function serializePostTranslation(translation: PostTranslation): PublicPostTranslation {
+  return { ...translation };
 }
 
 export function serializeMediaAttachment(attachment: MediaAttachment): PublicMediaAttachment {
@@ -1061,6 +1248,22 @@ export function serializeNotificationConnection(
 ): PublicConnection<PublicNotification> {
   return {
     nodes: connection.nodes.map((notification) => serializeNotification(notification)),
+    pageInfo: connection.pageInfo,
+  };
+}
+
+export function serializeNotificationGroup(group: NotificationGroup): PublicNotificationGroup {
+  return {
+    ...group,
+    notifications: group.notifications.map((notification) => serializeNotification(notification)),
+  };
+}
+
+export function serializeNotificationGroupConnection(
+  connection: Connection<NotificationGroup>,
+): PublicConnection<PublicNotificationGroup> {
+  return {
+    nodes: connection.nodes.map((group) => serializeNotificationGroup(group)),
     pageInfo: connection.pageInfo,
   };
 }
@@ -1169,6 +1372,19 @@ export function serializeScheduledPostConnection(
   };
 }
 
+export function serializeBookmarkFolder(folder: BookmarkFolder): PublicBookmarkFolder {
+  return { ...folder, ref: serializeEntityRef(folder.ref) };
+}
+
+export function serializeBookmarkFolderConnection(
+  connection: Connection<BookmarkFolder>,
+): PublicConnection<PublicBookmarkFolder> {
+  return {
+    nodes: connection.nodes.map((folder) => serializeBookmarkFolder(folder)),
+    pageInfo: connection.pageInfo,
+  };
+}
+
 export function serializePostRevision(revision: PostRevision): PublicPostRevision {
   return {
     ...revision,
@@ -1219,6 +1435,7 @@ export function serializeSearchResult(result: SearchResult): PublicSearchResult 
       history: hashtag.history ?? [],
       raw: hashtag.raw,
     })),
+    pageInfo: result.pageInfo,
     raw: result.raw,
   };
 }
@@ -1228,10 +1445,21 @@ export function serializeAuthSession(session: AuthSession): PublicAuthSession {
     id: session.id,
     adapter: session.adapter,
     origin: session.origin,
+    strategy: session.strategy,
     ...(session.account === undefined ? {} : { account: serializeEntityRef(session.account) }),
     scopes: session.scopes,
     capabilities: session.capabilities,
     ...(session.expiresAt === undefined ? {} : { expiresAt: session.expiresAt }),
+  };
+}
+
+export function serializeOAuthClientRegistration(
+  client: OAuthClientRegistration,
+): PublicOAuthClientRegistration {
+  return {
+    clientId: client.clientId,
+    redirectUris: client.redirectUris,
+    ...(client.scopes === undefined ? {} : { scopes: client.scopes }),
   };
 }
 
@@ -1262,10 +1490,8 @@ export function serializeAuthStart(result: AuthStartResult): AuthStartPayload {
     ...(result.authorization.codeChallengeMethod === undefined
       ? {}
       : { codeChallengeMethod: result.authorization.codeChallengeMethod }),
-    ...("callbackBinding" in result &&
-    typeof result.callbackBinding === "object" &&
-    result.callbackBinding !== null
-      ? { callbackBinding: result.callbackBinding as PublicOAuthCallbackStateBinding }
+    ...(typeof result.callbackBinding === "object" && result.callbackBinding !== null
+      ? { callbackBinding: result.callbackBinding }
       : {}),
   };
 }

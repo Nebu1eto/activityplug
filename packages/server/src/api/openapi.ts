@@ -8,6 +8,7 @@ import {
   dataSchema,
   dateTimeStringSchema,
   disabledOperation,
+  jsonContent,
   idPathParameter,
   instancePageQueryParameters,
   instanceQueryParameters,
@@ -24,8 +25,6 @@ import {
   pageQueryParameters,
   requestBodyRef,
   requestBodySchema,
-  stringQueryParameter,
-  unsupportedOperation,
   websocketOperation,
 } from "./openapi-helpers.js";
 import { type PathItem } from "./openapi-helpers.js";
@@ -49,6 +48,7 @@ export interface OpenApiDocumentOptions {
 
 export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): OpenApiDocument {
   const tokenImport = options.tokenImport ?? "disabled";
+  const healthOperation = operation("getHealth", "system", undefined, dataRef("HealthStatus"));
   return {
     openapi: "3.1.0",
     info: {
@@ -58,7 +58,16 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
     components: openApiComponents(tokenImport),
     paths: {
       "/health": {
-        get: operation("getHealth", "system", undefined, dataRef("HealthStatus")),
+        get: {
+          ...healthOperation,
+          responses: {
+            ...healthOperation.responses,
+            "503": {
+              description: "A required local dependency is not ready.",
+              content: jsonContent(dataRef("HealthStatus")),
+            },
+          },
+        },
       },
       "/api/v1": {
         get: operation(
@@ -119,6 +128,28 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
           dataRef("InstanceProfile"),
         ),
       },
+      "/api/v1/instances/{origin}/oauth": {
+        get: operation(
+          "getInstanceOAuthMetadata",
+          "instances",
+          [
+            originPathParameter(),
+            { name: "adapter", in: "query", required: false, schema: adapterSchema() },
+          ],
+          dataRef("OAuthMetadata"),
+        ),
+      },
+      "/api/v1/instances/{origin}/peers": {
+        get: operation(
+          "getInstancePeers",
+          "instances",
+          [
+            originPathParameter(),
+            { name: "adapter", in: "query", required: false, schema: adapterSchema() },
+          ],
+          dataRef("InstancePeers"),
+        ),
+      },
       "/api/v1/auth/import-token": {
         post:
           tokenImport === "disabled"
@@ -138,6 +169,15 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
                   dataRef("AuthSession"),
                   requestBodyRef("AuthImportTokenRequest"),
                 ),
+      },
+      "/api/v1/auth/clients": {
+        post: operation(
+          "registerOAuthClient",
+          "auth",
+          undefined,
+          dataRef("OAuthClientRegistration"),
+          requestBodyRef("RegisterOAuthClientRequest"),
+        ),
       },
       "/api/v1/auth/start": {
         post: operation(
@@ -177,6 +217,42 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
           dataSchema(objectSchema(["revoked"], { revoked: { type: "boolean" } })),
         ),
       },
+      "/api/v1/auth/email-challenge/start": {
+        post: operation(
+          "authEmailChallengeStart",
+          "auth",
+          undefined,
+          dataRef("EmailChallengeStartPayload"),
+          requestBodyRef("EmailChallengeStartRequest"),
+        ),
+      },
+      "/api/v1/auth/email-challenge/verify": {
+        post: operation(
+          "authEmailChallengeVerify",
+          "auth",
+          undefined,
+          dataRef("AuthSession"),
+          requestBodyRef("EmailChallengeVerifyRequest"),
+        ),
+      },
+      "/api/v1/auth/passkey/start": {
+        post: operation(
+          "authPasskeyStart",
+          "auth",
+          undefined,
+          dataRef("PasskeyStartPayload"),
+          requestBodyRef("PasskeyStartRequest"),
+        ),
+      },
+      "/api/v1/auth/passkey/finish": {
+        post: operation(
+          "authPasskeyFinish",
+          "auth",
+          undefined,
+          dataRef("AuthSession"),
+          requestBodyRef("PasskeyFinishRequest"),
+        ),
+      },
       "/api/v1/viewer": {
         get: authenticatedOperation("getViewer", "auth", undefined, dataRef("Account")),
       },
@@ -211,7 +287,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         ),
       },
       "/api/v1/accounts/{id}/posts": {
-        get: operation(
+        get: optionallyAuthenticatedOperation(
           "getAccountPosts",
           "accounts",
           [
@@ -225,24 +301,23 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
               description: `Values above ${maxPageLimit} are clamped to ${maxPageLimit}.`,
               schema: { type: "integer", minimum: 1 },
             },
-            stringQueryParameter("sessionId"),
           ],
           listRef("Post"),
         ),
       },
       "/api/v1/accounts/{id}/followers": {
-        get: operation(
+        get: optionallyAuthenticatedOperation(
           "getAccountFollowers",
           "accounts",
-          [idPathParameter(), ...pageQueryParameters(), stringQueryParameter("sessionId")],
+          [idPathParameter(), ...pageQueryParameters()],
           listRef("Account"),
         ),
       },
       "/api/v1/accounts/{id}/following": {
-        get: operation(
+        get: optionallyAuthenticatedOperation(
           "getAccountFollowing",
           "accounts",
-          [idPathParameter(), ...pageQueryParameters(), stringQueryParameter("sessionId")],
+          [idPathParameter(), ...pageQueryParameters()],
           listRef("Account"),
         ),
       },
@@ -341,7 +416,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         get: optionallyAuthenticatedOperation(
           "getPostHistory",
           "posts",
-          [idPathParameter(), stringQueryParameter("sessionId")],
+          [idPathParameter()],
           dataSchema(
             objectSchema(["revisions"], {
               revisions: { type: "array", items: { $ref: "#/components/schemas/PostRevision" } },
@@ -350,15 +425,23 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         ),
       },
       "/api/v1/posts/{id}/context": {
-        get: unsupportedOperation("getPostContext", "posts", [idPathParameter()]),
+        get: operation("getPostContext", "posts", [idPathParameter()], dataRef("PostContext")),
       },
       "/api/v1/posts/{id}/quotes": {
-        get: unsupportedOperation(
+        get: operation(
           "getPostQuotes",
           "posts",
-          [idPathParameter()],
-          false,
+          [idPathParameter(), ...pageQueryParameters()],
           listRef("Post"),
+        ),
+      },
+      "/api/v1/posts/{id}/translate": {
+        post: authenticatedOperation(
+          "translatePost",
+          "posts",
+          [idPathParameter()],
+          dataRef("PostTranslation"),
+          requestBodyRef("TranslatePostRequest"),
         ),
       },
       "/api/v1/posts/{id}/favourite": {
@@ -434,22 +517,18 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         ),
       },
       "/api/v1/timelines/public": {
-        get: operation(
+        get: optionallyAuthenticatedOperation(
           "getPublicTimeline",
           "timelines",
-          [
-            ...instancePageQueryParameters(),
-            stringQueryParameter("sessionId"),
-            booleanQueryParameter("local"),
-          ],
+          [...instancePageQueryParameters(), booleanQueryParameter("local")],
           listRef("Post"),
         ),
       },
       "/api/v1/timelines/local": {
-        get: operation(
+        get: optionallyAuthenticatedOperation(
           "getLocalTimeline",
           "timelines",
-          [...instancePageQueryParameters(), stringQueryParameter("sessionId")],
+          instancePageQueryParameters(),
           listRef("Post"),
         ),
       },
@@ -505,7 +584,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         ),
       },
       "/api/v1/media/{id}": {
-        get: unsupportedOperation("getMedia", "media", [idPathParameter()]),
+        get: operation("getMedia", "media", [idPathParameter()], dataRef("MediaAttachment")),
         patch: authenticatedOperation(
           "updateMedia",
           "media",
@@ -527,13 +606,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
           [
             ...instanceQueryParameters(),
             { name: "q", in: "query", required: true, schema: nonEmptyStringSchema() },
-            {
-              name: "limit",
-              in: "query",
-              required: false,
-              description: `Values above ${maxPageLimit} are clamped to ${maxPageLimit}.`,
-              schema: { type: "integer", minimum: 1 },
-            },
+            ...pageQueryParameters(),
             {
               name: "type",
               in: "query",
@@ -543,7 +616,6 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
               schema: { type: "string", enum: ["accounts", "posts", "hashtags"] },
             },
             { name: "resolve", in: "query", required: false, schema: { type: "boolean" } },
-            { name: "sessionId", in: "query", required: false, schema: nonEmptyStringSchema() },
           ],
           dataRef("SearchResult"),
         ),
@@ -552,10 +624,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         get: optionallyAuthenticatedOperation(
           "getPoll",
           "polls",
-          [
-            idPathParameter(),
-            { name: "sessionId", in: "query", required: false, schema: nonEmptyStringSchema() },
-          ],
+          [idPathParameter()],
           dataRef("Poll"),
         ),
       },
@@ -605,6 +674,34 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
             },
           ],
           listRef("Notification"),
+        ),
+      },
+      "/api/v1/notifications/groups": {
+        get: authenticatedOperation(
+          "getNotificationGroups",
+          "notifications",
+          [
+            { name: "origin", in: "query", required: false, schema: nonEmptyStringSchema() },
+            { name: "adapter", in: "query", required: false, schema: adapterSchema() },
+            ...pageQueryParameters(),
+            {
+              name: "type",
+              in: "query",
+              required: false,
+              schema: { type: "array", items: notificationTypeQuerySchema() },
+              style: "form",
+              explode: true,
+            },
+            {
+              name: "types",
+              in: "query",
+              required: false,
+              schema: { type: "array", items: notificationTypeQuerySchema() },
+              style: "form",
+              explode: true,
+            },
+          ],
+          listRef("NotificationGroup"),
         ),
       },
       "/api/v1/notifications/unread-count": {
@@ -829,6 +926,60 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
           dataRef("DeletedEntity"),
         ),
       },
+      "/api/v1/bookmark-folders": {
+        get: authenticatedOperation(
+          "getBookmarkFolders",
+          "bookmark-folders",
+          [
+            { name: "origin", in: "query", required: false, schema: nonEmptyStringSchema() },
+            { name: "adapter", in: "query", required: false, schema: adapterSchema() },
+            ...pageQueryParameters(),
+          ],
+          listRef("BookmarkFolder"),
+        ),
+        post: authenticatedOperation(
+          "createBookmarkFolder",
+          "bookmark-folders",
+          undefined,
+          dataRef("BookmarkFolder"),
+          requestBodyRef("CreateBookmarkFolderRequest"),
+        ),
+      },
+      "/api/v1/bookmark-folders/{id}": {
+        patch: authenticatedOperation(
+          "updateBookmarkFolder",
+          "bookmark-folders",
+          [idPathParameter()],
+          dataRef("BookmarkFolder"),
+          requestBodyRef("UpdateBookmarkFolderRequest"),
+        ),
+        delete: authenticatedOperation(
+          "deleteBookmarkFolder",
+          "bookmark-folders",
+          [idPathParameter()],
+          dataRef("DeletedEntity"),
+        ),
+      },
+      "/api/v1/bookmark-folders/{id}/posts": {
+        post: authenticatedOperation(
+          "addPostToBookmarkFolder",
+          "bookmark-folders",
+          [idPathParameter()],
+          dataRef("BookmarkFolder"),
+          requestBodyRef("BookmarkFolderPostRequest"),
+        ),
+      },
+      "/api/v1/bookmark-folders/{id}/posts/{postId}": {
+        delete: authenticatedOperation(
+          "removePostFromBookmarkFolder",
+          "bookmark-folders",
+          [
+            idPathParameter(),
+            { name: "postId", in: "path", required: true, schema: nonBlankStringSchema() },
+          ],
+          dataRef("BookmarkFolder"),
+        ),
+      },
       "/api/v1/streams": {
         get: operation("getStreamingInfo", "streaming", undefined, dataRef("StreamingInfo")),
       },
@@ -836,7 +987,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         get: websocketOperation(
           "connectHomeTimelineStream",
           "streaming",
-          [...instanceQueryParameters(), stringQueryParameter("sessionId")],
+          instanceQueryParameters(),
           true,
         ),
       },
@@ -850,7 +1001,7 @@ export function createOpenApiDocument(options: OpenApiDocumentOptions = {}): Ope
         get: websocketOperation(
           "connectNotificationStream",
           "streaming",
-          [...instanceQueryParameters(), stringQueryParameter("sessionId")],
+          instanceQueryParameters(),
           true,
         ),
       },

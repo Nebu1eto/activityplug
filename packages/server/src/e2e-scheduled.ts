@@ -40,20 +40,23 @@ export async function createScheduledPostOverGraphQL(
 ): Promise<string> {
   const scheduledAt = futureIsoDate(10);
   const content = `ActivityPlug server GraphQL scheduled E2E ${Date.now()}`;
-  const result = await postGraphQL(fetch, {
-    query:
-      "mutation($input: SchedulePostInput!) { schedulePost(input: $input) { ref { id } scheduledAt contentText visibility } }",
-    variables: {
-      input: {
-        origin: target.origin,
-        adapter: adapterKind(target.adapter),
-        sessionId: authSessionId,
-        content,
-        visibility: "PUBLIC",
-        scheduledAt,
+  const result = await postGraphQL(
+    fetch,
+    {
+      query:
+        "mutation($input: SchedulePostInput!) { schedulePost(input: $input) { ref { id } scheduledAt contentText visibility } }",
+      variables: {
+        input: {
+          origin: target.origin,
+          adapter: target.adapter,
+          content,
+          visibility: "PUBLIC",
+          scheduledAt,
+        },
       },
     },
-  });
+    authSessionId,
+  );
   const data = result["data"];
   if (!isRecord(data)) throw new TypeError("GraphQL schedulePost response must include data.");
   const scheduled = data["schedulePost"];
@@ -100,11 +103,14 @@ export async function expectScheduledPostReadOverGraphQL(
   authSessionId: string,
   id: string,
 ): Promise<void> {
-  const getResult = await postGraphQL(fetch, {
-    query:
-      "query($id: ID!, $sessionId: ID!) { scheduledPost(id: $id, sessionId: $sessionId) { ref { id } contentText visibility } }",
-    variables: { id, sessionId: authSessionId },
-  });
+  const getResult = await postGraphQL(
+    fetch,
+    {
+      query: "query($id: ID!) { scheduledPost(id: $id) { ref { id } contentText visibility } }",
+      variables: { id },
+    },
+    authSessionId,
+  );
   const getData = getResult["data"];
   if (!isRecord(getData)) throw new TypeError("GraphQL scheduledPost response must include data.");
   expect(refId(getData["scheduledPost"])).toBe(id);
@@ -112,15 +118,18 @@ export async function expectScheduledPostReadOverGraphQL(
     contentText: expect.stringContaining("ActivityPlug server GraphQL scheduled E2E"),
     visibility: "PUBLIC",
   });
-  const listResult = await postGraphQL(fetch, {
-    query:
-      "query($origin: String!, $adapter: AdapterKind, $sessionId: ID!) { scheduledPosts(origin: $origin, adapter: $adapter, sessionId: $sessionId, page: { limit: 5 }) { nodes { ref { id } } } }",
-    variables: {
-      origin: target.origin,
-      adapter: adapterKind(target.adapter),
-      sessionId: authSessionId,
+  const listResult = await postGraphQL(
+    fetch,
+    {
+      query:
+        "query($origin: String!, $adapter: AdapterId) { scheduledPosts(origin: $origin, adapter: $adapter, page: { limit: 5 }) { nodes { ref { id } } } }",
+      variables: {
+        origin: target.origin,
+        adapter: target.adapter,
+      },
     },
-  });
+    authSessionId,
+  );
   const listData = listResult["data"];
   if (!isRecord(listData) || !isRecord(listData["scheduledPosts"])) {
     throw new TypeError("GraphQL scheduledPosts response must include data.");
@@ -158,11 +167,15 @@ export async function updateScheduledPostOverGraphQL(
   id: string,
 ): Promise<void> {
   const scheduledAt = futureIsoDate(20);
-  const result = await postGraphQL(fetch, {
-    query:
-      "mutation($input: UpdateScheduledPostInput!) { updateScheduledPost(input: $input) { ref { id } scheduledAt } }",
-    variables: { input: { id, sessionId: authSessionId, scheduledAt } },
-  });
+  const result = await postGraphQL(
+    fetch,
+    {
+      query:
+        "mutation($input: UpdateScheduledPostInput!) { updateScheduledPost(input: $input) { ref { id } scheduledAt } }",
+      variables: { input: { id, scheduledAt } },
+    },
+    authSessionId,
+  );
   const data = result["data"];
   if (!isRecord(data)) {
     throw new TypeError("GraphQL updateScheduledPost response must include data.");
@@ -193,11 +206,14 @@ export async function deleteScheduledPostOverGraphQL(
   authSessionId: string,
   id: string,
 ): Promise<void> {
-  const result = await postGraphQL(fetch, {
-    query:
-      "mutation($id: ID!, $sessionId: ID!) { deleteScheduledPost(id: $id, sessionId: $sessionId) { ref { id } deleted } }",
-    variables: { id, sessionId: authSessionId },
-  });
+  const result = await postGraphQL(
+    fetch,
+    {
+      query: "mutation($id: ID!) { deleteScheduledPost(id: $id) { ref { id } deleted } }",
+      variables: { id },
+    },
+    authSessionId,
+  );
   const data = result["data"];
   if (!isRecord(data)) {
     throw new TypeError("GraphQL deleteScheduledPost response must include data.");
@@ -224,8 +240,4 @@ function futureIsoDate(minutesFromNow: number): string {
   const date = new Date(Date.now() + minutesFromNow * 60_000);
   date.setMilliseconds(0);
   return date.toISOString();
-}
-
-function adapterKind(adapter: string): string {
-  return adapter.toUpperCase();
 }

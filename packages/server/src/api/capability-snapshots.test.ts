@@ -17,19 +17,26 @@ import { serverDiscoveryFixtures } from "@activityplug/test-fixtures";
 import { describe, expect, it } from "vitest";
 
 describe("server capability snapshots", () => {
-  const adapters = [
-    adapterDefinition(createMastodonAdapter()),
-    adapterDefinition(createMisskeyAdapter()),
-    adapterDefinition(createPleromaAdapter()),
-    adapterDefinition(createHolloAdapter()),
-    adapterDefinition(createHackersPubAdapter()),
+  const packagedAdapters = [
+    createMastodonAdapter(),
+    createMisskeyAdapter(),
+    createPleromaAdapter(),
+    createHolloAdapter(),
+    createHackersPubAdapter(),
   ];
+  const adapters = packagedAdapters.map((adapter) => adapterDefinition(adapter));
 
   it.each(Object.entries(serverDiscoveryFixtures))("%s", (_name, fixture) => {
     const resolution = resolveAdapterForNodeInfo(adapters, fixture);
 
     expect(resolution?.adapter.metadata.id).toMatchSnapshot("adapter");
-    expect(summarize(resolution?.capabilities)).toMatchSnapshot("capabilities");
+    expect({
+      capabilities: summarize(resolution?.capabilities),
+      operations: taskFiveOperationAvailability(
+        packagedAdapters.find((adapter) => adapter.metadata.id === resolution?.adapter.metadata.id),
+        resolution?.capabilities,
+      ),
+    }).toMatchSnapshot("capabilities");
   });
 });
 
@@ -44,6 +51,71 @@ function adapterDefinition(adapter: ActivityPlugAdapter): ActivityPlugAdapterDef
       probeLayer(context),
     ],
   };
+}
+
+function taskFiveOperationAvailability(
+  adapter: ActivityPlugAdapter | undefined,
+  capabilities: CapabilitySet | undefined,
+): Record<string, string> {
+  if (adapter === undefined || capabilities === undefined) return {};
+  const oauth = adapter.auth?.strategies.find((strategy) => strategy.kind === "oauth");
+  const missing = "The packaged adapter does not implement this operation.";
+  const bookmarkFolders = adapter.bookmarkFolders;
+  const available = (implemented: boolean, capabilityName: CapabilityName): string => {
+    if (!implemented) return operation(false, missing);
+    const decision = capabilities[capabilityName];
+    return decision?.status === "supported"
+      ? operation(true, missing)
+      : operation(false, `Capability ${capabilityName} is ${decision?.status ?? "unknown"}.`);
+  };
+  return {
+    "auth.registerClient": available(
+      oauth?.registerClient !== undefined,
+      "auth.oauth.clientCredentials",
+    ),
+    "bookmarkFolder.addPost": available(
+      bookmarkFolders?.addPost !== undefined,
+      "social.bookmarkFolders",
+    ),
+    "bookmarkFolder.create": available(
+      bookmarkFolders?.create !== undefined,
+      "social.bookmarkFolders",
+    ),
+    "bookmarkFolder.delete": available(
+      bookmarkFolders?.delete !== undefined,
+      "social.bookmarkFolders",
+    ),
+    "bookmarkFolder.list": available(bookmarkFolders?.list !== undefined, "social.bookmarkFolders"),
+    "bookmarkFolder.removePost": available(
+      bookmarkFolders?.removePost !== undefined,
+      "social.bookmarkFolders",
+    ),
+    "bookmarkFolder.update": available(
+      bookmarkFolders?.update !== undefined,
+      "social.bookmarkFolders",
+    ),
+    "instance.oauthMetadata": available(
+      adapter.instances?.oauthMetadata !== undefined,
+      "instance.oauthMetadata",
+    ),
+    "instance.peers": available(adapter.instances?.peers !== undefined, "instance.peers"),
+    "media.get": available(adapter.media?.get !== undefined, "media.get"),
+    "media.ingestUrl": available(
+      adapter.media?.ingestUrl !== undefined || adapter.media?.uploadFromUrl !== undefined,
+      "media.urlIngestion",
+    ),
+    "notification.groups": available(
+      adapter.notifications?.groups !== undefined,
+      "notifications.grouped",
+    ),
+    "post.context": available(adapter.posts?.context !== undefined, "posts.context"),
+    "post.quotes": available(adapter.posts?.quotes !== undefined, "posts.quotes"),
+    "post.translate": available(adapter.posts?.translate !== undefined, "posts.translate"),
+  };
+}
+
+function operation(available: boolean, reason: string): string {
+  return available ? "supported:executable" : `unsupported:${reason}`;
 }
 
 function oauthCapabilityLayer(

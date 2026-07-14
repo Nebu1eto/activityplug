@@ -1,7 +1,13 @@
 import { type AdapterE2ETarget } from "@activityplug/e2e-fixtures";
 import { expect } from "vitest";
 
-import { type E2EFetch, fetchWithRateLimitRetry, isRecord, readJsonData } from "./e2e-utils.js";
+import {
+  type E2EFetch,
+  fetchWithRateLimitRetry,
+  isRecord,
+  type PostGraphQL,
+  readJsonData,
+} from "./e2e-utils.js";
 
 export function hasSupportedPostSocialAction(isSupported: (name: string) => boolean): boolean {
   return (
@@ -22,10 +28,7 @@ export async function expectSupportedAccountSocialActions(
   accountId: string,
   sessionId: string,
   graphqlSessionId: string,
-  postGraphQL: (
-    fetch: E2EFetch,
-    body: { readonly query: string; readonly variables?: Record<string, unknown> },
-  ) => Promise<Record<string, unknown>>,
+  postGraphQL: PostGraphQL,
 ): Promise<void> {
   if (isSupported("accounts.relationships")) {
     await accountRelationshipOverHttp(fetch, accountId, sessionId);
@@ -143,10 +146,7 @@ export async function expectSupportedPostSocialActionsGraphQL(
   isSupported: (name: string) => boolean,
   postId: string,
   sessionId: string,
-  postGraphQL: (
-    fetch: E2EFetch,
-    body: { readonly query: string; readonly variables?: Record<string, unknown> },
-  ) => Promise<Record<string, unknown>>,
+  postGraphQL: PostGraphQL,
   waitForPostOverHttp: (fetch: E2EFetch, postId: string) => Promise<void>,
 ): Promise<void> {
   if (isSupported("social.favourite")) {
@@ -200,16 +200,16 @@ async function accountRelationshipOverGraphQL(
   fetch: E2EFetch,
   accountId: string,
   sessionId: string,
-  postGraphQL: (
-    fetch: E2EFetch,
-    body: { readonly query: string; readonly variables?: Record<string, unknown> },
-  ) => Promise<Record<string, unknown>>,
+  postGraphQL: PostGraphQL,
 ): Promise<void> {
-  const result = await postGraphQL(fetch, {
-    query:
-      "query($id: ID!, $sessionId: ID!) { accountRelationship(id: $id, sessionId: $sessionId) { account { id } } }",
-    variables: { id: accountId, sessionId },
-  });
+  const result = await postGraphQL(
+    fetch,
+    {
+      query: "query($id: ID!) { accountRelationship(id: $id) { account { id } } }",
+      variables: { id: accountId },
+    },
+    sessionId,
+  );
   expect(result["data"]).toMatchObject({
     accountRelationship: { account: { id: accountId } },
   });
@@ -253,23 +253,22 @@ async function accountActionOverGraphQL(
     | "unmuteAccount",
   accountId: string,
   sessionId: string,
-  postGraphQL: (
-    fetch: E2EFetch,
-    body: { readonly query: string; readonly variables?: Record<string, unknown> },
-  ) => Promise<Record<string, unknown>>,
+  postGraphQL: PostGraphQL,
   allowFailure = false,
 ): Promise<void> {
   const body =
     mutation === "muteAccount"
       ? {
           query: `mutation($input: MuteAccountInput!) { ${mutation}(input: $input) { account { id } } }`,
-          variables: { input: { accountId, sessionId } },
+          variables: { input: { accountId } },
         }
       : {
-          query: `mutation($id: ID!, $sessionId: ID!) { ${mutation}(id: $id, sessionId: $sessionId) { account { id } } }`,
-          variables: { id: accountId, sessionId },
+          query: `mutation($id: ID!) { ${mutation}(id: $id) { account { id } } }`,
+          variables: { id: accountId },
         };
-  const result = allowFailure ? await tryPostGraphQL(fetch, body) : await postGraphQL(fetch, body);
+  const result = allowFailure
+    ? await tryPostGraphQL(fetch, body, sessionId)
+    : await postGraphQL(fetch, body, sessionId);
   if (result === undefined) return;
   expect(result["data"]).toMatchObject({ [mutation]: { account: { id: accountId } } });
 }
@@ -277,11 +276,15 @@ async function accountActionOverGraphQL(
 async function tryPostGraphQL(
   fetch: E2EFetch,
   body: { readonly query: string; readonly variables?: Record<string, unknown> },
+  authSessionId: string,
 ): Promise<Record<string, unknown> | undefined> {
   const response = await fetch(
     new Request("http://activityplug.test/graphql", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        authorization: `Bearer ${authSessionId}`,
+        "content-type": "application/json",
+      },
       body: JSON.stringify(body),
     }),
   );
@@ -356,16 +359,17 @@ async function postActionOverGraphQL(
     | "unreactToPost",
   postId: string,
   sessionId: string,
-  postGraphQL: (
-    fetch: E2EFetch,
-    body: { readonly query: string; readonly variables?: Record<string, unknown> },
-  ) => Promise<Record<string, unknown>>,
+  postGraphQL: PostGraphQL,
   extraInput: Record<string, unknown> = {},
 ): Promise<void> {
-  const result = await postGraphQL(fetch, {
-    query: postActionMutation(mutation),
-    variables: postActionVariables(mutation, postId, sessionId, extraInput),
-  });
+  const result = await postGraphQL(
+    fetch,
+    {
+      query: postActionMutation(mutation),
+      variables: postActionVariables(mutation, postId, extraInput),
+    },
+    sessionId,
+  );
   const data = result["data"];
   if (!isRecord(data)) throw new TypeError("GraphQL post action response must include data.");
   expect(postActionMatchesTarget(data[mutation], postId, mutation === "boostPost")).toBe(true);
@@ -378,19 +382,18 @@ function postActionMutation(mutation: string): string {
   if (mutation === "reactToPost" || mutation === "unreactToPost") {
     return `mutation($input: ReactPostInput!) { ${mutation}(input: $input) { ref { id origin } } }`;
   }
-  return `mutation($id: ID!, $sessionId: ID!) { ${mutation}(id: $id, sessionId: $sessionId) { ref { id origin } } }`;
+  return `mutation($id: ID!) { ${mutation}(id: $id) { ref { id origin } } }`;
 }
 
 function postActionVariables(
   mutation: string,
   postId: string,
-  sessionId: string,
   extraInput: Record<string, unknown>,
 ): Record<string, unknown> {
   if (mutation === "boostPost" || mutation === "reactToPost" || mutation === "unreactToPost") {
-    return { input: { postId, sessionId, ...extraInput } };
+    return { input: { postId, ...extraInput } };
   }
-  return { id: postId, sessionId };
+  return { id: postId };
 }
 
 function postActionMatchesTarget(

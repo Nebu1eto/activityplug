@@ -78,12 +78,24 @@ describe("GraphQL schema input normalization", () => {
         sessionId: "session-1",
         content: "",
         scheduledAt: "2026-05-02T00:00:00Z",
-        poll: { options: ["yes", "no"] },
+        poll: { options: ["yes", "no"], expiresInSeconds: 300 },
       }),
     ).toMatchObject({
       content: "",
-      poll: { options: ["yes", "no"] },
+      poll: { options: ["yes", "no"], expiresInSeconds: 300 },
     });
+  });
+
+  it("rejects a poll without an explicit expiration", () => {
+    expect(() =>
+      schedulePostInput({
+        origin: "https://example.com",
+        sessionId: "session-1",
+        content: "",
+        scheduledAt: "2026-05-02T00:00:00Z",
+        poll: { options: ["yes", "no"] },
+      }),
+    ).toThrow("GraphQL JSON input field must be a positive integer: expiresInSeconds.");
   });
 
   it("rejects impossible scheduled date-time values", () => {

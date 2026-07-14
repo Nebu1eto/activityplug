@@ -1,4 +1,5 @@
 import { expect } from "vitest";
+import { z } from "zod";
 
 export type E2EFetch = (request: Request) => Response | Promise<Response>;
 
@@ -11,22 +12,29 @@ export async function readJsonData(response: Response): Promise<unknown> {
 export async function postGraphQL(
   fetch: E2EFetch,
   body: { readonly query: string; readonly variables?: Record<string, unknown> },
+  authSessionId?: string,
 ): Promise<Record<string, unknown>> {
   const response = await fetchWithRateLimitRetry(
     fetch,
     () =>
       new Request("http://activityplug.test/graphql", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          ...(authSessionId === undefined ? {} : { authorization: `Bearer ${authSessionId}` }),
+          "content-type": "application/json",
+        },
         body: JSON.stringify(body),
       }),
   );
-  expect(response.status).toBe(200);
-  const json = (await response.json()) as unknown;
+  const responseText = await response.text();
+  expect(response.status, responseText).toBe(200);
+  const json = JSON.parse(responseText) as unknown;
   if (!isRecord(json)) throw new TypeError("GraphQL response must be an object.");
   expect(json["errors"]).toBeUndefined();
   return json;
 }
+
+export type PostGraphQL = typeof postGraphQL;
 
 export async function fetchWithRateLimitRetry(
   fetch: E2EFetch,
@@ -43,6 +51,8 @@ export async function fetchWithRateLimitRetry(
   return new Response("Timed out while retrying a rate-limited E2E request.", { status: 429 });
 }
 
+const jsonRecordSchema = z.looseObject({});
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return jsonRecordSchema.safeParse(value).success;
 }

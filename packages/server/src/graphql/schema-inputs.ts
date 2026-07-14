@@ -262,10 +262,19 @@ function assertPostUpdateFields(input: {
 function pollInput(input: unknown) {
   const value = objectInput(input);
   return {
-    options: pollOptionInput(value["options"], "poll.options"),
+    options: pollOptionInput(value["options"], "poll.options") as [string, string, ...string[]],
+    expiresInSeconds: requiredPositiveIntegerInput(value, "expiresInSeconds"),
     ...(typeof value["multiple"] === "boolean" ? { multiple: value["multiple"] } : {}),
-    ...optionalPositiveIntegerInput(value, "expiresInSeconds"),
   };
+}
+
+function requiredPositiveIntegerInput(input: Record<string, unknown>, field: string): number {
+  const value = input[field];
+  if (typeof value === "number" && Number.isInteger(value) && value > 0) return value;
+  throw new ActivityPlugError(
+    "VALIDATION_FAILED",
+    `GraphQL JSON input field must be a positive integer: ${field}.`,
+  );
 }
 
 function assertCreatePostFields(
