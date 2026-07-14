@@ -260,6 +260,18 @@ export const accountMappingFixtures = {
       content: "<p>Post.</p>",
       published: "2024-01-02T00:00:00.000Z",
       visibility: "PUBLIC",
+      media: [
+        {
+          id: "UG9zdE1lZGl1bTowMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDI6MA==",
+          type: "image/png",
+          url: "https://hackers.pub/media/post.png",
+          thumbnailUrl: "https://hackers.pub/media/post-thumb.png",
+          alt: "Post attachment",
+          width: 640,
+          height: 480,
+          sensitive: true,
+        },
+      ],
       actor: {
         id: "QWN0b3I6MDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAx",
         uuid: "00000000-0000-4000-8000-000000000001",

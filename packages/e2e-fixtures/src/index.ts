@@ -1,5 +1,6 @@
 import { type ActivityPlugAdapter, createActivityPlug, createEntityRef } from "@activityplug/core";
 import { expect } from "vitest";
+import { z } from "zod";
 
 export interface AdapterE2ETarget {
   readonly adapter: string;
@@ -152,6 +153,7 @@ export async function expectReadBaseline(
   const posts = await client.accounts.listPosts({
     accountId: resolvedAccount.ref.id,
     page: { limit: 500 },
+    ...(viewer === undefined ? {} : { session: viewer.session }),
   });
 
   expect(posts.nodes.length).toBeGreaterThan(0);
@@ -576,6 +578,8 @@ export async function expectReadBaseline(
   }
 }
 
+const misskeyAccountSchema = z.looseObject({});
+
 async function expectMisskeyUnreadFlag(
   target: AdapterE2ETarget,
   hasUnreadNotification: boolean,
@@ -589,11 +593,11 @@ async function expectMisskeyUnreadFlag(
     body: JSON.stringify({ i: target.token }),
   });
   expect(response.status).toBe(200);
-  const account = (await response.json()) as unknown;
-  if (typeof account !== "object" || account === null || Array.isArray(account)) {
+  const account = misskeyAccountSchema.safeParse(await response.json());
+  if (!account.success) {
     throw new TypeError("Misskey i response must be an object.");
   }
-  expect((account as Record<string, unknown>)["hasUnreadNotification"]).toBe(hasUnreadNotification);
+  expect(account.data["hasUnreadNotification"]).toBe(hasUnreadNotification);
 }
 
 function notificationFixtureMessage(
@@ -816,85 +820,75 @@ function normalizedHashtag(value: string): string {
   return value.replace(/^#/, "").toLowerCase();
 }
 
+const OPTIONAL_TARGET_FIELDS = [
+  "token",
+  "accountHandle",
+  "socialActionHandle",
+  "socialActionPostId",
+  "hashtag",
+  "pollId",
+  "httpPollId",
+  "graphqlPollId",
+  "libraryDeletePostId",
+  "httpDeletePostId",
+  "graphqlDeletePostId",
+  "updatePostId",
+  "postSearchQuery",
+  "postSearchRawId",
+  "notificationRawId",
+  "notificationGraphqlDismissRawId",
+  "notificationClearRawId",
+  "notificationGraphqlClearRawId",
+  "notificationType",
+  "notificationAccountRawId",
+  "notificationPostRawId",
+  "followRequestHttpAcceptRawId",
+  "followRequestGraphqlAcceptRawId",
+  "followRequestHttpRejectRawId",
+  "followRequestGraphqlRejectRawId",
+] as const;
+
+// Present-but-non-string optional fields are silently dropped: `.catch`
+// coerces any non-string value to `undefined`, which is then stripped from
+// the returned object so absent and invalid fields are equally omitted.
+const optionalTargetField = z.string().optional().catch(undefined);
+
+const targetSchema = z.object({
+  adapter: z.string().min(1),
+  origin: z.string().min(1),
+  ...(Object.fromEntries(
+    OPTIONAL_TARGET_FIELDS.map((field) => [field, optionalTargetField]),
+  ) as Record<(typeof OPTIONAL_TARGET_FIELDS)[number], typeof optionalTargetField>),
+});
+
+const targetsSchema = z.array(targetSchema);
+
 function parseTargets(value: string | undefined): readonly AdapterE2ETarget[] {
   if (value === undefined || value.trim().length === 0) return [];
   const parsed = JSON.parse(value) as unknown;
-  if (!Array.isArray(parsed))
-    throw new TypeError("ACTIVITYPLUG_FEDIVERSE_TARGETS must be an array.");
-  return parsed.map((target) => {
-    if (!isRecord(target)) throw new TypeError("Fediverse E2E target must be an object.");
-    const adapter = requiredString(target["adapter"], "adapter");
-    return {
-      adapter,
-      origin: requiredString(target["origin"], "origin"),
-      ...(typeof target["token"] === "string" ? { token: target["token"] } : {}),
-      ...(typeof target["accountHandle"] === "string"
-        ? { accountHandle: target["accountHandle"] }
-        : {}),
-      ...(typeof target["socialActionHandle"] === "string"
-        ? { socialActionHandle: target["socialActionHandle"] }
-        : {}),
-      ...(typeof target["socialActionPostId"] === "string"
-        ? { socialActionPostId: target["socialActionPostId"] }
-        : {}),
-      ...(typeof target["hashtag"] === "string" ? { hashtag: target["hashtag"] } : {}),
-      ...(typeof target["pollId"] === "string" ? { pollId: target["pollId"] } : {}),
-      ...(typeof target["httpPollId"] === "string" ? { httpPollId: target["httpPollId"] } : {}),
-      ...(typeof target["graphqlPollId"] === "string"
-        ? { graphqlPollId: target["graphqlPollId"] }
-        : {}),
-      ...(typeof target["libraryDeletePostId"] === "string"
-        ? { libraryDeletePostId: target["libraryDeletePostId"] }
-        : {}),
-      ...(typeof target["httpDeletePostId"] === "string"
-        ? { httpDeletePostId: target["httpDeletePostId"] }
-        : {}),
-      ...(typeof target["graphqlDeletePostId"] === "string"
-        ? { graphqlDeletePostId: target["graphqlDeletePostId"] }
-        : {}),
-      ...(typeof target["updatePostId"] === "string"
-        ? { updatePostId: target["updatePostId"] }
-        : {}),
-      ...(typeof target["postSearchQuery"] === "string"
-        ? { postSearchQuery: target["postSearchQuery"] }
-        : {}),
-      ...(typeof target["postSearchRawId"] === "string"
-        ? { postSearchRawId: target["postSearchRawId"] }
-        : {}),
-      ...(typeof target["notificationRawId"] === "string"
-        ? { notificationRawId: target["notificationRawId"] }
-        : {}),
-      ...(typeof target["notificationGraphqlDismissRawId"] === "string"
-        ? { notificationGraphqlDismissRawId: target["notificationGraphqlDismissRawId"] }
-        : {}),
-      ...(typeof target["notificationClearRawId"] === "string"
-        ? { notificationClearRawId: target["notificationClearRawId"] }
-        : {}),
-      ...(typeof target["notificationGraphqlClearRawId"] === "string"
-        ? { notificationGraphqlClearRawId: target["notificationGraphqlClearRawId"] }
-        : {}),
-      ...(typeof target["notificationType"] === "string"
-        ? { notificationType: target["notificationType"] }
-        : {}),
-      ...(typeof target["notificationAccountRawId"] === "string"
-        ? { notificationAccountRawId: target["notificationAccountRawId"] }
-        : {}),
-      ...(typeof target["notificationPostRawId"] === "string"
-        ? { notificationPostRawId: target["notificationPostRawId"] }
-        : {}),
-      ...(typeof target["followRequestHttpAcceptRawId"] === "string"
-        ? { followRequestHttpAcceptRawId: target["followRequestHttpAcceptRawId"] }
-        : {}),
-      ...(typeof target["followRequestGraphqlAcceptRawId"] === "string"
-        ? { followRequestGraphqlAcceptRawId: target["followRequestGraphqlAcceptRawId"] }
-        : {}),
-      ...(typeof target["followRequestHttpRejectRawId"] === "string"
-        ? { followRequestHttpRejectRawId: target["followRequestHttpRejectRawId"] }
-        : {}),
-      ...(typeof target["followRequestGraphqlRejectRawId"] === "string"
-        ? { followRequestGraphqlRejectRawId: target["followRequestGraphqlRejectRawId"] }
-        : {}),
+  const result = targetsSchema.safeParse(parsed);
+  if (!result.success) {
+    const issue = result.error.issues[0];
+    if (issue.path.length === 0) {
+      throw new TypeError("ACTIVITYPLUG_FEDIVERSE_TARGETS must be an array.");
+    }
+    if (issue.path.length === 1) {
+      throw new TypeError("Fediverse E2E target must be an object.");
+    }
+    throw new TypeError(
+      `Fediverse E2E target field must be a non-empty string: ${String(issue.path[1])}.`,
+    );
+  }
+  return result.data.map((entry) => {
+    const target: { adapter: string; origin: string; [field: string]: string } = {
+      adapter: entry.adapter,
+      origin: entry.origin,
     };
+    for (const field of OPTIONAL_TARGET_FIELDS) {
+      const fieldValue = entry[field];
+      if (fieldValue !== undefined) target[field] = fieldValue;
+    }
+    return target;
   });
 }
 
@@ -941,15 +935,4 @@ function futureIsoDate(minutesFromNow: number): string {
 function expectedSoftwareName(adapter: string): string {
   if (adapter === "hackerspub") return "hackerspub";
   return adapter;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function requiredString(value: unknown, name: string): string {
-  if (typeof value !== "string" || value.length === 0) {
-    throw new TypeError(`Fediverse E2E target field must be a non-empty string: ${name}.`);
-  }
-  return value;
 }
