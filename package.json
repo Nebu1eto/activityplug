@@ -52,7 +52,8 @@
     "rolldown-plugin-dts": "^0.27.6",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10",
-    "yaml": "2.9.0"
+    "yaml": "2.9.0",
+    "zod": "^4.4.3"
   },
   "engines": {
     "node": ">=26 <27",

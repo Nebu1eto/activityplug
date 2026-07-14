@@ -29,21 +29,21 @@ x-redis-healthcheck: &redis-healthcheck
 
 services:
   mastodon-db:
-    image: postgres:15-alpine
+    image: postgres:18.4-alpine3.24@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
     profiles: ["mastodon", "fediverse"]
     environment:
       POSTGRES_DB: mastodon
       POSTGRES_USER: mastodon
       POSTGRES_PASSWORD: mastodon
     volumes:
-      - mastodon-postgres:/var/lib/postgresql/data
+      - mastodon-postgres:/var/lib/postgresql
     networks: [fediverse]
     healthcheck:
       <<: *postgres-healthcheck
       test: ["CMD", "pg_isready", "-U", "mastodon"]
 
   mastodon-redis:
-    image: redis:7-alpine
+    image: redis:8.8.0-alpine3.23@sha256:9d317178eceac8454a2284a9e6df2466b93c745529947f0cd42a0fa9609d7005
     profiles: ["mastodon", "fediverse"]
     volumes:
       - mastodon-redis:/data
@@ -53,7 +53,7 @@ services:
       test: ["CMD", "redis-cli", "ping"]
 
   mastodon-elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.25
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.29@sha256:3f55a7f6f29b95345dc33808d6e914f81d125d4ca90a414e26c81a3521400980
     profiles: ["mastodon", "fediverse"]
     environment:
       discovery.type: single-node
@@ -68,7 +68,7 @@ services:
       retries: 30
 
   mastodon-web-backend:
-    image: ghcr.io/mastodon/mastodon:v4.3.9
+    image: ghcr.io/mastodon/mastodon:v4.6.3@sha256:3de04cfa829e7378178c1d33ee5bb53152e1e44dc35a7033024f611d84b4e5c8
     profiles: ["mastodon", "fediverse"]
     command:
       ["bash", "-c", "bundle exec rails db:prepare && bundle exec rails s -p 3000 -b 0.0.0.0"]
@@ -84,7 +84,7 @@ services:
       retries: 30
 
   mastodon-caddy:
-    image: caddy:2-alpine
+    image: caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
     profiles: ["mastodon", "fediverse"]
     volumes:
       - ./mastodon/Caddyfile:/etc/caddy/Caddyfile:ro
@@ -105,7 +105,7 @@ services:
       retries: 30
 
   mastodon-sidekiq:
-    image: ghcr.io/mastodon/mastodon:v4.3.9
+    image: ghcr.io/mastodon/mastodon:v4.6.3@sha256:3de04cfa829e7378178c1d33ee5bb53152e1e44dc35a7033024f611d84b4e5c8
     profiles: ["mastodon", "fediverse"]
     command: ["bash", "-c", "bundle exec sidekiq -q ingress -q default -q push"]
     env_file: mastodon/mastodon.env
@@ -114,21 +114,21 @@ services:
       mastodon-web-backend: { condition: service_healthy }
 
   misskey-db:
-    image: postgres:15-alpine
+    image: postgres:18.4-alpine3.24@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
     profiles: ["misskey", "fediverse"]
     environment:
       POSTGRES_DB: misskey
       POSTGRES_USER: misskey
       POSTGRES_PASSWORD: misskey
     volumes:
-      - misskey-postgres:/var/lib/postgresql/data
+      - misskey-postgres:/var/lib/postgresql
     networks: [fediverse]
     healthcheck:
       <<: *postgres-healthcheck
       test: ["CMD", "pg_isready", "-U", "misskey"]
 
   misskey-redis:
-    image: redis:7-alpine
+    image: redis:8.8.0-alpine3.23@sha256:9d317178eceac8454a2284a9e6df2466b93c745529947f0cd42a0fa9609d7005
     profiles: ["misskey", "fediverse"]
     volumes:
       - misskey-redis:/data
@@ -138,7 +138,7 @@ services:
       test: ["CMD", "redis-cli", "ping"]
 
   misskey-meilisearch:
-    image: getmeili/meilisearch:v1.3.4
+    image: getmeili/meilisearch:v1.49.0@sha256:bdc7d7e7939911c40d88d6bcd01f9c72c81f7293135916d48bce241569f721bd
     profiles: ["misskey", "fediverse"]
     environment:
       MEILI_ENV: development
@@ -146,10 +146,14 @@ services:
     volumes:
       - misskey-meilisearch:/meili_data
     networks: [fediverse]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://127.0.0.1:7700/health"]
+      interval: 5s
+      retries: 30
+      timeout: 5s
 
   misskey-web:
-    build:
-      context: ${ACTIVITYPLUG_SOFTWARE_ROOT:-../../../activityplug-docs}/misskey
+    image: misskey/misskey:2026.6.0@sha256:d3c2bf280aa930ea266e65fef4b0611ff5a2813041797c9be48ce0e8587c8c8c
     profiles: ["misskey", "fediverse"]
     command: ["pnpm", "run", "migrateandstart"]
     volumes:
@@ -162,7 +166,7 @@ services:
     depends_on:
       misskey-db: { condition: service_healthy }
       misskey-redis: { condition: service_healthy }
-      misskey-meilisearch: { condition: service_started }
+      misskey-meilisearch: { condition: service_healthy }
     healthcheck:
       test:
         [
@@ -174,14 +178,14 @@ services:
       start_period: 300s
 
   pleroma-db:
-    image: postgres:15-alpine
+    image: postgres:18.4-alpine3.24@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
     profiles: ["pleroma", "fediverse"]
     environment:
       POSTGRES_DB: pleroma
       POSTGRES_USER: pleroma
       POSTGRES_PASSWORD: pleroma
     volumes:
-      - pleroma-postgres:/var/lib/postgresql/data
+      - pleroma-postgres:/var/lib/postgresql
     networks: [fediverse]
     healthcheck:
       <<: *postgres-healthcheck
@@ -189,7 +193,12 @@ services:
 
   pleroma-web:
     build:
-      context: ${ACTIVITYPLUG_SOFTWARE_ROOT:-../../../activityplug-docs}/pleroma
+      context: ../..
+      dockerfile: test/e2e/pleroma/Dockerfile
+      additional_contexts:
+        pleroma_source: "https://git.pleroma.social/pleroma/pleroma.git?tag=v2.10.2&checksum=cd8816eccec355b5ff1533dc75fc86e9927baf2b"
+      args:
+        SOURCE_REF: cd8816eccec355b5ff1533dc75fc86e9927baf2b
     profiles: ["pleroma", "fediverse"]
     environment:
       DOMAIN: pleroma.127.0.0.1.nip.io:43080
@@ -216,21 +225,21 @@ services:
       start_period: 120s
 
   hollo-db:
-    image: postgres:16-alpine
+    image: postgres:18.4-alpine3.24@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
     profiles: ["hollo", "fediverse"]
     environment:
       POSTGRES_DB: hollo
       POSTGRES_USER: hollo
       POSTGRES_PASSWORD: hollo
     volumes:
-      - hollo-postgres:/var/lib/postgresql/data
+      - hollo-postgres:/var/lib/postgresql
     networks: [fediverse]
     healthcheck:
       <<: *postgres-healthcheck
       test: ["CMD", "pg_isready", "-U", "hollo"]
 
   hollo-web:
-    image: ghcr.io/fedify-dev/hollo@sha256:93247b88f3b2d7ecac78806d0938772a6b6daea78a34fdf1dbe64d72129faa46
+    image: ghcr.io/fedify-dev/hollo:0.9.8@sha256:8a22dfdc9ec27856e087d49c1d21da2226674fff6560727b66fa9115f8553680
     profiles: ["hollo", "fediverse"]
     environment:
       DATABASE_URL: postgres://hollo:hollo@hollo-db:5432/hollo
@@ -256,21 +265,21 @@ services:
       start_period: 120s
 
   hackerspub-db:
-    image: postgres:16-alpine
+    image: postgres:18.4-alpine3.24@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
     profiles: ["hackerspub", "fediverse"]
     environment:
       POSTGRES_DB: hackerspub
       POSTGRES_USER: hackerspub
       POSTGRES_PASSWORD: hackerspub
     volumes:
-      - hackerspub-postgres:/var/lib/postgresql/data
+      - hackerspub-postgres:/var/lib/postgresql
     networks: [fediverse]
     healthcheck:
       <<: *postgres-healthcheck
       test: ["CMD", "pg_isready", "-U", "hackerspub"]
 
   hackerspub-redis:
-    image: redis:7-alpine
+    image: redis:8.8.0-alpine3.23@sha256:9d317178eceac8454a2284a9e6df2466b93c745529947f0cd42a0fa9609d7005
     profiles: ["hackerspub", "fediverse"]
     volumes:
       - hackerspub-redis:/data
@@ -280,16 +289,12 @@ services:
       test: ["CMD", "redis-cli", "ping"]
 
   hackerspub-web:
-    build:
-      context: ${ACTIVITYPLUG_SOFTWARE_ROOT:-../../../activityplug-docs}/hackerspub
-      dockerfile: Dockerfile
-      args:
-        GIT_COMMIT: activityplug-e2e
+    image: ghcr.io/hackers-pub/hackerspub:git-a24ec2e2191d3aaafc049f7279d16edad2c2b1a7@sha256:cf6481054f94cd929d1230ed1c619be771e4cb0fb0e863525ad9a3ddfe7b95b2
     command:
       [
         "sh",
         "-c",
-        'for i in $$(seq 1 60); do deno task migrate && break; if [ "$$i" = "60" ]; then exit 1; fi; sleep 2; done && export INSTANCE_ACTOR_KEY="$$(deno run --allow-read --allow-env scripts/keygen.ts)" && deno task start',
+        'for i in $$(seq 1 60); do mise run migrate && break; if [ "$$i" = "60" ]; then exit 1; fi; sleep 2; done && export INSTANCE_ACTOR_KEY="$$(mise run keygen)" && exec mise run prod:web',
       ]
     profiles: ["hackerspub", "fediverse"]
     env_file: hackerspub/hackerspub.env
@@ -302,7 +307,7 @@ services:
       hackerspub-db: { condition: service_healthy }
       hackerspub-redis: { condition: service_healthy }
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:8000/.well-known/nodeinfo || exit 1"]
+      test: ["CMD", "mise", "run", "prod:hc:web"]
       interval: 10s
       retries: 30
       start_period: 120s

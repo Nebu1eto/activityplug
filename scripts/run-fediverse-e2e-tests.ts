@@ -1,94 +1,349 @@
-import { spawn } from "node:child_process";
+import { spawn as nodeSpawn, type SpawnOptions } from "node:child_process";
+import { stat as nodeStat } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 
-const targets = process.env["ACTIVITYPLUG_FEDIVERSE_TARGETS"];
-const knownAdapters = new Set(["mastodon", "misskey", "pleroma", "hollo", "hackerspub"]);
-const strict = process.env["ACTIVITYPLUG_FEDIVERSE_E2E_REQUIRED"] === "1";
-const reprovisionPackageTargets =
-  process.env["ACTIVITYPLUG_FEDIVERSE_REPROVISION_PACKAGE_TARGETS"] !== "0";
-const requiredAdapters = parseRequiredAdapters(
-  process.env["ACTIVITYPLUG_FEDIVERSE_REQUIRED_ADAPTERS"],
-);
+import { z } from "zod";
 
-if (targets === undefined || targets.trim().length === 0) {
-  skipOrFail("ACTIVITYPLUG_FEDIVERSE_TARGETS is not set.", "Skipping Fediverse E2E tests.");
+import { type Spawn } from "./acquire-fediverse-sources.ts";
+import {
+  FEDIVERSE_TARGETS,
+  reportStageResult,
+  type FediverseProfile,
+  type FediverseTarget,
+  type StageResultReporter,
+} from "./fediverse-e2e-results.ts";
+
+export type { E2EStageResult } from "./fediverse-e2e-results.ts";
+
+export type { Spawn } from "./acquire-fediverse-sources.ts";
+
+interface RunnerDependencies {
+  readonly onResult?: StageResultReporter;
+  readonly spawn?: Spawn;
+  readonly stat?: (path: string) => Promise<{ readonly size: number }>;
 }
 
-const parsedTargets = parseTargets(targets);
-if (parsedTargets.length === 0) {
-  skipOrFail("ACTIVITYPLUG_FEDIVERSE_TARGETS is empty.", "Skipping Fediverse E2E tests.");
+const knownAdapters = new Set<FediverseTarget>(FEDIVERSE_TARGETS);
+const fediverseTargetSchema = z.enum(FEDIVERSE_TARGETS);
+const jsonArraySchema = z.array(z.unknown());
+const jsonRecordSchema = z.looseObject({});
+const nonEmptyStringSchema = z.string().min(1);
+const adapterFiles = {
+  mastodon: "packages/mastodon/src/e2e.test.ts",
+  misskey: "packages/misskey/src/e2e.test.ts",
+  pleroma: "packages/pleroma/src/e2e.test.ts",
+  hollo: "packages/hollo/src/e2e.test.ts",
+  hackerspub: "packages/hackerspub/src/e2e.test.ts",
+} satisfies Record<FediverseTarget, string>;
+
+interface ParsedTarget {
+  readonly adapter: FediverseTarget;
+  readonly serialized: string;
 }
-const invalidTarget = parsedTargets.find((target) => !knownAdapters.has(target.adapter));
-if (invalidTarget !== undefined) {
-  console.error(`Unknown Fediverse E2E adapter target: ${invalidTarget.adapter}`);
-  process.exit(1);
-}
-if (strict) {
-  const missingAdapters = requiredAdapters.filter(
-    (adapter) => !parsedTargets.some((target) => target.adapter === adapter),
-  );
-  if (missingAdapters.length > 0) {
-    console.error(
-      `ACTIVITYPLUG_FEDIVERSE_TARGETS is missing required strict targets: ${missingAdapters.join(
-        ", ",
-      )}.`,
+
+export async function runFediverseE2ETests(
+  env: NodeJS.ProcessEnv = process.env,
+  dependencies: RunnerDependencies = {},
+): Promise<void> {
+  const strict = env["ACTIVITYPLUG_FEDIVERSE_E2E_REQUIRED"] === "1";
+  const rawTargets = env["ACTIVITYPLUG_FEDIVERSE_TARGETS"];
+  if (rawTargets === undefined || rawTargets.trim().length === 0) {
+    if (strict) throw new Error("ACTIVITYPLUG_FEDIVERSE_TARGETS is required in strict mode.");
+    console.warn(
+      "ACTIVITYPLUG_FEDIVERSE_TARGETS is not set. Skipping Fediverse E2E tests. " +
+        "Set ACTIVITYPLUG_FEDIVERSE_E2E_REQUIRED=1 to require execution.",
     );
-    process.exit(1);
+    return;
+  }
+
+  const spawn = dependencies.spawn ?? nodeSpawn;
+  const stat = dependencies.stat ?? nodeStat;
+  const onResult = dependencies.onResult ?? reportStageResult;
+  const requiredAdapters = parseRequiredAdapters(env["ACTIVITYPLUG_FEDIVERSE_REQUIRED_ADAPTERS"]);
+  let parsedTargets: readonly ParsedTarget[];
+  try {
+    parsedTargets = parseTargets(rawTargets);
+  } catch (error) {
+    for (const adapter of requiredAdapters) {
+      onResult({
+        target: resultTargetFor(adapter, env),
+        stage: "provision",
+        status: "failed",
+        external: true,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    throw error;
+  }
+  if (parsedTargets.length === 0) {
+    throw new Error("ACTIVITYPLUG_FEDIVERSE_TARGETS must include at least one target.");
+  }
+  if (strict) {
+    const missing = requiredAdapters.filter(
+      (adapter) => !parsedTargets.some((target) => target.adapter === adapter),
+    );
+    if (missing.length > 0) {
+      throw new Error(`ACTIVITYPLUG_FEDIVERSE_TARGETS is missing: ${missing.join(", ")}.`);
+    }
+  }
+
+  const reprovision = env["ACTIVITYPLUG_FEDIVERSE_REPROVISION_PACKAGE_TARGETS"] !== "0";
+  const selected = new Map<FediverseTarget, string>();
+  for (const target of parsedTargets) {
+    if (!selected.has(target.adapter)) selected.set(target.adapter, `[${target.serialized}]`);
+  }
+
+  for (const [adapter, initialTarget] of selected) {
+    const resultTarget = resultTargetFor(adapter, env);
+    let targetOverride = initialTarget;
+    await runVitest(
+      resultTarget,
+      "server-test",
+      "packages/server/src/e2e.test.ts",
+      targetOverride,
+      env,
+      spawn,
+      stat,
+      onResult,
+    );
+    if (reprovision) {
+      targetOverride = `[${await runProvision(adapter, resultTarget, env, spawn, onResult)}]`;
+    } else {
+      onResult({
+        target: resultTarget,
+        stage: "provision",
+        status: "passed",
+        external: true,
+        message: "Using the supplied provisioned target.",
+      });
+    }
+    await runVitest(
+      resultTarget,
+      "adapter-test",
+      adapterFiles[adapter],
+      targetOverride,
+      env,
+      spawn,
+      stat,
+      onResult,
+    );
   }
 }
 
-const adapterFiles = new Map([
-  ["mastodon", "packages/mastodon/src/e2e.test.ts"],
-  ["misskey", "packages/misskey/src/e2e.test.ts"],
-  ["pleroma", "packages/pleroma/src/e2e.test.ts"],
-  ["hollo", "packages/hollo/src/e2e.test.ts"],
-  ["hackerspub", "packages/hackerspub/src/e2e.test.ts"],
-]);
-
-const selectedAdapters = [...new Set(parsedTargets.map((target) => target.adapter))];
-
-await runVitest("packages/server/src/e2e.test.ts");
-for (const adapter of selectedAdapters) {
-  const file = adapterFiles.get(adapter);
-  if (file === undefined) fail(`Unknown Fediverse E2E adapter file: ${adapter}.`);
-  const packageTargets = reprovisionPackageTargets ? `[${await runProvision(adapter)}]` : undefined;
-  await runVitest(file, packageTargets);
-}
-
-function parseTargets(value: string): ReadonlyArray<{ readonly adapter: string }> {
+async function runVitest(
+  target: FediverseProfile,
+  stage: "server-test" | "adapter-test",
+  file: string,
+  targetOverride: string,
+  env: NodeJS.ProcessEnv,
+  spawn: Spawn,
+  stat: (path: string) => Promise<{ readonly size: number }>,
+  onResult: StageResultReporter,
+): Promise<void> {
   try {
-    const parsed = JSON.parse(value) as unknown;
-    if (!Array.isArray(parsed)) {
-      throw new TypeError("target payload is not an array");
+    let details: { readonly size: number };
+    try {
+      details = await stat(file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new Error(`Requested Fediverse E2E test file does not exist: ${file}.`, {
+          cause: error,
+        });
+      }
+      throw error;
     }
-    return parsed.map((target) => {
-      if (typeof target !== "object" || target === null || Array.isArray(target)) {
-        throw new TypeError("target entry is not an object");
-      }
-      const record = target as Record<string, unknown>;
-      const adapter = record["adapter"];
-      if (typeof adapter !== "string" || adapter.length === 0) {
-        throw new TypeError("target adapter is missing");
-      }
-      validateTargetRecord(adapter, record);
-      return { adapter };
+    if (details.size === 0) {
+      throw new Error(`Requested Fediverse E2E test file is empty: ${file}.`);
+    }
+    await runProcess(spawn, "pnpm", ["exec", "vitest", "run", "--fileParallelism=false", file], {
+      env: {
+        ...env,
+        ACTIVITYPLUG_FEDIVERSE_E2E: "1",
+        ACTIVITYPLUG_FEDIVERSE_TARGETS: targetOverride,
+      },
+      stdio: ["ignore", process.stderr, process.stderr],
+    });
+    onResult({
+      target,
+      stage,
+      status: "passed",
+      external: false,
+      message: `${file} passed.`,
     });
   } catch (error) {
-    return fail(
-      `ACTIVITYPLUG_FEDIVERSE_TARGETS must be a JSON array of target objects: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
+    onResult({
+      target,
+      stage,
+      status: "failed",
+      external: false,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
   }
 }
 
-function validateTargetRecord(adapter: string, target: Record<string, unknown>): void {
-  const required = ["origin"] as const;
-  for (const field of required) {
-    if (typeof target[field] !== "string" || target[field].length === 0) {
-      throw new TypeError(`${adapter} target is missing ${field}`);
+async function runProvision(
+  adapter: FediverseTarget,
+  resultTarget: FediverseProfile,
+  env: NodeJS.ProcessEnv,
+  spawn: Spawn,
+  onResult: StageResultReporter,
+): Promise<string> {
+  try {
+    const target = await runLastOutputLine(spawn, "bash", [`test/e2e/provision.${adapter}.sh`], {
+      env,
+      stdio: ["ignore", "pipe", process.stderr],
+    });
+    if (target === undefined) {
+      throw new Error(`Fediverse E2E provision did not emit a target for ${adapter}.`);
     }
+    try {
+      const parsed = JSON.parse(target) as unknown;
+      const parsedRecord = jsonRecordSchema.safeParse(parsed);
+      if (!parsedRecord.success) {
+        throw new TypeError("target is not an object");
+      }
+      validateTargetRecord(adapter, parsedRecord.data);
+    } catch (error) {
+      throw new Error(
+        `Fediverse E2E provision emitted invalid JSON for ${adapter}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        { cause: error },
+      );
+    }
+    onResult({
+      target: resultTarget,
+      stage: "provision",
+      status: "passed",
+      external: true,
+      message: `Provisioned ${adapter}.`,
+    });
+    return target;
+  } catch (error) {
+    onResult({
+      target: resultTarget,
+      stage: "provision",
+      status: "failed",
+      external: true,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
   }
-  const token = typeof target["token"] === "string" && target["token"].length > 0;
+}
+
+function runProcess(
+  spawn: Spawn,
+  command: string,
+  args: readonly string[],
+  options: SpawnOptions,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, options);
+    let settled = false;
+    const fail = (error: Error): void => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    child.once("error", fail);
+    child.once("close", (code, signal) => {
+      if (settled) return;
+      settled = true;
+      if (signal !== null) reject(new Error(`${command} exited from signal ${signal}.`));
+      else if (code !== 0) reject(new Error(`${command} exited with code ${code ?? 1}.`));
+      else resolve();
+    });
+  });
+}
+
+const MAX_PROVISION_LINE_BYTES = 1024 * 1024;
+
+function runLastOutputLine(
+  spawn: Spawn,
+  command: string,
+  args: readonly string[],
+  options: SpawnOptions,
+): Promise<string | undefined> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, options);
+    let pending = "";
+    let lastLine: string | undefined;
+    let settled = false;
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      if (settled) return;
+      pending += chunk;
+      const lines = pending.split(/\r?\n/);
+      pending = lines.pop() ?? "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.length > 0) lastLine = trimmed;
+      }
+      if (Buffer.byteLength(pending) > MAX_PROVISION_LINE_BYTES) {
+        settled = true;
+        reject(new Error("Fediverse E2E provision emitted an oversized target line."));
+      }
+    });
+    const fail = (error: Error): void => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    child.once("error", fail);
+    child.once("close", (code, signal) => {
+      if (settled) return;
+      settled = true;
+      const trailing = pending.trim();
+      if (trailing.length > 0) lastLine = trailing;
+      if (signal !== null) reject(new Error(`${command} exited from signal ${signal}.`));
+      else if (code !== 0) reject(new Error(`${command} exited with code ${code ?? 1}.`));
+      else resolve(lastLine);
+    });
+  });
+}
+
+function parseTargets(value: string): readonly ParsedTarget[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch (error) {
+    throw new TypeError(
+      `ACTIVITYPLUG_FEDIVERSE_TARGETS must be JSON: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      { cause: error },
+    );
+  }
+  const parsedArray = jsonArraySchema.safeParse(parsed);
+  if (!parsedArray.success) throw new TypeError("Fediverse target payload must be an array.");
+  return parsedArray.data.map((target) => {
+    const parsedRecord = jsonRecordSchema.safeParse(target);
+    if (!parsedRecord.success) {
+      throw new TypeError("Fediverse target entry must be an object.");
+    }
+    const record = parsedRecord.data;
+    const adapter = record["adapter"];
+    if (typeof adapter !== "string" || !fediverseTargetSchema.safeParse(adapter).success) {
+      throw new TypeError(`Unknown Fediverse E2E adapter target: ${String(adapter)}`);
+    }
+    validateTargetRecord(adapter as FediverseTarget, record);
+    return { adapter: adapter as FediverseTarget, serialized: JSON.stringify(record) };
+  });
+}
+
+function isNonEmptyString(value: unknown): boolean {
+  return nonEmptyStringSchema.safeParse(value).success;
+}
+
+function validateTargetRecord(adapter: FediverseTarget, target: Record<string, unknown>): void {
+  if (!isNonEmptyString(target["origin"])) {
+    throw new TypeError(`${adapter} target is missing origin`);
+  }
+  if (target["adapter"] !== adapter) {
+    throw new TypeError(`${adapter} target emitted a mismatched adapter`);
+  }
+  const token = isNonEmptyString(target["token"]);
   if (!token) return;
   for (const field of [
     "accountHandle",
@@ -99,147 +354,59 @@ function validateTargetRecord(adapter: string, target: Record<string, unknown>):
     "notificationType",
     "notificationAccountRawId",
   ]) {
-    if (typeof target[field] !== "string" || target[field].length === 0) {
+    if (!isNonEmptyString(target[field])) {
       throw new TypeError(`${adapter} target is missing ${field}`);
     }
   }
-  if (
-    (adapter === "mastodon" || adapter === "pleroma") &&
-    (typeof target["notificationClearRawId"] !== "string" ||
-      target["notificationClearRawId"].length === 0 ||
-      typeof target["notificationGraphqlClearRawId"] !== "string" ||
-      target["notificationGraphqlClearRawId"].length === 0 ||
-      typeof target["notificationGraphqlDismissRawId"] !== "string" ||
-      target["notificationGraphqlDismissRawId"].length === 0)
-  ) {
-    throw new TypeError(`${adapter} target is missing notification destructive fixtures`);
+  if (adapter === "mastodon" || adapter === "pleroma") {
+    for (const field of [
+      "notificationClearRawId",
+      "notificationGraphqlClearRawId",
+      "notificationGraphqlDismissRawId",
+    ]) {
+      if (!isNonEmptyString(target[field])) {
+        throw new TypeError(`${adapter} target is missing ${field}`);
+      }
+    }
   }
-  if (
-    adapter === "mastodon" ||
-    adapter === "misskey" ||
-    adapter === "pleroma" ||
-    adapter === "hollo"
-  ) {
+  if (adapter !== "hackerspub") {
     for (const field of [
       "followRequestHttpAcceptRawId",
       "followRequestGraphqlAcceptRawId",
       "followRequestHttpRejectRawId",
       "followRequestGraphqlRejectRawId",
     ]) {
-      if (typeof target[field] !== "string" || target[field].length === 0) {
+      if (!isNonEmptyString(target[field])) {
         throw new TypeError(`${adapter} target is missing ${field}`);
       }
     }
   }
 }
 
-function parseRequiredAdapters(value: string | undefined): readonly string[] {
+function resultTargetFor(adapter: FediverseTarget, env: NodeJS.ProcessEnv): FediverseProfile {
+  return env["ACTIVITYPLUG_FEDIVERSE_PROFILE"] === "mastodon-minimum" && adapter === "mastodon"
+    ? "mastodon-minimum"
+    : adapter;
+}
+
+function parseRequiredAdapters(value: string | undefined): readonly FediverseTarget[] {
   if (value === undefined || value.trim().length === 0) return [...knownAdapters];
   const adapters = value
     .split(",")
     .map((adapter) => adapter.trim())
-    .filter((adapter) => adapter.length > 0);
-  if (adapters.length === 0) {
-    fail("ACTIVITYPLUG_FEDIVERSE_REQUIRED_ADAPTERS must include at least one adapter.");
+    .filter(Boolean);
+  if (adapters.length === 0) throw new TypeError("At least one required adapter is needed.");
+  for (const adapter of adapters) {
+    if (!fediverseTargetSchema.safeParse(adapter).success) {
+      throw new TypeError(`Unknown required Fediverse E2E adapter: ${adapter}.`);
+    }
   }
-  const unknownAdapter = adapters.find((adapter) => !knownAdapters.has(adapter));
-  if (unknownAdapter !== undefined) {
-    fail(`Unknown required Fediverse E2E adapter: ${unknownAdapter}.`);
-  }
-  return adapters;
+  return adapters as FediverseTarget[];
 }
 
-function runVitest(file: string, targetOverride?: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(
-      "pnpm",
-      ["exec", "vitest", "run", "--passWithNoTests", "--fileParallelism=false", file],
-      {
-        env: {
-          ...process.env,
-          ACTIVITYPLUG_FEDIVERSE_E2E: "1",
-          ...(targetOverride === undefined
-            ? {}
-            : { ACTIVITYPLUG_FEDIVERSE_TARGETS: targetOverride }),
-        },
-        stdio: "inherit",
-      },
-    );
-    child.on("exit", (code, signal) => {
-      if (signal !== null) {
-        reject(new Error(`Fediverse E2E test process exited from signal ${signal}.`));
-        return;
-      }
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      reject(new Error(`Fediverse E2E test process exited with code ${code ?? 1}.`));
-    });
-  }).catch((error: unknown) => {
+if (process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  runFediverseE2ETests().catch((error: unknown) => {
     console.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
+    process.exitCode = 1;
   });
-}
-
-function runProvision(adapter: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("bash", [`test/e2e/provision.${adapter}.sh`], {
-      env: process.env,
-      stdio: ["ignore", "pipe", "inherit"],
-    });
-    let stdout = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      stdout += chunk;
-    });
-    child.on("exit", (code, signal) => {
-      if (signal !== null) {
-        reject(new Error(`Fediverse E2E provision process exited from signal ${signal}.`));
-        return;
-      }
-      if (code !== 0) {
-        reject(new Error(`Fediverse E2E provision process exited with code ${code ?? 1}.`));
-        return;
-      }
-      const target = stdout
-        .split("\n")
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0)
-        .at(-1);
-      if (target === undefined) {
-        reject(new Error(`Fediverse E2E provision did not emit a target for ${adapter}.`));
-        return;
-      }
-      try {
-        JSON.parse(target);
-      } catch (error) {
-        reject(
-          new Error(
-            `Fediverse E2E provision emitted invalid JSON for ${adapter}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          ),
-        );
-        return;
-      }
-      resolve(target);
-    });
-  }).catch((error: unknown) => {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
-  });
-}
-
-function fail(message: string): never {
-  console.error(message);
-  process.exit(1);
-}
-
-function skipOrFail(reason: string, skipMessage: string): never {
-  if (strict) fail(`${reason} Fediverse E2E targets are required.`);
-  console.warn(
-    `${reason} ${skipMessage} Set ACTIVITYPLUG_FEDIVERSE_E2E_REQUIRED=1 to require execution.`,
-  );
-  process.exit(0);
 }

@@ -1,23 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-COMPOSE="docker compose -f test/e2e/docker-compose.yml --profile mastodon"
+COMPOSE=(docker compose -f test/e2e/docker-compose.yml)
+if [[ -n "${ACTIVITYPLUG_MASTODON_COMPOSE_OVERRIDE:-}" ]]; then
+  COMPOSE+=(-f "$ACTIVITYPLUG_MASTODON_COMPOSE_OVERRIDE")
+fi
+COMPOSE+=(--profile mastodon)
 
-$COMPOSE exec -T mastodon-web-backend bin/tootctl accounts create \
+"${COMPOSE[@]}" exec -T mastodon-web-backend bin/tootctl accounts create \
   activityplug --email=activityplug@gmail.com --confirmed --approve >/dev/null 2>&1 || true
-$COMPOSE exec -T mastodon-web-backend bin/tootctl accounts create \
+"${COMPOSE[@]}" exec -T mastodon-web-backend bin/tootctl accounts create \
   activityplug_target --email=activityplug-target@gmail.com --confirmed --approve >/dev/null 2>&1 || true
-$COMPOSE exec -T mastodon-web-backend bin/tootctl accounts create \
+"${COMPOSE[@]}" exec -T mastodon-web-backend bin/tootctl accounts create \
   activityplug_notifier --email=activityplug-notifier@gmail.com --confirmed --approve >/dev/null 2>&1 || true
-$COMPOSE exec -T mastodon-web-backend bin/tootctl accounts create \
+"${COMPOSE[@]}" exec -T mastodon-web-backend bin/tootctl accounts create \
   activityplug_clearer --email=activityplug-clearer@gmail.com --confirmed --approve >/dev/null 2>&1 || true
-$COMPOSE exec -T mastodon-web-backend bin/tootctl accounts create \
+"${COMPOSE[@]}" exec -T mastodon-web-backend bin/tootctl accounts create \
   activityplug_clear_graphql --email=activityplug-clear-graphql@gmail.com --confirmed --approve >/dev/null 2>&1 || true
 for account in activityplug_dismiss_graphql activityplug_accept_http activityplug_accept_graphql activityplug_reject_http activityplug_reject_graphql; do
-  $COMPOSE exec -T mastodon-web-backend bin/tootctl accounts create \
+  "${COMPOSE[@]}" exec -T mastodon-web-backend bin/tootctl accounts create \
     "$account" --email="$account@gmail.com" --confirmed --approve >/dev/null 2>&1 || true
 done
-$COMPOSE exec -T mastodon-web-backend bin/rails runner - <<'RUBY' >/dev/null 2>&1
+"${COMPOSE[@]}" exec -T mastodon-web-backend bin/rails runner - <<'RUBY' >/dev/null 2>&1
 account = Account.find_local('activityplug')
 abort 'failed to create local activityplug account' if account.nil?
 account.update!(discoverable: true, indexable: true)
@@ -105,7 +109,7 @@ target_token.token = SecureRandom.hex(32) if target_token.token.blank?
 target_token.save!
 RUBY
 TOKEN=$(
-  $COMPOSE exec -T mastodon-web-backend bin/rails runner - <<'RUBY'
+  "${COMPOSE[@]}" exec -T mastodon-web-backend bin/rails runner - <<'RUBY'
 account = Account.find_local('activityplug')
 abort 'failed to find local activityplug account' if account.nil?
 application = Doorkeeper::Application.find_by!(name: 'activityplug-e2e')
@@ -120,7 +124,7 @@ RUBY
 )
 TOKEN=$(printf '%s\n' "$TOKEN" | grep -v '^W, \[')
 POST_SEARCH_QUERY=$(
-  $COMPOSE exec -T mastodon-web-backend bin/rails runner - <<'RUBY'
+  "${COMPOSE[@]}" exec -T mastodon-web-backend bin/rails runner - <<'RUBY'
 account = Account.find_local('activityplug')
 abort 'failed to find local activityplug account' if account.nil?
 status = account.statuses.order(created_at: :desc).first
@@ -130,7 +134,7 @@ RUBY
 )
 POST_SEARCH_QUERY=$(printf '%s\n' "$POST_SEARCH_QUERY" | grep -v '^W, \[')
 POST_SEARCH_RAW_ID=$(
-  $COMPOSE exec -T mastodon-web-backend bin/rails runner - <<'RUBY'
+  "${COMPOSE[@]}" exec -T mastodon-web-backend bin/rails runner - <<'RUBY'
 account = Account.find_local('activityplug')
 abort 'failed to find local activityplug account' if account.nil?
 status = account.statuses.order(created_at: :desc).first
@@ -139,7 +143,7 @@ puts status.id
 RUBY
 )
 POST_SEARCH_RAW_ID=$(printf '%s\n' "$POST_SEARCH_RAW_ID" | grep -v '^W, \[')
-$COMPOSE exec -T mastodon-web-backend bin/tootctl search deploy >/dev/null 2>&1
+"${COMPOSE[@]}" exec -T mastodon-web-backend bin/tootctl search deploy >/dev/null 2>&1
 for _ in $(seq 1 45); do
   if curl -skG "https://mastodon.127.0.0.1.nip.io:41080/api/v2/search" \
     -H "Authorization: Bearer $TOKEN" \
@@ -194,7 +198,7 @@ if [[ -z "$NOTIFICATION_GRAPHQL_CLEAR_RAW_ID" ]]; then
   exit 1
 fi
 FOLLOW_REQUEST_IDS=$(
-  $COMPOSE exec -T mastodon-web-backend bin/rails runner - <<'RUBY'
+  "${COMPOSE[@]}" exec -T mastodon-web-backend bin/rails runner - <<'RUBY'
 %w[
   activityplug_accept_http
   activityplug_accept_graphql
@@ -213,7 +217,7 @@ FOLLOW_REQUEST_GRAPHQL_ACCEPT_RAW_ID=$(printf '%s\n' "$FOLLOW_REQUEST_IDS" | sed
 FOLLOW_REQUEST_HTTP_REJECT_RAW_ID=$(printf '%s\n' "$FOLLOW_REQUEST_IDS" | sed -n '3p')
 FOLLOW_REQUEST_GRAPHQL_REJECT_RAW_ID=$(printf '%s\n' "$FOLLOW_REQUEST_IDS" | sed -n '4p')
 POLL_IDS=$(
-  $COMPOSE exec -T mastodon-web-backend bin/rails runner - <<'RUBY'
+  "${COMPOSE[@]}" exec -T mastodon-web-backend bin/rails runner - <<'RUBY'
 target = Account.find_local('activityplug_target')
 abort 'failed to find local activityplug_target account' if target.nil?
 poll_ids = target.statuses.where.not(poll_id: nil).order(created_at: :desc).limit(3).map(&:poll_id)
@@ -226,7 +230,7 @@ POLL_ID=$(printf '%s\n' "$POLL_IDS" | sed -n '1p')
 HTTP_POLL_ID=$(printf '%s\n' "$POLL_IDS" | sed -n '2p')
 GRAPHQL_POLL_ID=$(printf '%s\n' "$POLL_IDS" | sed -n '3p')
 
-$COMPOSE exec -T mastodon-web-backend bin/rails runner - <<'RUBY' >/dev/null 2>&1
+"${COMPOSE[@]}" exec -T mastodon-web-backend bin/rails runner - <<'RUBY' >/dev/null 2>&1
 account = Account.find_local('activityplug')
 target = Account.find_local('activityplug_target')
 abort 'failed to find local activityplug account' if account.nil?

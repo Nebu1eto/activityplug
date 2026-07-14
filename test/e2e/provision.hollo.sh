@@ -148,9 +148,20 @@ values
     false,
     now(),
     null
+  ),
+  (
+    'http://hollo.127.0.0.1.nip.io:44080/follows/activityplug_target',
+    '00000000-0000-4000-8000-000000004411',
+    '00000000-0000-4000-8000-000000004401',
+    true,
+    false,
+    now(),
+    now()
   )
 on conflict (following_id, follower_id) do update set
-  approved = null,
+  shares = excluded.shares,
+  notify = excluded.notify,
+  approved = excluded.approved,
   created = excluded.created;
 
 with seed as (

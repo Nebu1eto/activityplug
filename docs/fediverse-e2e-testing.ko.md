@@ -2,8 +2,8 @@ Fediverse E2E 테스트
 ====================
 
 ActivityPlug는 실제 Fediverse 서버를 대상으로 하는 로컬 E2E 테스트에 Docker
-Compose를 사용합니다. 대상 매트릭스는 Mastodon, Misskey, Pleroma, Hollo,
-HackersPub입니다.
+Compose를 사용합니다. 매트릭스는 Mastodon stable 및 minimum profile과
+Misskey, Pleroma, Hollo, HackersPub를 포함합니다.
 
 각 대상 서버는 격리된 Docker Compose profile에서 실행됩니다. Assertion은 서버
 패키지와 어댑터 패키지에 나누어 둡니다.
@@ -20,14 +20,29 @@ HackersPub입니다.
  -  공통 파싱과 baseline assertion은 `packages/e2e-fixtures`에 둡니다.
  -  Compose 파일, 서버 설정, provision 스크립트는 `test/e2e/` 아래에 둡니다.
 
-Compose 파일은 Misskey, Pleroma, HackersPub를 인접한 소프트웨어 checkout에서
-빌드합니다. 기본 경로는 `../activityplug-docs`입니다. checkout이 다른 위치에
-있으면 `ACTIVITYPLUG_SOFTWARE_ROOT`를 설정합니다. 검증한 source revision은
-다음과 같습니다.
+matrix runner는 각 업스트림의 정확한 ref를
+`${XDG_CACHE_HOME:-$HOME/.cache}/activityplug/fediverse-sources/<software>/<commit>`에
+가져옵니다. 이 cache는 repository 밖에 있습니다. acquisition script는 가져온
+ref를 resolve하고 `test/e2e/versions.env`의 commit과 비교한 뒤 detached
+checkout을 수행하며, build 전에 `git rev-parse HEAD`를 검증합니다. Pleroma는 이
+검증된 checkout에서 최신 CA certificate와 고정된 Hex 및 Rebar version으로
+빌드됩니다. 빌드가 Pleroma application source를 변경하면 실패합니다.
+acquisition은 ignored file도 제거하므로 오래된 build product가 검증된 build
+context에 들어갈 수 없습니다. 두 Mastodon profile은 서로 다른 ref와 commit을
+각각 검증합니다.
 
- -  Misskey: `0f5da633284ffe20c3ed59bb0a5c5866071baac3`.
- -  Pleroma: `683ab39160a2ff95d151887a89217bd1d4a6dcf5`.
- -  HackersPub: `ee596993c26ead89c70f6b8b601a8e8f8d829cb7`.
+Pleroma source provenance를 직접 확인하려면 다음 명령을 실행합니다.
+
+~~~~ sh
+. test/e2e/versions.env
+source_dir="$(node --experimental-strip-types scripts/acquire-fediverse-sources.ts \
+  --software pleroma \
+  --repository https://git.pleroma.social/pleroma/pleroma.git \
+  --ref "v$PLEROMA_STABLE_VERSION" \
+  --commit "$PLEROMA_STABLE_COMMIT")"
+git -C "$source_dir" rev-parse HEAD
+git -C "$source_dir" status --porcelain
+~~~~
 
 Docker Desktop 메모리가 작을 때는 대상을 하나씩 실행합니다. 4 GB 메모리 제한은
 순차 실행에 충분하며, 전체 매트릭스를 동시에 실행할 필요는 없습니다. 다섯 대상을
@@ -38,6 +53,23 @@ Docker Desktop 메모리가 작을 때는 대상을 하나씩 실행합니다. 4
 ~~~~ sh
 bash test/e2e/run-fediverse-matrix.sh
 ~~~~
+
+runner는 각 profile을 시작하기 전과 종료할 때 container와 named data volume을
+제거합니다. 같은 재현 가능한 reset을 수동으로 수행하려면 다음 명령을 실행합니다.
+
+~~~~ sh
+docker compose -f test/e2e/docker-compose.yml --profile '*' \
+  down --volumes --remove-orphans
+~~~~
+
+각 stage는 `target`, `stage`, `status`, `external`, `message`가 있는 JSON
+object를 standard output에 NDJSON으로 한 개 기록합니다. command, Compose,
+test log는 standard error로 보내므로 standard output을 바로 parse할 수 있습니다.
+stage는 `checkout`, `build`, `provision`,
+`server-test`, `adapter-test`입니다. Checkout, 업스트림 build 또는 startup,
+provisioning 실패는 `external: true`입니다. ActivityPlug server와 adapter test
+실패는 `external: false`입니다. 특히 Pleroma Hex 또는 Rebar bootstrap 실패는
+`adapter-test`가 아니라 실패한 `build` stage입니다.
 
 대상 하나를 시작하고 provision합니다.
 
@@ -65,12 +97,22 @@ runner는 순차 target마다 `ACTIVITYPLUG_FEDIVERSE_REQUIRED_ADAPTERS`를
 설정하므로, 모든 서버를 동시에 띄우지 않고도 같은 strict check를 사용할 수
 있습니다.
 
-matrix runner는 서버 E2E 테스트 전에 대상을 provision합니다. 같은 대상을 어댑터
-패키지 E2E 테스트 전에 다시 provision하는 동작은 `pnpm test:e2e`의 기본값입니다.
-target payload가 각 phase마다 독립된 fixture를 이미 제공할 때만
-`ACTIVITYPLUG_FEDIVERSE_REPROVISION_PACKAGE_TARGETS=0`을 설정합니다. 이렇게 하면
-서버 테스트의 파괴적 알림 및 게시물 동작이 패키지 테스트에 필요한 fixture를
-제거하지 않습니다.
+matrix runner는 volume을 reset한 뒤 각 target을 provision하고, server suite가
+파괴적 fixture를 사용하므로 adapter suite 전에 다시 provision합니다.
+`pnpm test:e2e`를 직접 실행해도 기본적으로 adapter suite 전에 다시
+provision합니다. 전달한 payload가 이미 provision된 경우에만
+`ACTIVITYPLUG_FEDIVERSE_REPROVISION_PACKAGE_TARGETS=0`을 설정합니다. 요청한
+test file이 없거나 비어 있으면 Vitest를 시작하기 전에 실패하며, named suite에는
+`--passWithNoTests`를 사용하지 않습니다.
+
+skip을 허용하지 않을 때는 strict mode를 사용합니다.
+
+~~~~ sh
+ACTIVITYPLUG_FEDIVERSE_E2E_REQUIRED=1 \
+ACTIVITYPLUG_FEDIVERSE_REQUIRED_ADAPTERS=mastodon \
+ACTIVITYPLUG_FEDIVERSE_TARGETS="[$target]" \
+pnpm test:e2e
+~~~~
 
 baseline은 인스턴스 프로필 읽기, 토큰이 있을 때의 viewer 검증, 계정 조회, 계정
 게시물 목록, 공개 타임라인 읽기, 매핑된 경우의 local 타임라인 읽기, 매핑된

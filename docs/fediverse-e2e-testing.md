@@ -2,8 +2,8 @@ Fediverse E2E testing
 =====================
 
 ActivityPlug uses Docker Compose for local E2E tests against real Fediverse
-servers. The target matrix is Mastodon, Misskey, Pleroma, Hollo, and
-HackersPub.
+servers. The matrix covers the Mastodon stable and minimum profiles plus
+Misskey, Pleroma, Hollo, and HackersPub.
 
 Each target server runs in an isolated Docker Compose profile. Assertions are
 split between the server package and the adapter packages:
@@ -20,14 +20,29 @@ split between the server package and the adapter packages:
  -  Shared parsing and baseline assertions live in `packages/e2e-fixtures`.
  -  Compose files, server configs, and provision scripts live under `test/e2e/`.
 
-The Compose file builds Misskey, Pleroma, and HackersPub from an adjacent
-software checkout. By default, that checkout is `../activityplug-docs`.
-Set `ACTIVITYPLUG_SOFTWARE_ROOT` when the checkout is in a different
-location. The verified source revisions are:
+The matrix runner fetches each exact upstream ref into
+`${XDG_CACHE_HOME:-$HOME/.cache}/activityplug/fediverse-sources/<software>/<commit>`.
+This cache is outside the repository. The acquisition script resolves the
+fetched ref, compares it with the commit in `test/e2e/versions.env`, performs a
+detached checkout, and verifies `git rev-parse HEAD` before a build. Pleroma is
+built from that verified checkout with current CA certificates and the pinned
+Hex and Rebar versions. The build fails if it changes Pleroma application
+source. Acquisition also removes ignored files, so stale build products cannot
+enter the verified build context. The two Mastodon profiles verify their own
+distinct refs and commits.
 
- -  Misskey: `0f5da633284ffe20c3ed59bb0a5c5866071baac3`.
- -  Pleroma: `683ab39160a2ff95d151887a89217bd1d4a6dcf5`.
- -  HackersPub: `ee596993c26ead89c70f6b8b601a8e8f8d829cb7`.
+Inspect the Pleroma source provenance directly:
+
+~~~~ sh
+. test/e2e/versions.env
+source_dir="$(node --experimental-strip-types scripts/acquire-fediverse-sources.ts \
+  --software pleroma \
+  --repository https://git.pleroma.social/pleroma/pleroma.git \
+  --ref "v$PLEROMA_STABLE_VERSION" \
+  --commit "$PLEROMA_STABLE_COMMIT")"
+git -C "$source_dir" rev-parse HEAD
+git -C "$source_dir" status --porcelain
+~~~~
 
 Run one target at a time on small Docker Desktop allocations. A 4 GB memory
 limit is enough for sequential runs; running the full matrix concurrently is not
@@ -38,6 +53,23 @@ matrix runner when the run must prove all five targets:
 ~~~~ sh
 bash test/e2e/run-fediverse-matrix.sh
 ~~~~
+
+The runner removes containers and named data volumes before each profile and on
+exit. To perform the same reproducible reset manually, run:
+
+~~~~ sh
+docker compose -f test/e2e/docker-compose.yml --profile '*' \
+  down --volumes --remove-orphans
+~~~~
+
+Each stage writes one JSON object with `target`, `stage`, `status`, `external`,
+and `message` to standard output as NDJSON. Command, Compose, and test logs go
+to standard error, so standard output remains directly parseable. The stages
+are `checkout`, `build`, `provision`, `server-test`,
+and `adapter-test`. Checkout, upstream build or startup, and provisioning
+failures have `external: true`. ActivityPlug server and adapter test failures
+have `external: false`. In particular, a Pleroma Hex or Rebar bootstrap failure
+is a failed `build` stage, not an `adapter-test` failure.
 
 Start and provision one target:
 
@@ -64,12 +96,22 @@ requires all five adapters in one target array. The matrix runner sets
 `ACTIVITYPLUG_FEDIVERSE_REQUIRED_ADAPTERS` for each sequential target so the
 same strict check works without running all servers at once.
 
-The matrix runner provisions a target before server E2E tests. It can provision
-the same target again before adapter package E2E tests. This is the default for
-`pnpm test:e2e`; set `ACTIVITYPLUG_FEDIVERSE_REPROVISION_PACKAGE_TARGETS=0`
-only when the target payload already uses independent fixtures for each phase.
-This keeps destructive notification and post actions in server tests from
-removing fixtures needed by package tests.
+The matrix runner provisions each target after resetting its volumes, then
+reprovisions it before the adapter suite because the server suite consumes
+destructive fixtures. Direct `pnpm test:e2e` runs also reprovision before the
+adapter suite by default. Set
+`ACTIVITYPLUG_FEDIVERSE_REPROVISION_PACKAGE_TARGETS=0` only when the supplied
+payload is already provisioned. A requested test file that is missing or empty
+fails before Vitest starts; named suites never use `--passWithNoTests`.
+
+Use strict mode when skipping is not acceptable:
+
+~~~~ sh
+ACTIVITYPLUG_FEDIVERSE_E2E_REQUIRED=1 \
+ACTIVITYPLUG_FEDIVERSE_REQUIRED_ADAPTERS=mastodon \
+ACTIVITYPLUG_FEDIVERSE_TARGETS="[$target]" \
+pnpm test:e2e
+~~~~
 
 The baseline verifies instance profile reads, viewer verification when a token
 is available, account lookup, account post listing, public timeline reads, local

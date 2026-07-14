@@ -1,0 +1,6 @@
+services:
+  mastodon-web-backend:
+    image: ghcr.io/mastodon/mastodon:v4.3.9@sha256:4d3598eaa32b3f7eace219a3c16da9b687215eae97767dfcc0d37e9db21ec4d0
+
+  mastodon-sidekiq:
+    image: ghcr.io/mastodon/mastodon:v4.3.9@sha256:4d3598eaa32b3f7eace219a3c16da9b687215eae97767dfcc0d37e9db21ec4d0
