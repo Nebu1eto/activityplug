@@ -11,9 +11,12 @@ export type ActivityPlugErrorCode =
   | "NOT_FOUND"
   | "CONFLICT"
   | "RATE_LIMITED"
+  | "REMOTE_PROTOCOL_ERROR"
   | "REMOTE_ERROR"
   | "NETWORK_ERROR"
   | "TIMEOUT"
+  | "ORIGIN_NOT_ALLOWED"
+  | "REQUEST_LIMIT_EXCEEDED"
   | "INTERNAL_ERROR";
 
 export interface ActivityPlugErrorContext {

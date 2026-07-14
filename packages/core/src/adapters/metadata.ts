@@ -16,3 +16,9 @@ export interface AdapterMetadata {
   readonly staticCapabilities: CapabilitySet;
   readonly documentationUrl?: string;
 }
+
+export function isValidAdapterId(value: unknown): value is string {
+  return (
+    typeof value === "string" && value.length > 0 && !/[\p{White_Space}\p{Cc}\p{Cf}]/u.test(value)
+  );
+}

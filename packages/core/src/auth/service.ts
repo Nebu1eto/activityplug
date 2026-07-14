@@ -1,15 +1,25 @@
-import { type ActivityPlugAdapter } from "../adapters/client.js";
-import { requireCapability } from "../capabilities/capability.js";
+import { z } from "zod";
+
+import { requireCapability, type CapabilityName } from "../capabilities/capability.js";
 import {
   ActivityPlugError,
   type ActivityPlugErrorContext,
   unsupportedOperation,
 } from "../errors/error.js";
-import { type Account } from "../types/entities.js";
 import { createUuid } from "../utils/uuid.js";
 import {
+  isAuthStrategyKind,
+  type AuthAdapter,
+  type AuthAdapterContext,
   type AuthSession,
+  type AuthStrategy,
+  type AuthStrategyKind,
+  type EmailChallengeAuthStrategy,
+  type EmailChallengeStartInput,
+  type EmailChallengeStartResult,
+  type EmailChallengeVerifyInput,
   type InjectTokenInput,
+  type OAuthAuthStrategy,
   type OAuthAuthorizationRequest,
   type OAuthAuthorizationUrlInput,
   type OAuthClientRegistration,
@@ -17,68 +27,92 @@ import {
   type OAuthCodeExchangeInput,
   type OAuthRefreshInput,
   type OAuthRevokeInput,
+  type PasskeyAuthStrategy,
+  type PasskeyFinishInput,
+  type PasskeyStartInput,
+  type PasskeyStartResult,
   type StoredAuthSession,
+  type TokenAuthStrategy,
   type TokenSet,
   type VerifyCredentialsResult,
 } from "./types.js";
 
-export interface AuthAdapter {
-  readonly registerOAuthClient?: (
+export type { AuthAdapter } from "./types.js";
+
+export interface OAuthAuthService {
+  readonly registerClient: (
     input: OAuthClientRegistrationInput,
-    context: AuthAdapterContext,
   ) => Promise<OAuthClientRegistration>;
-  readonly createAuthorizationUrl?: (
-    input: OAuthAuthorizationUrlInput,
-    context: AuthAdapterContext,
-  ) => Promise<OAuthAuthorizationRequest>;
-  readonly exchangeAuthorizationCode?: (
-    input: OAuthCodeExchangeInput,
-    context: AuthAdapterContext,
-  ) => Promise<TokenSet>;
-  readonly refreshToken?: (
-    input: { readonly session: StoredAuthSession },
-    context: AuthAdapterContext,
-  ) => Promise<TokenSet>;
-  readonly revokeToken?: (
-    input: Omit<OAuthRevokeInput, "session"> & { readonly session: StoredAuthSession },
-    context: AuthAdapterContext,
-  ) => Promise<void>;
-  readonly verifyCredentials?: (
-    input: { readonly session: StoredAuthSession },
-    context: AuthAdapterContext,
-  ) => Promise<Account>;
+  readonly start: (input: OAuthAuthorizationUrlInput) => Promise<OAuthAuthorizationRequest>;
+  readonly exchange: (input: OAuthCodeExchangeInput) => Promise<AuthSession>;
 }
 
-export interface AuthAdapterContext {
-  readonly origin: string;
-  readonly adapterId: string;
+export interface TokenAuthService {
+  readonly importToken: (input: InjectTokenInput) => Promise<AuthSession>;
+}
+
+export interface EmailChallengeAuthService {
+  readonly start: (input: EmailChallengeStartInput) => Promise<EmailChallengeStartResult>;
+  readonly verify: (input: EmailChallengeVerifyInput) => Promise<AuthSession>;
+}
+
+export interface PasskeyAuthService {
+  readonly start: (input: PasskeyStartInput) => Promise<PasskeyStartResult>;
+  readonly finish: (input: PasskeyFinishInput) => Promise<AuthSession>;
 }
 
 export interface AuthService {
+  readonly availableStrategies: readonly AuthStrategyKind[];
+  readonly oauth: OAuthAuthService;
+  readonly token: TokenAuthService;
+  readonly emailChallenge: EmailChallengeAuthService;
+  readonly passkey: PasskeyAuthService;
+  readonly verifySession: (session: AuthSession) => Promise<VerifyCredentialsResult>;
+  readonly refreshSession: (session: AuthSession) => Promise<AuthSession>;
+  readonly revokeSession: (
+    session: AuthSession,
+    tokenTypeHint?: OAuthRevokeInput["tokenTypeHint"],
+  ) => Promise<void>;
+  /** @deprecated Use `auth.token.importToken()`. */
   readonly injectToken: (input: InjectTokenInput) => Promise<AuthSession>;
+  /** @deprecated Use `auth.verifySession()`. */
   readonly verifyCredentials: (session: AuthSession) => Promise<VerifyCredentialsResult>;
+  /** @deprecated Use `auth.oauth.registerClient()`. */
   readonly registerOAuthClient: (
     input: OAuthClientRegistrationInput,
   ) => Promise<OAuthClientRegistration>;
+  /** @deprecated Use `auth.oauth.start()`. */
   readonly createAuthorizationUrl: (
     input: OAuthAuthorizationUrlInput,
   ) => Promise<OAuthAuthorizationRequest>;
+  /** @deprecated Use `auth.oauth.exchange()`. */
   readonly exchangeAuthorizationCode: (input: OAuthCodeExchangeInput) => Promise<AuthSession>;
+  /** @deprecated Use `auth.refreshSession()`. */
   readonly refresh: (input: OAuthRefreshInput) => Promise<AuthSession>;
+  /** @deprecated Use `auth.revokeSession()`. */
   readonly revoke: (input: OAuthRevokeInput) => Promise<void>;
 }
 
 export interface AuthSessionStore {
-  readonly create: (session: StoredAuthSession) => Promise<void>;
+  readonly create: (session: StoredAuthSession) => Promise<boolean>;
   readonly get: (sessionId: string) => Promise<StoredAuthSession | null>;
-  readonly consume?: (sessionId: string) => Promise<StoredAuthSession | null>;
-  readonly update: (sessionId: string, patch: Partial<StoredAuthSession>) => Promise<void>;
-  readonly delete: (sessionId: string) => Promise<void>;
+  readonly consume: (sessionId: string) => Promise<StoredAuthSession | null>;
+  readonly compareAndSet: (
+    sessionId: string,
+    expectedRevision: number,
+    next: StoredAuthSession,
+  ) => Promise<boolean>;
+  readonly compareAndDelete: (sessionId: string, expectedRevision: number) => Promise<boolean>;
+  readonly deleteExpired: (now?: Date) => Promise<number>;
 }
 
 export interface AuthServiceClientContext {
-  readonly adapter: ActivityPlugAdapter;
+  readonly adapter: {
+    readonly metadata: { readonly id: string };
+    readonly auth?: AuthAdapter;
+  };
   readonly origin: string;
+  readonly fetch: typeof globalThis.fetch;
   readonly capabilities: import("../capabilities/capability.js").CapabilitySet;
   readonly sessionStore?: AuthSessionStore;
 }
@@ -90,181 +124,294 @@ export function createAuthService(client: AuthServiceClientContext): AuthService
 class DefaultAuthService implements AuthService {
   readonly #client: AuthServiceClientContext;
   readonly #sessionStore: AuthSessionStore;
+  readonly #strategies: ReadonlyMap<AuthStrategyKind, AuthStrategy>;
+  public readonly availableStrategies: readonly AuthStrategyKind[];
+  public readonly oauth: OAuthAuthService;
+  public readonly token: TokenAuthService;
+  public readonly emailChallenge: EmailChallengeAuthService;
+  public readonly passkey: PasskeyAuthService;
 
   public constructor(client: AuthServiceClientContext) {
     this.#client = client;
     this.#sessionStore = client.sessionStore ?? new InMemoryAuthSessionStore();
-  }
-
-  public async injectToken(input: InjectTokenInput): Promise<AuthSession> {
-    requireCapability(this.#client.capabilities, "auth.tokenInjection");
-    if (input.accessToken.length === 0) {
-      throw new ActivityPlugError("VALIDATION_FAILED", "Access token must not be empty.", {
-        ...this.#context(),
-        operation: "auth.tokenInjection",
-      });
-    }
-    if (input.expiresAt !== undefined) {
-      assertValidDateTime(input.expiresAt, {
-        ...this.#context(),
-        operation: "auth.tokenInjection",
-      });
-    }
-    const now = new Date().toISOString();
-    const session: StoredAuthSession = {
-      id: createUuid(),
-      adapter: this.#client.adapter.metadata.id,
-      origin: this.#client.origin,
-      scopes: input.scopes ?? [],
-      capabilities: {},
-      tokenSet: {
-        accessToken: input.accessToken,
-        tokenType: input.tokenType ?? "Bearer",
-        ...(input.refreshToken === undefined ? {} : { refreshToken: input.refreshToken }),
-        ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
-        ...(input.scopes === undefined ? {} : { scopes: input.scopes }),
-      },
-      ...(input.account === undefined ? {} : { account: input.account }),
-      createdAt: now,
-      updatedAt: now,
-      ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
-      ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
+    this.#strategies = compileStrategies(client);
+    this.availableStrategies = [...this.#strategies.keys()];
+    this.oauth = {
+      registerClient: async (input) => this.#registerOAuthClient(input),
+      start: async (input) => this.#startOAuth(input),
+      exchange: async (input) => this.#exchangeOAuth(input),
     };
-    await this.#sessionStore.create(session);
-    return toPublicSession(session);
+    this.token = {
+      importToken: async (input) => this.#importToken(input),
+    };
+    this.emailChallenge = {
+      start: async (input) => this.#startEmailChallenge(input),
+      verify: async (input) => this.#verifyEmailChallenge(input),
+    };
+    this.passkey = {
+      start: async (input) => this.#startPasskey(input),
+      finish: async (input) => this.#finishPasskey(input),
+    };
   }
 
-  public async verifyCredentials(session: AuthSession): Promise<VerifyCredentialsResult> {
-    const auth = this.#requireAdapterAuth("verifyCredentials");
-    if (auth.verifyCredentials === undefined) {
-      throw unsupportedOperation("auth.verifyCredentials", this.#context());
-    }
-    const storedSession = await this.#requireStoredSession(session);
+  public async verifySession(session: AuthSession): Promise<VerifyCredentialsResult> {
+    const { storedSession, strategy } = await this.#resolveStoredStrategy(session);
     if (isExpired(storedSession)) {
       throw new ActivityPlugError("AUTH_EXPIRED", "Auth session has expired.", {
         ...this.#context(),
         operation: "auth.verifyCredentials",
       });
     }
-    const account = await auth.verifyCredentials(
+    this.#assertRevisionCanAdvance(storedSession, "auth.verifyCredentials");
+    const account = await strategy.verifySession(
       { session: storedSession },
       this.#adapterContext(),
     );
-    const updatedSession = { ...storedSession, account: account.ref };
-    await this.#sessionStore.update(updatedSession.id, {
-      account: updatedSession.account,
+    const updatedSession: StoredAuthSession = {
+      ...storedSession,
+      account: account.ref,
+      revision: storedSession.revision + 1,
       updatedAt: new Date().toISOString(),
-    });
+    };
+    await this.#persistRevision(storedSession, updatedSession, "auth.verifyCredentials");
     return { account, session: toPublicSession(updatedSession) };
   }
 
+  public async refreshSession(session: AuthSession): Promise<AuthSession> {
+    return this.#refreshSession(session, "auth.oauth.refresh");
+  }
+
+  public async revokeSession(
+    session: AuthSession,
+    tokenTypeHint?: OAuthRevokeInput["tokenTypeHint"],
+  ): Promise<void> {
+    return this.#revokeSession(session, tokenTypeHint, "auth.oauth.revoke");
+  }
+
+  /** @deprecated Use `auth.token.importToken()`. */
+  public async injectToken(input: InjectTokenInput): Promise<AuthSession> {
+    return this.token.importToken(input);
+  }
+
+  /** @deprecated Use `auth.verifySession()`. */
+  public async verifyCredentials(session: AuthSession): Promise<VerifyCredentialsResult> {
+    return this.verifySession(session);
+  }
+
+  /** @deprecated Use `auth.oauth.registerClient()`. */
   public async registerOAuthClient(
     input: OAuthClientRegistrationInput,
   ): Promise<OAuthClientRegistration> {
-    requireCapability(this.#client.capabilities, "auth.oauth.authorizationCode");
-    const auth = this.#requireAdapterAuth("registerOAuthClient");
-    if (auth.registerOAuthClient === undefined) {
-      throw unsupportedOperation("auth.oauth.registerClient", this.#context());
-    }
-    return auth.registerOAuthClient(input, this.#adapterContext());
+    return this.oauth.registerClient(input);
   }
 
+  /** @deprecated Use `auth.oauth.start()`. */
   public async createAuthorizationUrl(
     input: OAuthAuthorizationUrlInput,
   ): Promise<OAuthAuthorizationRequest> {
-    requireCapability(this.#client.capabilities, "auth.oauth.authorizationCode");
-    const auth = this.#requireAdapterAuth("createAuthorizationUrl");
-    if (auth.createAuthorizationUrl === undefined) {
-      throw unsupportedOperation("auth.oauth.authorizationUrl", this.#context());
-    }
-    return auth.createAuthorizationUrl(input, this.#adapterContext());
+    return this.oauth.start(input);
   }
 
+  /** @deprecated Use `auth.oauth.exchange()`. */
   public async exchangeAuthorizationCode(input: OAuthCodeExchangeInput): Promise<AuthSession> {
-    requireCapability(this.#client.capabilities, "auth.oauth.authorizationCode");
-    const auth = this.#requireAdapterAuth("exchangeAuthorizationCode");
-    if (auth.exchangeAuthorizationCode === undefined) {
-      throw unsupportedOperation("auth.oauth.exchangeCode", this.#context());
-    }
-    const tokenSet = await auth.exchangeAuthorizationCode(input, this.#adapterContext());
-    const session = this.#sessionFromTokenSet(tokenSet);
-    await this.#sessionStore.create(session);
+    return this.oauth.exchange(input);
+  }
+
+  /** @deprecated Use `auth.refreshSession()`. */
+  public async refresh(input: OAuthRefreshInput): Promise<AuthSession> {
+    return this.#refreshSession(input.session, "auth.oauth.refresh");
+  }
+
+  /** @deprecated Use `auth.revokeSession()`. */
+  public async revoke(input: OAuthRevokeInput): Promise<void> {
+    return this.#revokeSession(input.session, input.tokenTypeHint, "auth.oauth.revoke");
+  }
+
+  async #importToken(input: InjectTokenInput): Promise<AuthSession> {
+    requireCapability(this.#client.capabilities, "auth.tokenInjection");
+    assertTokenImportInput(input, { ...this.#context(), operation: "auth.tokenInjection" });
+    const strategy = this.#requireStrategy("token", "auth.tokenInjection");
+    const session = this.#sessionFromTokenSet(
+      "token",
+      await strategy.importToken(input, this.#adapterContext()),
+      input.account,
+      input.metadata,
+    );
+    await this.#createSession(session, "auth.tokenInjection");
     return toPublicSession(session);
   }
 
-  public async refresh(input: OAuthRefreshInput): Promise<AuthSession> {
-    this.#requireCapability("auth.oauth.refreshToken", "auth.oauth.refresh");
-    const auth = this.#requireAdapterAuth("refreshToken");
-    if (auth.refreshToken === undefined) {
-      throw unsupportedOperation("auth.oauth.refresh", this.#context());
+  async #registerOAuthClient(
+    input: OAuthClientRegistrationInput,
+  ): Promise<OAuthClientRegistration> {
+    requireCapability(this.#client.capabilities, "auth.oauth.clientCredentials");
+    const strategy = this.#requireStrategy("oauth", "auth.registerClient");
+    if (strategy.registerClient === undefined) {
+      throw unsupportedOperation("auth.registerClient", this.#context());
     }
-    const storedSession = await this.#requireStoredSession(input.session);
+    return strategy.registerClient(input, this.#adapterContext());
+  }
+
+  async #startOAuth(input: OAuthAuthorizationUrlInput): Promise<OAuthAuthorizationRequest> {
+    requireCapability(this.#client.capabilities, "auth.oauth.authorizationCode");
+    const strategy = this.#requireStrategy("oauth", "auth.oauth.authorizationUrl");
+    return strategy.start(input, this.#adapterContext());
+  }
+
+  async #exchangeOAuth(input: OAuthCodeExchangeInput): Promise<AuthSession> {
+    requireCapability(this.#client.capabilities, "auth.oauth.authorizationCode");
+    const strategy = this.#requireStrategy("oauth", "auth.oauth.exchangeCode");
+    const session = this.#sessionFromTokenSet(
+      "oauth",
+      await strategy.exchange(input, this.#adapterContext()),
+    );
+    await this.#createSession(session, "auth.oauth.exchangeCode");
+    return toPublicSession(session);
+  }
+
+  async #startEmailChallenge(input: EmailChallengeStartInput): Promise<EmailChallengeStartResult> {
+    requireCapability(this.#client.capabilities, "auth.emailChallenge");
+    const strategy = this.#requireStrategy("emailChallenge", "auth.emailChallenge.start");
+    const result = await strategy.start(input, this.#adapterContext());
+    return { challengeId: result.challengeId, expiresAt: result.expiresAt };
+  }
+
+  async #verifyEmailChallenge(input: EmailChallengeVerifyInput): Promise<AuthSession> {
+    requireCapability(this.#client.capabilities, "auth.emailChallenge");
+    const strategy = this.#requireStrategy("emailChallenge", "auth.emailChallenge.verify");
+    const session = this.#sessionFromTokenSet(
+      "emailChallenge",
+      await strategy.verify(input, this.#adapterContext()),
+    );
+    await this.#createSession(session, "auth.emailChallenge.verify");
+    return toPublicSession(session);
+  }
+
+  async #startPasskey(input: PasskeyStartInput): Promise<PasskeyStartResult> {
+    requireCapability(this.#client.capabilities, "auth.passkey");
+    const strategy = this.#requireStrategy("passkey", "auth.passkey.start");
+    return toPublicPasskeyStartResult(await strategy.start(input, this.#adapterContext()));
+  }
+
+  async #finishPasskey(input: PasskeyFinishInput): Promise<AuthSession> {
+    requireCapability(this.#client.capabilities, "auth.passkey");
+    const strategy = this.#requireStrategy("passkey", "auth.passkey.finish");
+    const session = this.#sessionFromTokenSet(
+      "passkey",
+      await strategy.finish(input, this.#adapterContext()),
+    );
+    await this.#createSession(session, "auth.passkey.finish");
+    return toPublicSession(session);
+  }
+
+  async #refreshSession(session: AuthSession, operation: string): Promise<AuthSession> {
+    const { storedSession, strategy } = await this.#resolveStoredStrategy(session);
+    this.#requireLifecycleCapability(strategy, "auth.oauth.refreshToken", operation);
+    if (strategy.refreshSession === undefined) {
+      throw unsupportedOperation(operation, this.#context());
+    }
+    this.#assertRevisionCanAdvance(storedSession, operation);
     const tokenSet = mergeRefreshTokenSet(
       storedSession.tokenSet,
-      await auth.refreshToken({ session: storedSession }, this.#adapterContext()),
+      await strategy.refreshSession({ session: storedSession }, this.#adapterContext()),
     );
-    const { expiresAt: _oldExpiresAt, ...sessionWithoutExpiresAt } = storedSession;
-    const updatedSession = {
-      ...sessionWithoutExpiresAt,
-      scopes: tokenSet.scopes ?? storedSession.scopes,
-      tokenSet,
-      updatedAt: new Date().toISOString(),
-      ...(tokenSet.expiresAt === undefined ? {} : { expiresAt: tokenSet.expiresAt }),
-    };
-    await this.#sessionStore.update(updatedSession.id, {
-      scopes: updatedSession.scopes,
-      tokenSet: updatedSession.tokenSet,
-      updatedAt: updatedSession.updatedAt,
-      ...(updatedSession.expiresAt === undefined
-        ? { expiresAt: undefined }
-        : { expiresAt: updatedSession.expiresAt }),
-    });
+    const updatedSession = sessionWithTokenSet(storedSession, tokenSet);
+    await this.#persistRevision(storedSession, updatedSession, operation);
     return toPublicSession(updatedSession);
   }
 
-  public async revoke(input: OAuthRevokeInput): Promise<void> {
-    const auth = this.#requireAdapterAuth("revokeToken");
-    if (auth.revokeToken === undefined) {
-      throw unsupportedOperation("auth.oauth.revoke", this.#context());
+  async #revokeSession(
+    session: AuthSession,
+    tokenTypeHint: OAuthRevokeInput["tokenTypeHint"],
+    operation: string,
+  ): Promise<void> {
+    const { storedSession, strategy } = await this.#resolveStoredStrategy(session);
+    this.#requireLifecycleCapability(strategy, "auth.oauth.revoke", operation);
+    if (strategy.revokeSession === undefined) {
+      throw unsupportedOperation(operation, this.#context());
     }
-    const storedSession = await this.#requireStoredSession(input.session);
-    await auth.revokeToken({ ...input, session: storedSession }, this.#adapterContext());
-    await this.#sessionStore.delete(storedSession.id);
+    await strategy.revokeSession({ session: storedSession, tokenTypeHint }, this.#adapterContext());
+    // Remote revocation does not authorize deleting a newer local replacement.
+    if (!(await this.#sessionStore.compareAndDelete(storedSession.id, storedSession.revision))) {
+      throw this.#sessionConflict(operation);
+    }
   }
 
-  #sessionFromTokenSet(tokenSet: TokenSet): StoredAuthSession {
+  async #createSession(session: StoredAuthSession, operation: string): Promise<void> {
+    // UUID collisions must fail closed so credentials never alias an existing session.
+    if (!(await this.#sessionStore.create(session))) {
+      throw new ActivityPlugError("CONFLICT", "Auth session ID is already in use.", {
+        ...this.#context(),
+        operation,
+      });
+    }
+  }
+
+  async #persistRevision(
+    previous: StoredAuthSession,
+    next: StoredAuthSession,
+    operation: string,
+  ): Promise<void> {
+    // Persist the complete record so no field can be merged from stale credentials.
+    if (!(await this.#sessionStore.compareAndSet(previous.id, previous.revision, next))) {
+      throw this.#sessionConflict(operation);
+    }
+  }
+
+  #sessionConflict(operation: string): ActivityPlugError {
+    return new ActivityPlugError("CONFLICT", "Auth session changed concurrently.", {
+      ...this.#context(),
+      operation,
+    });
+  }
+
+  #assertRevisionCanAdvance(session: StoredAuthSession, operation: string): void {
+    if (!isValidSessionRevision(session.revision + 1)) {
+      throw this.#sessionConflict(operation);
+    }
+  }
+
+  #sessionFromTokenSet(
+    strategy: AuthStrategyKind,
+    tokenSet: TokenSet,
+    account?: AuthSession["account"],
+    metadata?: Readonly<Record<string, unknown>>,
+  ): StoredAuthSession {
     const now = new Date().toISOString();
+    const storedTokenSet = compactTokenSet(tokenSet);
     return {
       id: createUuid(),
       adapter: this.#client.adapter.metadata.id,
       origin: this.#client.origin,
-      scopes: tokenSet.scopes ?? [],
+      strategy,
+      revision: 0,
+      scopes: storedTokenSet.scopes ?? [],
       capabilities: {},
-      tokenSet,
+      tokenSet: storedTokenSet,
+      ...(account === undefined ? {} : { account }),
       createdAt: now,
       updatedAt: now,
-      ...(tokenSet.expiresAt === undefined ? {} : { expiresAt: tokenSet.expiresAt }),
+      ...(storedTokenSet.expiresAt === undefined ? {} : { expiresAt: storedTokenSet.expiresAt }),
+      ...(metadata === undefined ? {} : { metadata }),
     };
   }
 
-  #requireAdapterAuth(operation: string): AuthAdapter {
-    const auth = this.#client.adapter.auth;
-    if (auth === undefined) {
-      throw new ActivityPlugError(
-        "AUTH_UNSUPPORTED",
-        `Auth operation is not supported: ${operation}`,
-        {
-          ...this.#context(),
-          operation,
-        },
-      );
-    }
-    return auth;
+  #requireStrategy<Kind extends AuthStrategyKind>(
+    kind: Kind,
+    operation: string,
+  ): StrategyByKind[Kind] {
+    // A requested flow may only select its own strategy; no cross-strategy fallback is safe.
+    const strategy = this.#strategies.get(kind);
+    if (strategy === undefined) throw unsupportedOperation(operation, this.#context());
+    return strategy as StrategyByKind[Kind];
   }
 
-  async #requireStoredSession(session: AuthSession): Promise<StoredAuthSession> {
-    const storedSession = hasTokenSet(session) ? session : await this.#sessionStore.get(session.id);
-    if (storedSession === null) {
+  async #resolveStoredStrategy(
+    session: AuthSession,
+  ): Promise<{ readonly storedSession: StoredAuthSession; readonly strategy: AuthStrategy }> {
+    // Resolve by ID only so untrusted callers cannot inject a structural token-set object.
+    const storedSession = await this.#sessionStore.get(session.id);
+    if (storedSession === null || !isAuthStrategyKind(storedSession.strategy)) {
       throw new ActivityPlugError("AUTH_REQUIRED", "Auth session is not available.", {
         ...this.#context(),
         operation: "auth.session.resolve",
@@ -287,32 +434,150 @@ class DefaultAuthService implements AuthService {
         },
       );
     }
-    return storedSession;
+    const strategy = this.#strategies.get(storedSession.strategy);
+    if (strategy === undefined) {
+      throw new ActivityPlugError("AUTH_REQUIRED", "Auth session strategy is unavailable.", {
+        ...this.#context(),
+        operation: "auth.session.resolve",
+      });
+    }
+    return { storedSession, strategy };
+  }
+
+  #requireLifecycleCapability(
+    strategy: AuthStrategy,
+    capability: CapabilityName,
+    operation: string,
+  ): void {
+    if (strategy.kind === "oauth") {
+      const decision = this.#client.capabilities[capability];
+      if (decision.status !== "supported") {
+        throw unsupportedOperation(operation, {
+          ...this.#context(),
+          capability,
+          raw: decision,
+        });
+      }
+    }
   }
 
   #context(): { readonly adapter: string; readonly origin: string } {
-    return {
-      adapter: this.#client.adapter.metadata.id,
-      origin: this.#client.origin,
-    };
-  }
-
-  #requireCapability(capability: "auth.oauth.refreshToken", operation: string): void {
-    const decision = this.#client.capabilities[capability];
-    if (decision.status === "supported") return;
-    throw unsupportedOperation(operation, {
-      ...this.#context(),
-      capability,
-      raw: decision,
-    });
+    return { adapter: this.#client.adapter.metadata.id, origin: this.#client.origin };
   }
 
   #adapterContext(): AuthAdapterContext {
     return {
       adapterId: this.#client.adapter.metadata.id,
       origin: this.#client.origin,
+      fetch: this.#client.fetch,
     };
   }
+}
+
+type StrategyByKind = {
+  readonly oauth: OAuthAuthStrategy;
+  readonly token: TokenAuthStrategy;
+  readonly emailChallenge: EmailChallengeAuthStrategy;
+  readonly passkey: PasskeyAuthStrategy;
+};
+
+function compileStrategies(
+  client: AuthServiceClientContext,
+): ReadonlyMap<AuthStrategyKind, AuthStrategy> {
+  const auth = client.adapter.auth;
+  const strategies: readonly unknown[] = auth === undefined ? [] : auth.strategies;
+  if (!Array.isArray(strategies)) {
+    throw invalidAuthContract(client, "Auth strategies must be an array.");
+  }
+  const compiled = new Map<AuthStrategyKind, AuthStrategy>();
+  for (const strategy of strategies) {
+    if (typeof strategy !== "object" || strategy === null || Array.isArray(strategy)) {
+      throw invalidAuthContract(client, "Auth strategy must be a non-null object.");
+    }
+    if (!isAuthStrategyKind(strategy["kind"])) {
+      throw invalidAuthContract(client, "Auth strategy kind is invalid.");
+    }
+    const executableStrategy = strategy as unknown as AuthStrategy;
+    if (compiled.has(executableStrategy.kind)) {
+      throw invalidAuthContract(client, `Auth strategy is duplicated: ${executableStrategy.kind}.`);
+    }
+    if (!isExecutableInstalledStrategy(executableStrategy)) {
+      throw invalidAuthContract(
+        client,
+        `Auth strategy is missing mandatory methods: ${executableStrategy.kind}.`,
+      );
+    }
+    compiled.set(executableStrategy.kind, executableStrategy);
+  }
+  requireSupportedStrategy(client, compiled, "auth.oauth.authorizationCode", "oauth", (strategy) =>
+    hasFunctions(strategy, "verifySession", "start", "exchange"),
+  );
+  requireSupportedStrategy(client, compiled, "auth.oauth.clientCredentials", "oauth", (strategy) =>
+    hasFunctions(strategy, "verifySession", "start", "exchange", "registerClient"),
+  );
+  requireSupportedStrategy(client, compiled, "auth.oauth.refreshToken", "oauth", (strategy) =>
+    hasFunctions(strategy, "verifySession", "start", "exchange", "refreshSession"),
+  );
+  requireSupportedStrategy(client, compiled, "auth.oauth.revoke", "oauth", (strategy) =>
+    hasFunctions(strategy, "verifySession", "start", "exchange", "revokeSession"),
+  );
+  requireSupportedStrategy(client, compiled, "auth.tokenInjection", "token", (strategy) =>
+    hasFunctions(strategy, "verifySession", "importToken"),
+  );
+  requireSupportedStrategy(client, compiled, "auth.emailChallenge", "emailChallenge", (strategy) =>
+    hasFunctions(strategy, "verifySession", "start", "verify"),
+  );
+  requireSupportedStrategy(client, compiled, "auth.passkey", "passkey", (strategy) =>
+    hasFunctions(strategy, "verifySession", "start", "finish"),
+  );
+  return compiled;
+}
+
+function isExecutableInstalledStrategy(strategy: AuthStrategy): boolean {
+  if (strategy.kind === "oauth")
+    return hasFunctions(strategy, "verifySession", "start", "exchange");
+  if (strategy.kind === "token") return hasFunctions(strategy, "verifySession", "importToken");
+  if (strategy.kind === "emailChallenge") {
+    return hasFunctions(strategy, "verifySession", "start", "verify");
+  }
+  return hasFunctions(strategy, "verifySession", "start", "finish");
+}
+
+function requireSupportedStrategy(
+  client: AuthServiceClientContext,
+  strategies: ReadonlyMap<AuthStrategyKind, AuthStrategy>,
+  capability: CapabilityName,
+  kind: AuthStrategyKind,
+  isExecutable: (strategy: AuthStrategy) => boolean,
+): void {
+  if (client.capabilities[capability].status !== "supported") return;
+  const strategy = strategies.get(kind);
+  if (strategy === undefined || !isExecutable(strategy)) {
+    throw invalidAuthContract(
+      client,
+      `Supported capability ${capability} requires an executable ${kind} strategy.`,
+      capability,
+    );
+  }
+}
+
+function invalidAuthContract(
+  client: AuthServiceClientContext,
+  message: string,
+  capability?: CapabilityName,
+): ActivityPlugError {
+  return new ActivityPlugError("VALIDATION_FAILED", message, {
+    adapter: client.adapter.metadata.id,
+    origin: client.origin,
+    operation: "client.create",
+    ...(capability === undefined ? {} : { capability }),
+  });
+}
+
+function hasFunctions(strategy: AuthStrategy, ...names: readonly string[]): boolean {
+  return names.every(
+    (name) => typeof (strategy as unknown as Record<string, unknown>)[name] === "function",
+  );
 }
 
 function toPublicSession(session: StoredAuthSession): AuthSession {
@@ -320,61 +585,219 @@ function toPublicSession(session: StoredAuthSession): AuthSession {
     id: session.id,
     adapter: session.adapter,
     origin: session.origin,
+    strategy: session.strategy,
     ...(session.account === undefined ? {} : { account: session.account }),
-    scopes: session.scopes,
-    capabilities: session.capabilities,
+    scopes: [...session.scopes],
+    capabilities: sanitizeCapabilities(session.capabilities),
     ...(session.expiresAt === undefined ? {} : { expiresAt: session.expiresAt }),
   };
 }
 
-function hasTokenSet(session: AuthSession): session is StoredAuthSession {
-  return "tokenSet" in session;
+function sanitizeCapabilities(
+  capabilities: AuthSession["capabilities"],
+): AuthSession["capabilities"] {
+  return sanitizeCapabilityValue(capabilities) as AuthSession["capabilities"];
+}
+
+function sanitizeCapabilityValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitizeCapabilityValue);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([key, nested]) =>
+      isSensitiveCapabilityKey(key) ? [] : [[key, sanitizeCapabilityValue(nested)]],
+    ),
+  );
+}
+
+function isSensitiveCapabilityKey(key: string): boolean {
+  const normalized = key.replaceAll(/[^a-zA-Z0-9]/g, "").toLowerCase();
+  return (
+    normalized === "metadata" ||
+    normalized === "tokenset" ||
+    normalized.startsWith("credential") ||
+    normalized.startsWith("raw") ||
+    normalized.endsWith("secret") ||
+    normalized.endsWith("token")
+  );
+}
+
+function toPublicPasskeyStartResult(result: PasskeyStartResult): PasskeyStartResult {
+  return {
+    challengeId: result.challengeId,
+    expiresAt: result.expiresAt,
+    options: {
+      challenge: result.options.challenge,
+      ...(result.options.timeout === undefined ? {} : { timeout: result.options.timeout }),
+      ...(result.options.rpId === undefined ? {} : { rpId: result.options.rpId }),
+      ...(result.options.allowCredentials === undefined
+        ? {}
+        : {
+            allowCredentials: result.options.allowCredentials.map((credential) => ({
+              id: credential.id,
+              type: credential.type,
+              ...(credential.transports === undefined
+                ? {}
+                : { transports: [...credential.transports] }),
+            })),
+          }),
+      ...(result.options.userVerification === undefined
+        ? {}
+        : { userVerification: result.options.userVerification }),
+    },
+  };
 }
 
 export class InMemoryAuthSessionStore implements AuthSessionStore {
   readonly #sessions = new Map<string, StoredAuthSession>();
+  #criticalSection = Promise.resolve();
 
-  public async create(session: StoredAuthSession): Promise<void> {
-    this.#sessions.set(session.id, session);
+  public async create(session: StoredAuthSession): Promise<boolean> {
+    // Snapshot before enqueueing so callers cannot mutate credentials into the queued write.
+    const snapshot = cloneStoredAuthSession(session);
+    if (snapshot === null || !isValidSessionRevision(snapshot.revision)) return false;
+    return this.#runExclusive(() => {
+      if (this.#sessions.has(snapshot.id)) return false;
+      this.#sessions.set(snapshot.id, snapshot);
+      return true;
+    });
   }
 
   public async get(sessionId: string): Promise<StoredAuthSession | null> {
-    const session = this.#sessions.get(sessionId);
-    if (session === undefined) return null;
-    if (isStorageExpired(session)) {
-      this.#sessions.delete(sessionId);
-      return null;
-    }
-    return session;
+    return this.#runExclusive(() => this.#getActive(sessionId));
   }
 
   public async consume(sessionId: string): Promise<StoredAuthSession | null> {
+    return this.#runExclusive(() => {
+      const session = this.#getActive(sessionId);
+      if (session === null) return null;
+      this.#sessions.delete(sessionId);
+      return session;
+    });
+  }
+
+  public async compareAndSet(
+    sessionId: string,
+    expectedRevision: number,
+    next: StoredAuthSession,
+  ): Promise<boolean> {
+    if (!isValidSessionRevision(expectedRevision)) return false;
+    // Clone synchronously, before the mutex callback can be delayed by an earlier operation.
+    const snapshot = cloneStoredAuthSession(next);
+    if (
+      snapshot === null ||
+      snapshot.id !== sessionId ||
+      !isValidSessionRevision(snapshot.revision) ||
+      snapshot.revision !== expectedRevision + 1
+    ) {
+      return false;
+    }
+    return this.#runExclusive(() => {
+      const current = this.#getActive(sessionId);
+      if (
+        current === null ||
+        !isValidSessionRevision(current.revision) ||
+        current.revision !== expectedRevision
+      ) {
+        return false;
+      }
+      this.#sessions.set(sessionId, snapshot);
+      return true;
+    });
+  }
+
+  public async compareAndDelete(sessionId: string, expectedRevision: number): Promise<boolean> {
+    return this.#runExclusive(() => {
+      const current = this.#getActive(sessionId);
+      if (
+        !isValidSessionRevision(expectedRevision) ||
+        current === null ||
+        !isValidSessionRevision(current.revision) ||
+        current.revision !== expectedRevision
+      ) {
+        return false;
+      }
+      this.#sessions.delete(sessionId);
+      return true;
+    });
+  }
+
+  public async deleteExpired(now = new Date()): Promise<number> {
+    return this.#runExclusive(() => {
+      let deleted = 0;
+      for (const [sessionId, session] of this.#sessions) {
+        const snapshot = cloneStoredAuthSession(session);
+        if (snapshot !== null && snapshot.id === sessionId && !isStorageExpired(snapshot, now)) {
+          continue;
+        }
+        this.#sessions.delete(sessionId);
+        deleted += 1;
+      }
+      return deleted;
+    });
+  }
+
+  #getActive(sessionId: string): StoredAuthSession | null {
     const session = this.#sessions.get(sessionId);
     if (session === undefined) return null;
+    // Validate and clone current state before any caller or lifecycle operation can observe it.
+    const snapshot = cloneStoredAuthSession(session);
+    if (snapshot !== null && snapshot.id === sessionId && !isStorageExpired(snapshot)) {
+      return snapshot;
+    }
     this.#sessions.delete(sessionId);
-    if (isStorageExpired(session)) return null;
-    return session;
+    return null;
   }
 
-  public async update(sessionId: string, patch: Partial<StoredAuthSession>): Promise<void> {
-    const session = await this.get(sessionId);
-    if (session === null) return;
-    this.#sessions.set(sessionId, { ...session, ...patch });
+  async #runExclusive<Result>(operation: () => Result): Promise<Result> {
+    // Keep every read-modify-write transition in one ordered critical section.
+    const result = this.#criticalSection.then(operation);
+    this.#criticalSection = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
+}
 
-  public async delete(sessionId: string): Promise<void> {
-    this.#sessions.delete(sessionId);
-  }
+function sessionWithTokenSet(session: StoredAuthSession, tokenSet: TokenSet): StoredAuthSession {
+  const { expiresAt: _oldExpiresAt, ...withoutExpiration } = session;
+  const storedTokenSet = compactTokenSet(tokenSet);
+  return {
+    ...withoutExpiration,
+    revision: session.revision + 1,
+    scopes: storedTokenSet.scopes ?? session.scopes,
+    tokenSet: storedTokenSet,
+    updatedAt: new Date().toISOString(),
+    ...(storedTokenSet.expiresAt === undefined ? {} : { expiresAt: storedTokenSet.expiresAt }),
+  };
+}
+
+function compactTokenSet(tokenSet: TokenSet): TokenSet {
+  // Optional adapter fields may be present with an explicit undefined value.
+  // Persist the wire-equivalent shape so every session remains JSON-safe.
+  return {
+    accessToken: tokenSet.accessToken,
+    ...(tokenSet.tokenType === undefined ? {} : { tokenType: tokenSet.tokenType }),
+    ...(tokenSet.refreshToken === undefined ? {} : { refreshToken: tokenSet.refreshToken }),
+    ...(tokenSet.expiresAt === undefined ? {} : { expiresAt: tokenSet.expiresAt }),
+    ...(tokenSet.scopes === undefined ? {} : { scopes: [...tokenSet.scopes] }),
+    ...(tokenSet.raw === undefined ? {} : { raw: tokenSet.raw }),
+  };
 }
 
 function mergeRefreshTokenSet(previous: TokenSet, next: TokenSet): TokenSet {
   const { expiresAt: _previousExpiresAt, ...previousWithoutExpiresAt } = previous;
-  return {
+  const merged = {
     ...previousWithoutExpiresAt,
     ...next,
     refreshToken: next.refreshToken ?? previous.refreshToken,
     scopes: next.scopes ?? previous.scopes,
   };
+  // Optional token fields may be returned as explicit undefined values. Keep
+  // their wire-equivalent absence so the persisted session remains JSON-safe.
+  return Object.fromEntries(
+    Object.entries(merged).filter(([, value]) => value !== undefined),
+  ) as unknown as TokenSet;
 }
 
 function isExpired(session: StoredAuthSession): boolean {
@@ -383,20 +806,167 @@ function isExpired(session: StoredAuthSession): boolean {
   return !Number.isFinite(expiresAt) || expiresAt <= Date.now();
 }
 
-function isStorageExpired(session: StoredAuthSession): boolean {
+function isStorageExpired(session: StoredAuthSession, now = new Date()): boolean {
   if (session.storageExpiresAt === undefined) return false;
   const expiresAt = Date.parse(session.storageExpiresAt);
-  return !Number.isFinite(expiresAt) || expiresAt <= Date.now();
+  return (
+    !Number.isFinite(expiresAt) ||
+    new Date(expiresAt).toISOString() !== session.storageExpiresAt ||
+    expiresAt <= now.getTime()
+  );
 }
 
-function assertValidDateTime(value: string, context: ActivityPlugErrorContext): void {
-  if (!Number.isFinite(Date.parse(value))) {
+// Runtime schemas mirror the persisted StoredAuthSession contract. They stay
+// loose (unknown keys are tolerated) because stored sessions may carry
+// adapter-private fields that the JSON-safety cloner has already vetted.
+const jsonRecordSchema = z.looseObject({});
+
+// In zod 4, `.int()` admits only safe integers, matching Number.isSafeInteger.
+const sessionRevisionSchema = z.number().int().nonnegative();
+
+const authStrategyKindSchema = z.enum([
+  "oauth",
+  "token",
+  "emailChallenge",
+  "passkey",
+] as const satisfies readonly AuthStrategyKind[]);
+
+const tokenSetSchema = z.looseObject({
+  accessToken: z.string(),
+  tokenType: z.string().optional(),
+  refreshToken: z.string().optional(),
+  expiresAt: z.string().optional(),
+  scopes: z.array(z.string()).optional(),
+});
+
+const accountReferenceSchema = z.looseObject({
+  id: z.string(),
+  type: z.literal("account"),
+  adapter: z.string(),
+  origin: z.string(),
+  rawId: z.string(),
+  rawUrl: z.string().optional(),
+});
+
+const storedAuthSessionSchema = z.looseObject({
+  id: z.string(),
+  adapter: z.string(),
+  origin: z.string(),
+  strategy: authStrategyKindSchema,
+  revision: sessionRevisionSchema,
+  scopes: z.array(z.string()),
+  capabilities: jsonRecordSchema,
+  tokenSet: tokenSetSchema,
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  account: accountReferenceSchema.optional(),
+  expiresAt: z.string().optional(),
+  storageExpiresAt: z.string().optional(),
+  metadata: jsonRecordSchema.optional(),
+});
+
+function isValidSessionRevision(revision: number): boolean {
+  return sessionRevisionSchema.safeParse(revision).success;
+}
+
+const invalidJsonClone = Symbol("invalidJsonClone");
+
+function cloneStoredAuthSession(session: StoredAuthSession): StoredAuthSession | null {
+  try {
+    const cloned = cloneJsonValue(session, new Set<object>());
+    return cloned !== invalidJsonClone && isStoredAuthSession(cloned) ? cloned : null;
+  } catch {
+    // Proxies and hostile descriptors may throw during inspection; reject them without storage.
+    return null;
+  }
+}
+
+function isStoredAuthSession(value: unknown): value is StoredAuthSession {
+  return storedAuthSessionSchema.safeParse(value).success;
+}
+
+function cloneJsonValue(value: unknown, ancestors: Set<object>): unknown | typeof invalidJsonClone {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : invalidJsonClone;
+  if (typeof value !== "object") return invalidJsonClone;
+  if (ancestors.has(value)) return invalidJsonClone;
+
+  const prototype = Object.getPrototypeOf(value);
+  if (Array.isArray(value)) {
+    if (prototype !== Array.prototype) return invalidJsonClone;
+    return cloneJsonArray(value, ancestors);
+  }
+  if (prototype !== Object.prototype && prototype !== null) return invalidJsonClone;
+  return cloneJsonObject(value, prototype, ancestors);
+}
+
+function cloneJsonArray(
+  value: readonly unknown[],
+  ancestors: Set<object>,
+): unknown[] | typeof invalidJsonClone {
+  const keys = Reflect.ownKeys(value);
+  if (keys.some((key) => typeof key === "symbol") || keys.length !== value.length + 1) {
+    return invalidJsonClone;
+  }
+
+  ancestors.add(value);
+  try {
+    const cloned: unknown[] = [];
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
+        return invalidJsonClone;
+      }
+      const item = cloneJsonValue(descriptor.value, ancestors);
+      if (item === invalidJsonClone) return invalidJsonClone;
+      cloned.push(item);
+    }
+    return cloned;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function cloneJsonObject(
+  value: object,
+  prototype: object | null,
+  ancestors: Set<object>,
+): object | typeof invalidJsonClone {
+  const keys = Reflect.ownKeys(value);
+  if (keys.some((key) => typeof key === "symbol")) return invalidJsonClone;
+
+  ancestors.add(value);
+  try {
+    const cloned = Object.create(prototype) as Record<string, unknown>;
+    for (const key of keys as string[]) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (descriptor === undefined || !descriptor.enumerable || !("value" in descriptor)) {
+        return invalidJsonClone;
+      }
+      const item = cloneJsonValue(descriptor.value, ancestors);
+      if (item === invalidJsonClone) return invalidJsonClone;
+      Object.defineProperty(cloned, key, {
+        value: item,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return cloned;
+  } finally {
+    ancestors.delete(value);
+  }
+}
+
+function assertTokenImportInput(value: InjectTokenInput, context: ActivityPlugErrorContext): void {
+  if (value.accessToken.length === 0) {
+    throw new ActivityPlugError("VALIDATION_FAILED", "Access token must not be empty.", context);
+  }
+  if (value.expiresAt !== undefined && !Number.isFinite(Date.parse(value.expiresAt))) {
     throw new ActivityPlugError(
       "VALIDATION_FAILED",
       "expiresAt must be a valid date-time string.",
-      {
-        ...context,
-      },
+      context,
     );
   }
 }

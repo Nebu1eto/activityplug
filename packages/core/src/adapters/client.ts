@@ -13,8 +13,11 @@ import {
   type ActivityPlugClientOptions,
   type AdapterOperationContext,
   type AccountService,
+  type BookmarkFolderPostInput,
+  type BookmarkFolderService,
   type BoostPostInput,
   type CreateFilterInput,
+  type CreateBookmarkFolderInput,
   type CreateListInput,
   type CreatePostInput,
   type InstanceService,
@@ -41,21 +44,48 @@ import {
   type StreamService,
   type TimelineService,
   type UpdateFilterInput,
+  type UpdateBookmarkFolderInput,
   type UpdateListInput,
   type UpdateMediaInput,
   type UpdatePostInput,
   type UpdateProfileInput,
 } from "./client-types.js";
-import { maxPageLimit } from "./page.js";
+import { isValidAdapterId } from "./metadata.js";
+import { PORTABLE_PAGE_LIMIT } from "./page.js";
 
 export type * from "./client-types.js";
 
 export function createActivityPlugClient(options: ActivityPlugClientOptions): ActivityPlugClient {
+  if (!isValidAdapterId(options.adapter.metadata.id)) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "Adapter ID must be non-empty and contain no whitespace or control characters.",
+      { adapter: options.adapter.metadata.id, origin: options.origin, operation: "client.create" },
+    );
+  }
   const origin = normalizeOrigin(options.origin, "client.create", options.adapter.metadata.id);
   const sessionStore = options.sessionStore ?? new InMemoryAuthSessionStore();
+  // Resolve the transport once at the client boundary so adapters cannot
+  // silently choose a different fetch implementation for selected requests.
+  if (options.fetch !== undefined && typeof options.fetch !== "function") {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "ActivityPlug client fetch must be a function.",
+      { adapter: options.adapter.metadata.id, origin, operation: "client.create" },
+    );
+  }
+  const remoteFetch = options.fetch === undefined ? globalThis.fetch : options.fetch;
+  if (typeof remoteFetch !== "function") {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "ActivityPlug client fetch must be a function.",
+      { adapter: options.adapter.metadata.id, origin, operation: "client.create" },
+    );
+  }
   const client = {
     adapter: options.adapter,
     origin,
+    fetch: remoteFetch,
     capabilities:
       options.capabilities ??
       mergeCapabilityLayers([
@@ -82,6 +112,7 @@ export function createActivityPlugClient(options: ActivityPlugClientOptions): Ac
     followRequests: createFollowRequestService(client),
     filters: createFilterService(client),
     scheduledPosts: createScheduledPostService(client),
+    bookmarkFolders: createBookmarkFolderService(client),
     streams: createStreamService(client),
   };
 }
@@ -124,6 +155,37 @@ function createInstanceService(client: RequiredClientContext): InstanceService {
           : normalizeOrigin(input.origin, "instance.get", client.adapter.metadata.id);
       return operation({ origin }, context(client, origin));
     },
+    oauthMetadata: async (input = {}) => {
+      const operation = client.adapter.instances?.oauthMetadata;
+      if (operation === undefined) {
+        throw unsupportedOperation(
+          "instance.oauthMetadata",
+          capabilityContext(client, "instance.oauthMetadata"),
+        );
+      }
+      requireClientCapability(client, "instance.oauthMetadata", "instance.oauthMetadata");
+      const origin =
+        input.origin === undefined
+          ? client.origin
+          : normalizeOrigin(input.origin, "instance.oauthMetadata", client.adapter.metadata.id);
+      return operation({ origin }, context(client, origin));
+    },
+    peers: async (input = {}) => {
+      const operation = client.adapter.instances?.peers;
+      if (operation === undefined) {
+        throw unsupportedOperation("instance.peers", capabilityContext(client, "instance.peers"));
+      }
+      requireClientCapability(client, "instance.peers", "instance.peers");
+      const origin =
+        input.origin === undefined
+          ? client.origin
+          : normalizeOrigin(input.origin, "instance.peers", client.adapter.metadata.id);
+      const peers = await operation({ origin }, context(client, origin));
+      return {
+        ...peers,
+        origins: peers.origins.map(canonicalizeOrigin),
+      };
+    },
   };
 }
 
@@ -132,12 +194,14 @@ function createAccountService(client: RequiredClientContext): AccountService {
     getById: async (input) => {
       const operation = client.adapter.accounts?.getById;
       if (operation === undefined) throw unsupportedOperation("account.get", context(client));
+      requireClientCapability(client, "accounts.lookupById", "account.get");
       const rawId = decodeRawRef(input.id, client, "account", "account.get");
       return operation({ id: rawId }, context(client));
     },
     getByHandle: async (input) => {
       const operation = client.adapter.accounts?.getByHandle;
       if (operation === undefined) throw unsupportedOperation("account.lookup", context(client));
+      requireClientCapability(client, "accounts.lookupByHandle", "account.lookup");
       return operation(input, context(client));
     },
     updateProfile: async (input) => {
@@ -176,6 +240,7 @@ function createAccountService(client: RequiredClientContext): AccountService {
     listPosts: async (input) => {
       const operation = client.adapter.accounts?.listPosts;
       if (operation === undefined) throw unsupportedOperation("account.posts", context(client));
+      requireClientCapability(client, "posts.read", "account.posts");
       const page = normalizePageInput(input.page, "account.posts", client);
       const rawId = decodeRawRef(input.accountId, client, "account", "account.posts");
       return operation(
@@ -274,7 +339,7 @@ function createPostService(client: RequiredClientContext): PostService {
         throw unsupportedOperation("post.get", capabilityContext(client, "posts.read"));
       requireClientCapability(client, "posts.read", "post.get");
       const rawId = decodeRawRef(input.id, client, "post", "post.get");
-      return operation({ id: rawId }, context(client));
+      return operation({ ...input, id: rawId }, context(client));
     },
     create: async (input) => {
       const operation = client.adapter.posts?.create;
@@ -313,12 +378,33 @@ function createPostService(client: RequiredClientContext): PostService {
       requireClientCapability(client, "posts.update", "post.update");
       assertUpdatePostPayload(input, client, "post.update");
       requirePostFeatureCapabilities(input, client, "post.update");
+      if (
+        input.visibility !== undefined &&
+        client.adapter.posts?.updateSemantics?.visibility !== "exact"
+      ) {
+        throw unsupportedOperation("post.update", {
+          ...capabilityContext(client, "posts.update"),
+          raw: { reason: "The adapter does not declare exact visibility update semantics." },
+        });
+      }
+      // Undefined patch fields stay omitted so adapters can preserve remote values exactly.
       const normalized = {
-        ...input,
         id: decodeRawRef(input.id, client, "post", "post.update"),
+        session: input.session,
+        ...(input.content === undefined ? {} : { content: input.content }),
+        ...(input.visibility === undefined ? {} : { visibility: input.visibility }),
+        ...(input.sensitive === undefined ? {} : { sensitive: input.sensitive }),
+        ...(input.summary === undefined ? {} : { summary: input.summary }),
         ...decodeOptionalPostRef(input.replyToId, client, "post.update", "replyToId"),
         ...decodeOptionalPostRef(input.quoteOfId, client, "post.update", "quoteOfId"),
-        mediaIds: input.mediaIds?.map((id) => decodeRawRef(id, client, "media", "post.update")),
+        ...(input.mediaIds === undefined
+          ? {}
+          : {
+              mediaIds: input.mediaIds.map((id) =>
+                decodeRawRef(id, client, "media", "post.update"),
+              ),
+            }),
+        ...(input.poll === undefined ? {} : { poll: input.poll }),
       };
       return operation(normalized, context(client));
     },
@@ -341,6 +427,55 @@ function createPostService(client: RequiredClientContext): PostService {
       requireClientCapability(client, "posts.delete", "post.delete");
       const rawId = decodeRawRef(input.id, client, "post", "post.delete");
       return operation({ ...input, id: rawId }, context(client));
+    },
+    context: async (input) => {
+      const operation = client.adapter.posts?.context;
+      if (operation === undefined) {
+        throw unsupportedOperation("post.context", capabilityContext(client, "posts.context"));
+      }
+      requireClientCapability(client, "posts.context", "post.context");
+      return operation(
+        { id: decodeRawRef(input.id, client, "post", "post.context") },
+        context(client),
+      );
+    },
+    quotes: async (input) => {
+      const operation = client.adapter.posts?.quotes;
+      if (operation === undefined) {
+        throw unsupportedOperation("post.quotes", capabilityContext(client, "posts.quotes"));
+      }
+      requireClientCapability(client, "posts.quotes", "post.quotes");
+      const page = normalizePageInput(input.page, "post.quotes", client);
+      return operation(
+        {
+          postId: decodeRawRef(input.postId, client, "post", "post.quotes"),
+          ...(page === undefined ? {} : { page }),
+        },
+        context(client),
+      );
+    },
+    translate: async (input) => {
+      const operation = client.adapter.posts?.translate;
+      if (operation === undefined) {
+        throw unsupportedOperation("post.translate", capabilityContext(client, "posts.translate"));
+      }
+      requireClientCapability(client, "posts.translate", "post.translate");
+      if (typeof input.targetLanguage !== "string" || input.targetLanguage.length === 0) {
+        throwValidation("Translation target language must not be empty.", "post.translate", client);
+      }
+      if (
+        input.sourceLanguage !== undefined &&
+        (typeof input.sourceLanguage !== "string" || input.sourceLanguage.length === 0)
+      ) {
+        throwValidation("Translation source language must not be empty.", "post.translate", client);
+      }
+      return operation(
+        {
+          ...input,
+          postId: decodeRawRef(input.postId, client, "post", "post.translate"),
+        },
+        context(client),
+      );
     },
   };
 }
@@ -456,10 +591,7 @@ function validateCreatePollInput(
     throwValidation("Post poll options must be non-empty strings.", operation, client);
   }
   assertOptionalBoolean(poll.multiple, "poll.multiple", operation, client);
-  if (
-    poll.expiresInSeconds !== undefined &&
-    (!Number.isInteger(poll.expiresInSeconds) || poll.expiresInSeconds < 1)
-  ) {
+  if (!Number.isInteger(poll.expiresInSeconds) || poll.expiresInSeconds < 1) {
     throwValidation("Post poll expiration must be a positive integer.", operation, client);
   }
 }
@@ -661,7 +793,35 @@ function createSearchService(client: RequiredClientContext): SearchService {
 }
 
 function createMediaService(client: RequiredClientContext): MediaService {
+  const ingestUrl = async (input: Parameters<MediaService["ingestUrl"]>[0]) => {
+    // Legacy adapters are routed through the canonical operation during migration.
+    const operation = client.adapter.media?.ingestUrl ?? client.adapter.media?.uploadFromUrl;
+    if (operation === undefined) {
+      throw unsupportedOperation(
+        "media.ingestUrl",
+        capabilityContext(client, "media.urlIngestion"),
+      );
+    }
+    requireClientCapability(client, "media.urlIngestion", "media.ingestUrl");
+    assertOptionalString(input.description, "description", "media.ingestUrl", client);
+    assertOptionalBoolean(input.sensitive, "sensitive", "media.ingestUrl", client);
+    if (!URL.canParse(input.url)) {
+      throwValidation("Media URL must be a valid URL.", "media.ingestUrl", client);
+    }
+    return operation(input, context(client));
+  };
   return {
+    get: async (input) => {
+      const operation = client.adapter.media?.get;
+      if (operation === undefined) {
+        throw unsupportedOperation("media.get", capabilityContext(client, "media.get"));
+      }
+      requireClientCapability(client, "media.get", "media.get");
+      return operation(
+        { id: decodeRawRef(input.id, client, "media", "media.get") },
+        context(client),
+      );
+    },
     upload: async (input) => {
       const operation = client.adapter.media?.upload;
       if (operation === undefined) {
@@ -697,22 +857,8 @@ function createMediaService(client: RequiredClientContext): MediaService {
       const id = decodeRawRef(input.id, client, "media", "media.delete");
       return operation({ ...input, id }, context(client));
     },
-    uploadFromUrl: async (input) => {
-      const operation = client.adapter.media?.uploadFromUrl;
-      if (operation === undefined) {
-        throw unsupportedOperation(
-          "media.uploadFromUrl",
-          capabilityContext(client, "media.remoteUrlUpload"),
-        );
-      }
-      requireClientCapability(client, "media.remoteUrlUpload", "media.uploadFromUrl");
-      assertOptionalString(input.description, "description", "media.uploadFromUrl", client);
-      assertOptionalBoolean(input.sensitive, "sensitive", "media.uploadFromUrl", client);
-      if (!URL.canParse(input.url)) {
-        throwValidation("Media URL must be a valid URL.", "media.uploadFromUrl", client);
-      }
-      return operation(input, context(client));
-    },
+    ingestUrl,
+    uploadFromUrl: ingestUrl,
   };
 }
 
@@ -892,6 +1038,24 @@ function createNotificationService(client: RequiredClientContext): NotificationS
       }
       requireClientCapability(client, "notifications.clear", "notification.clear");
       await operation(input, context(client));
+    },
+    groups: async (input) => {
+      const operation = client.adapter.notifications?.groups;
+      if (operation === undefined) {
+        throw unsupportedOperation(
+          "notification.groups",
+          capabilityContext(client, "notifications.grouped"),
+        );
+      }
+      requireClientCapability(client, "notifications.grouped", "notification.groups");
+      if (input.types !== undefined && !Array.isArray(input.types)) {
+        throwValidation("Notification types must be an array.", "notification.groups", client);
+      }
+      validateNotificationTypes(input.types, client, "notification.groups");
+      return operation(
+        { ...input, page: normalizePageInput(input.page, "notification.groups", client) },
+        context(client),
+      );
     },
   };
 }
@@ -1205,6 +1369,99 @@ function createScheduledPostService(client: RequiredClientContext): ScheduledPos
   };
 }
 
+function createBookmarkFolderService(client: RequiredClientContext): BookmarkFolderService {
+  const requireOperation = <Operation>(
+    operationName: string,
+    operation: Operation | undefined,
+  ): Operation => {
+    if (operation === undefined) {
+      throw unsupportedOperation(
+        operationName,
+        capabilityContext(client, "social.bookmarkFolders"),
+      );
+    }
+    requireClientCapability(client, "social.bookmarkFolders", operationName);
+    return operation;
+  };
+  const validateName = (
+    input: CreateBookmarkFolderInput | UpdateBookmarkFolderInput,
+    operation: string,
+  ) => {
+    if (typeof input.name !== "string" || input.name.trim().length === 0) {
+      throwValidation("Bookmark folder name must not be empty.", operation, client);
+    }
+  };
+  const postAction = async (
+    input: BookmarkFolderPostInput,
+    operationName: "bookmarkFolder.addPost" | "bookmarkFolder.removePost",
+    operation:
+      | NonNullable<RequiredClientContext["adapter"]["bookmarkFolders"]>["addPost"]
+      | NonNullable<RequiredClientContext["adapter"]["bookmarkFolders"]>["removePost"]
+      | undefined,
+  ) => {
+    const dispatch = requireOperation(operationName, operation);
+    return dispatch(
+      {
+        ...input,
+        folderId: decodeRawRef(input.folderId, client, "bookmarkFolder", operationName),
+        postId: decodeRawRef(input.postId, client, "post", operationName),
+      },
+      context(client),
+    );
+  };
+  return {
+    list: async (input) => {
+      const operation = requireOperation(
+        "bookmarkFolder.list",
+        client.adapter.bookmarkFolders?.list,
+      );
+      return operation(
+        { ...input, page: normalizePageInput(input.page, "bookmarkFolder.list", client) },
+        context(client),
+      );
+    },
+    create: async (input) => {
+      const operation = requireOperation(
+        "bookmarkFolder.create",
+        client.adapter.bookmarkFolders?.create,
+      );
+      validateName(input, "bookmarkFolder.create");
+      return operation(input, context(client));
+    },
+    update: async (input) => {
+      const operation = requireOperation(
+        "bookmarkFolder.update",
+        client.adapter.bookmarkFolders?.update,
+      );
+      validateName(input, "bookmarkFolder.update");
+      return operation(
+        {
+          ...input,
+          id: decodeRawRef(input.id, client, "bookmarkFolder", "bookmarkFolder.update"),
+        },
+        context(client),
+      );
+    },
+    delete: async (input) => {
+      const operation = requireOperation(
+        "bookmarkFolder.delete",
+        client.adapter.bookmarkFolders?.delete,
+      );
+      return operation(
+        {
+          ...input,
+          id: decodeRawRef(input.id, client, "bookmarkFolder", "bookmarkFolder.delete"),
+        },
+        context(client),
+      );
+    },
+    addPost: (input) =>
+      postAction(input, "bookmarkFolder.addPost", client.adapter.bookmarkFolders?.addPost),
+    removePost: (input) =>
+      postAction(input, "bookmarkFolder.removePost", client.adapter.bookmarkFolders?.removePost),
+  };
+}
+
 function createStreamService(client: RequiredClientContext): StreamService {
   return {
     timeline: async (input) => {
@@ -1462,7 +1719,7 @@ function normalizePageInput(
   if (page.limit !== undefined && (!Number.isInteger(page.limit) || page.limit < 1)) {
     throw new ActivityPlugError(
       "VALIDATION_FAILED",
-      `Page input limit must be an integer between 1 and ${maxPageLimit}.`,
+      `Page input limit must be an integer between 1 and ${PORTABLE_PAGE_LIMIT}.`,
       {
         adapter: client.adapter.metadata.id,
         origin: client.origin,
@@ -1473,7 +1730,7 @@ function normalizePageInput(
   return {
     ...(page.after === undefined ? {} : { after: page.after }),
     ...(page.before === undefined ? {} : { before: page.before }),
-    ...(page.limit === undefined ? {} : { limit: Math.min(page.limit, maxPageLimit) }),
+    ...(page.limit === undefined ? {} : { limit: Math.min(page.limit, PORTABLE_PAGE_LIMIT) }),
   };
 }
 
@@ -1482,31 +1739,12 @@ function normalizeSearchPageInput(
   operation: string,
   client: RequiredClientContext,
 ): SearchPageInput | undefined {
-  if (page === undefined) return undefined;
-  if (typeof page !== "object" || page === null || Array.isArray(page)) {
-    throw new ActivityPlugError("VALIDATION_FAILED", "Page input must be an object.", {
-      adapter: client.adapter.metadata.id,
-      origin: client.origin,
-      operation,
-    });
-  }
-  const candidate = page as Record<string, unknown>;
-  if (candidate["after"] !== undefined || candidate["before"] !== undefined) {
-    throw new ActivityPlugError("VALIDATION_FAILED", "Search pagination does not accept cursors.", {
-      adapter: client.adapter.metadata.id,
-      origin: client.origin,
-      operation,
-    });
-  }
-  const normalized = normalizePageInput(page, operation, client);
-  if (normalized?.limit === undefined) return undefined;
-  return { limit: normalized.limit };
+  return normalizePageInput(page, operation, client);
 }
 
 function normalizeOrigin(origin: string, operation: string, adapter: string): string {
-  let url: URL;
   try {
-    url = new URL(origin);
+    return canonicalizeOrigin(origin);
   } catch (cause) {
     throw new ActivityPlugError(
       "VALIDATION_FAILED",
@@ -1515,24 +1753,40 @@ function normalizeOrigin(origin: string, operation: string, adapter: string): st
       { cause },
     );
   }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new ActivityPlugError(
-      "VALIDATION_FAILED",
-      "ActivityPlug origin must use HTTP or HTTPS.",
-      {
-        adapter,
-        origin,
-        operation,
-      },
-    );
-  }
-  url.hash = "";
-  url.search = "";
-  return url.origin;
 }
 
-type RequiredClientContext = Omit<ActivityPlugClientOptions, "capabilities"> & {
+export function canonicalizeOrigin(input: string): string {
+  let url: URL;
+  try {
+    url = new URL(input);
+  } catch (cause) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "ActivityPlug origin must be a valid HTTP(S) URL.",
+      { origin: input },
+      { cause },
+    );
+  }
+  if (
+    (url.protocol !== "http:" && url.protocol !== "https:") ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.pathname !== "/" ||
+    url.search !== "" ||
+    url.hash !== ""
+  ) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "ActivityPlug origin must be an HTTP(S) origin without credentials, path, query, or fragment.",
+      { origin: input },
+    );
+  }
+  return url.origin.toLowerCase();
+}
+
+type RequiredClientContext = Omit<ActivityPlugClientOptions, "capabilities" | "fetch"> & {
   readonly capabilities: CapabilitySet;
+  readonly fetch: typeof globalThis.fetch;
 };
 
 function context(
@@ -1543,6 +1797,7 @@ function context(
     adapterId: client.adapter.metadata.id,
     origin,
     capabilities: client.capabilities,
+    fetch: client.fetch,
     ...(client.sessionStore === undefined ? {} : { sessionStore: client.sessionStore }),
   };
 }

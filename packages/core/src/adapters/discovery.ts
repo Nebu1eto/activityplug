@@ -4,6 +4,8 @@ import {
   type CapabilityInputLayer,
   type CapabilitySet,
 } from "../capabilities/capability.js";
+import { ActivityPlugError } from "../errors/error.js";
+import { canonicalizeOrigin } from "./client.js";
 import { type AdapterMetadata } from "./metadata.js";
 
 export interface NodeInfoSoftware {
@@ -63,6 +65,39 @@ export interface ActivityPlugAdapterDefinition {
 export interface AdapterResolution {
   readonly adapter: ActivityPlugAdapterDefinition;
   readonly capabilities: CapabilitySet;
+}
+
+export function resolveSameOriginDiscoveryUrl(
+  href: string,
+  instanceOrigin: string,
+  operation: string,
+): string {
+  const canonicalInstanceOrigin = canonicalizeOrigin(instanceOrigin);
+  let url: URL;
+  try {
+    url = new URL(href, canonicalInstanceOrigin);
+  } catch (cause) {
+    throw new ActivityPlugError(
+      "ORIGIN_NOT_ALLOWED",
+      "Discovery document link must be a valid URL.",
+      { origin: instanceOrigin, operation },
+      { cause },
+    );
+  }
+  const targetOrigin = canonicalizeOrigin(url.origin);
+  if (
+    targetOrigin !== canonicalInstanceOrigin ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.hash !== ""
+  ) {
+    throw new ActivityPlugError(
+      "ORIGIN_NOT_ALLOWED",
+      "Discovery document links must stay on the instance origin.",
+      { origin: targetOrigin, operation },
+    );
+  }
+  return url.href;
 }
 
 export function resolveAdapterForNodeInfo(

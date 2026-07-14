@@ -61,6 +61,20 @@ export interface StreamReconnectPolicy {
   readonly maxAttempts?: number;
 }
 
+export type WebSocketFactory = (
+  url: string,
+  protocols?: string | string[],
+  signal?: AbortSignal,
+  options?: WebSocketFactoryCallOptions,
+) => WebSocket | Promise<WebSocket>;
+
+/** Trusted operation context used by vetted WebSocket transports. */
+export interface WebSocketFactoryCallOptions {
+  readonly operation: string;
+  /** Optional credential forwarded as the WebSocket HTTP Authorization header. */
+  readonly authorization?: string;
+}
+
 export interface StreamOptions {
   readonly signal?: AbortSignal;
 }

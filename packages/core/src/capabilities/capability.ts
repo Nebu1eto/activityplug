@@ -4,7 +4,9 @@ export type CapabilityName =
   | "auth.oauth.authorizationCode"
   | "auth.oauth.clientCredentials"
   | "auth.oauth.refreshToken"
+  | "auth.oauth.revoke"
   | "auth.tokenInjection"
+  | "auth.emailChallenge"
   | "auth.passkey"
   | "instance.nodeInfo"
   | "instance.oauthMetadata"
@@ -23,15 +25,17 @@ export type CapabilityName =
   | "posts.quote"
   | "posts.translate"
   | "posts.history"
+  | "posts.context"
+  | "posts.quotes"
   | "timelines.home"
   | "timelines.public"
   | "timelines.local"
   | "timelines.hashtag"
   | "timelines.list"
+  | "media.get"
   | "media.upload"
   | "media.update"
   | "media.delete"
-  | "media.remoteUrlUpload"
   | "media.urlIngestion"
   | "notifications.list"
   | "notifications.grouped"
@@ -79,23 +83,48 @@ export type CapabilityStatus = "supported" | "unsupported" | "unknown";
 
 export type CapabilitySourceKind = "static" | "nodeinfo" | "oauth" | "instance" | "probe";
 
+/** @deprecated Use `media.urlIngestion` at new capability input boundaries. */
+export type DeprecatedCapabilityAlias = "media.remoteUrlUpload";
+
+export type CapabilityInputName = CapabilityName | DeprecatedCapabilityAlias;
+
+/** Deprecated names are accepted only while normalizing adapter capability input. */
+export const deprecatedCapabilityAliases = {
+  "media.remoteUrlUpload": "media.urlIngestion",
+} as const satisfies Readonly<Record<DeprecatedCapabilityAlias, CapabilityName>>;
+
+export interface CapabilityConstraints {
+  readonly software?: {
+    readonly minimum?: string;
+    readonly maximumExclusive?: string;
+  };
+  readonly acceptedInputs?: readonly string[];
+  readonly media?: {
+    readonly maxBytes?: number;
+    readonly maxItems?: number;
+    readonly mimeTypes?: readonly string[];
+  };
+}
+
 export interface CapabilityDecision {
   readonly name: CapabilityName;
   readonly status: CapabilityStatus;
   readonly source: CapabilitySourceKind;
   readonly reason?: string;
+  readonly constraints?: CapabilityConstraints;
   readonly raw?: unknown;
 }
 
 export type CapabilitySet = Readonly<Record<CapabilityName, CapabilityDecision>>;
 
 export type PartialCapabilitySet = Readonly<
-  Partial<Record<CapabilityName, CapabilityDecisionInput>>
+  Partial<Record<CapabilityInputName, CapabilityDecisionInput>>
 >;
 
 export interface CapabilityDecisionInput {
   readonly status: CapabilityStatus;
   readonly reason?: string;
+  readonly constraints?: CapabilityConstraints;
   readonly raw?: unknown;
 }
 
@@ -108,7 +137,9 @@ export const capabilityNames = [
   "auth.oauth.authorizationCode",
   "auth.oauth.clientCredentials",
   "auth.oauth.refreshToken",
+  "auth.oauth.revoke",
   "auth.tokenInjection",
+  "auth.emailChallenge",
   "auth.passkey",
   "instance.nodeInfo",
   "instance.oauthMetadata",
@@ -127,15 +158,17 @@ export const capabilityNames = [
   "posts.quote",
   "posts.translate",
   "posts.history",
+  "posts.context",
+  "posts.quotes",
   "timelines.home",
   "timelines.public",
   "timelines.local",
   "timelines.hashtag",
   "timelines.list",
+  "media.get",
   "media.upload",
   "media.update",
   "media.delete",
-  "media.remoteUrlUpload",
   "media.urlIngestion",
   "notifications.list",
   "notifications.grouped",
@@ -189,15 +222,20 @@ const sourceRank = {
 } as const satisfies Record<CapabilitySourceKind, number>;
 
 export function createCapabilitySet(capabilities: PartialCapabilitySet = {}): CapabilitySet {
+  const normalized = normalizeCapabilityInputs(capabilities);
   return Object.fromEntries(
-    capabilityNames.map((name) => [name, normalizeDecision(name, capabilities[name])]),
+    capabilityNames.map((name) => [name, normalizeDecision(name, normalized[name])]),
   ) as CapabilitySet;
 }
 
 export function mergeCapabilityLayers(layers: readonly CapabilityInputLayer[]): CapabilitySet {
   const merged = new Map<CapabilityName, CapabilityDecision>();
+  const normalizedLayers = layers.map((layer) => ({
+    source: layer.source,
+    capabilities: normalizeCapabilityInputs(layer.capabilities),
+  }));
   for (const name of capabilityNames) {
-    for (const layer of layers) {
+    for (const layer of normalizedLayers) {
       const input = layer.capabilities[name];
       if (input === undefined) continue;
       const decision = normalizeDecision(name, input, layer.source);
@@ -233,8 +271,34 @@ export function capability(
   status: CapabilityStatus,
   reason?: string,
   raw?: unknown,
+  constraints?: CapabilityConstraints,
 ): CapabilityDecisionInput {
-  return { status, reason, raw };
+  return {
+    status,
+    ...(reason === undefined ? {} : { reason }),
+    ...(raw === undefined ? {} : { raw }),
+    ...(constraints === undefined ? {} : { constraints }),
+  };
+}
+
+function normalizeCapabilityInputs(
+  capabilities: PartialCapabilitySet,
+): Readonly<Partial<Record<CapabilityName, CapabilityDecisionInput>>> {
+  const normalized = { ...capabilities } as Partial<
+    Record<CapabilityName, CapabilityDecisionInput>
+  >;
+  for (const [alias, canonical] of Object.entries(deprecatedCapabilityAliases) as readonly [
+    DeprecatedCapabilityAlias,
+    CapabilityName,
+  ][]) {
+    // An explicit canonical entry always wins over its compatibility alias.
+    if (!Object.prototype.hasOwnProperty.call(capabilities, canonical)) {
+      const aliased = capabilities[alias];
+      if (aliased !== undefined) normalized[canonical] = aliased;
+    }
+    delete (normalized as Partial<Record<CapabilityInputName, CapabilityDecisionInput>>)[alias];
+  }
+  return normalized;
 }
 
 function normalizeDecision(
@@ -245,12 +309,13 @@ function normalizeDecision(
   if (decision === undefined) {
     return { name, status: "unknown", source: "static" };
   }
-  const { status, reason, raw } = decision;
+  const { status, reason, constraints, raw } = decision;
   return {
     name,
     status,
     source,
     ...(reason === undefined ? {} : { reason }),
+    ...(constraints === undefined ? {} : { constraints }),
     ...(raw === undefined ? {} : { raw }),
   };
 }

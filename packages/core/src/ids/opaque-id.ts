@@ -1,3 +1,4 @@
+import { isValidAdapterId } from "../adapters/metadata.js";
 import { invalidOpaqueId } from "../errors/error.js";
 import { decodeBase64UrlUtf8, encodeBase64UrlUtf8 } from "../utils/base64url.js";
 
@@ -15,7 +16,7 @@ const PREFIX = "ap";
 const VERSION = "1";
 
 export function encodeOpaqueId(raw: RawEntityId): OpaqueId {
-  assertIdPart("adapter", raw.adapter);
+  assertAdapterId(raw.adapter);
   assertIdPart("origin", raw.origin);
   assertIdPart("type", raw.type);
   assertIdPart("id", raw.id);
@@ -45,11 +46,19 @@ export function decodeOpaqueId(id: unknown): RawEntityId {
     throw invalidOpaqueId("Opaque ID payload has an invalid shape.");
   }
   const [adapter, origin, type, rawId] = parsed;
-  assertIdPart("adapter", adapter);
+  assertAdapterId(adapter);
   assertIdPart("origin", origin);
   assertIdPart("type", type);
   assertIdPart("id", rawId);
   return { adapter, origin, type, id: rawId };
+}
+
+function assertAdapterId(value: string): void {
+  if (!isValidAdapterId(value)) {
+    throw invalidOpaqueId(
+      "Opaque ID adapter must be non-empty and contain no whitespace or control characters.",
+    );
+  }
 }
 
 export function createEntityRef<EntityType extends string>(

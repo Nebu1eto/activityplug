@@ -1,7 +1,10 @@
 import { ActivityPlugError } from "../errors/error.js";
 import { decodeBase64UrlUtf8, encodeBase64UrlUtf8 } from "../utils/base64url.js";
 
-export const maxPageLimit = 200;
+export const PORTABLE_PAGE_LIMIT = 100;
+
+/** @deprecated Use `PORTABLE_PAGE_LIMIT`. */
+export const maxPageLimit = PORTABLE_PAGE_LIMIT;
 
 const CURSOR_PREFIX = "apc";
 const CURSOR_VERSION = "1";

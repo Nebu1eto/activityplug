@@ -1,9 +1,67 @@
 import { describe, expect, it } from "vitest";
 
 import { capability, createCapabilitySet } from "../capabilities/capability.js";
-import { resolveAdapterForNodeInfo, type ActivityPlugAdapterDefinition } from "./discovery.js";
+import {
+  resolveAdapterForNodeInfo,
+  resolveSameOriginDiscoveryUrl,
+  type ActivityPlugAdapterDefinition,
+} from "./discovery.js";
 
 describe("adapter discovery", () => {
+  it("rejects cross-origin NodeInfo schema links", () => {
+    expect(() =>
+      resolveSameOriginDiscoveryUrl(
+        "https://attacker.example/nodeinfo/2.1",
+        "https://social.example",
+        "instance.nodeInfo",
+      ),
+    ).toThrowError(
+      expect.objectContaining({
+        code: "ORIGIN_NOT_ALLOWED",
+        context: expect.objectContaining({
+          origin: "https://attacker.example",
+          operation: "instance.nodeInfo",
+        }),
+      }),
+    );
+  });
+
+  it("returns an absolute same-origin NodeInfo schema URL", () => {
+    expect(
+      resolveSameOriginDiscoveryUrl(
+        "/nodeinfo/2.1?format=json",
+        "https://social.example",
+        "instance.nodeInfo",
+      ),
+    ).toBe("https://social.example/nodeinfo/2.1?format=json");
+  });
+
+  it.each([
+    ["an invalid URL", "http://[", "https://social.example"],
+    [
+      "same-origin credentials",
+      "https://user:password@social.example/nodeinfo/2.1",
+      "https://social.example",
+    ],
+    [
+      "a same-origin fragment",
+      "https://social.example/nodeinfo/2.1#fragment",
+      "https://social.example",
+    ],
+  ])("rejects %s in discovery links", (_description, href, expectedOrigin) => {
+    expect(() =>
+      resolveSameOriginDiscoveryUrl(href, "https://social.example", "instance.nodeInfo"),
+    ).toThrowError(
+      expect.objectContaining({
+        code: "ORIGIN_NOT_ALLOWED",
+        context: expect.objectContaining({
+          origin: expectedOrigin,
+          operation: "instance.nodeInfo",
+        }),
+      }),
+    );
+  });
+
   it("selects an adapter from NodeInfo software data", () => {
     const adapter = versionedAdapter();
 

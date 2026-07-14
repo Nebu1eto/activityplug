@@ -33,6 +33,21 @@ export interface InstanceProfile {
   readonly raw: unknown;
 }
 
+export interface OAuthMetadata {
+  readonly authorizationEndpoint: URIString;
+  readonly tokenEndpoint: URIString;
+  readonly registrationEndpoint?: URIString;
+  readonly revocationEndpoint?: URIString;
+  readonly scopesSupported: readonly string[];
+  readonly codeChallengeMethodsSupported: readonly string[];
+  readonly raw: unknown;
+}
+
+export interface InstancePeers {
+  readonly origins: readonly string[];
+  readonly raw: unknown;
+}
+
 export interface Account {
   readonly ref: EntityRef<"account">;
   readonly username: string;
@@ -81,7 +96,34 @@ export interface Post {
     readonly reblogs?: number;
     readonly favourites?: number;
   };
+  readonly viewerState?: PostViewerState;
   readonly extensions?: Readonly<Record<string, unknown>>;
+  readonly raw: unknown;
+}
+
+export interface PostViewerState {
+  readonly favourited?: boolean;
+  readonly boosted?: boolean;
+  readonly bookmarked?: boolean;
+  readonly reactions?: readonly PostViewerReaction[];
+}
+
+export interface PostViewerReaction {
+  readonly emoji: string;
+  readonly count?: number;
+  readonly me: boolean;
+}
+
+export interface PostContext {
+  readonly ancestors: readonly Post[];
+  readonly descendants: readonly Post[];
+}
+
+export interface PostTranslation {
+  readonly contentHtml: string;
+  readonly summary?: string;
+  readonly detectedSourceLanguage?: string;
+  readonly provider?: string;
   readonly raw: unknown;
 }
 
@@ -166,6 +208,13 @@ export interface Notification {
   readonly raw: unknown;
 }
 
+export interface NotificationGroup {
+  readonly key: string;
+  readonly type: NotificationType;
+  readonly notifications: readonly Notification[];
+  readonly raw: unknown;
+}
+
 export type NotificationType =
   | "mention"
   | "status"
@@ -194,6 +243,13 @@ export interface AccountList {
   readonly title: string;
   readonly repliesPolicy?: "followed" | "list" | "none" | "unknown";
   readonly exclusive?: boolean;
+  readonly raw: unknown;
+}
+
+export interface BookmarkFolder {
+  readonly ref: EntityRef<"bookmarkFolder">;
+  readonly name: string;
+  readonly postCount?: number;
   readonly raw: unknown;
 }
 
@@ -241,6 +297,7 @@ export interface SearchResult {
   readonly accounts: readonly Account[];
   readonly posts: readonly Post[];
   readonly hashtags: readonly Hashtag[];
+  readonly pageInfo: PageInfo;
   readonly raw: unknown;
 }
 
@@ -263,7 +320,6 @@ export interface PageInfo {
   readonly hasPreviousPage: boolean;
   readonly startCursor?: string;
   readonly endCursor?: string;
-  readonly raw?: unknown;
 }
 
 export interface Connection<Node> {

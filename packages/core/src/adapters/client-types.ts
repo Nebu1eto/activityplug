@@ -1,18 +1,24 @@
-import { type AuthAdapter, type AuthService, type AuthSessionStore } from "../auth/service.js";
-import { type AuthSession } from "../auth/types.js";
+import { type AuthService, type AuthSessionStore } from "../auth/service.js";
+import { type AuthAdapter, type AuthSession } from "../auth/types.js";
 import { type CapabilitySet } from "../capabilities/capability.js";
 import {
   type Account,
   type AccountList,
+  type BookmarkFolder,
   type Connection,
   type DeletedEntity,
   type Filter,
   type InstanceProfile,
+  type InstancePeers,
   type MediaAttachment,
   type Notification,
+  type NotificationGroup,
   type NotificationType,
+  type OAuthMetadata,
   type Poll,
   type Post,
+  type PostContext,
+  type PostTranslation,
   type PostRevision,
   type PostVisibility,
   type Relationship,
@@ -46,6 +52,7 @@ export interface ActivityPlugAdapter {
   readonly followRequests?: FollowRequestAdapterOperations;
   readonly filters?: FilterAdapterOperations;
   readonly scheduledPosts?: ScheduledPostAdapterOperations;
+  readonly bookmarkFolders?: BookmarkFolderAdapterOperations;
   readonly streams?: StreamAdapterOperations;
 }
 
@@ -53,6 +60,7 @@ export interface AdapterOperationContext {
   readonly origin: string;
   readonly adapterId: string;
   readonly capabilities: CapabilitySet;
+  readonly fetch: typeof globalThis.fetch;
   readonly sessionStore?: AuthSessionStore;
 }
 
@@ -65,6 +73,14 @@ export interface InstanceAdapterOperations {
     input: GetInstanceProfileInput,
     context: AdapterOperationContext,
   ) => Promise<InstanceProfile>;
+  readonly oauthMetadata?: (
+    input: GetInstanceOAuthMetadataInput,
+    context: AdapterOperationContext,
+  ) => Promise<OAuthMetadata>;
+  readonly peers?: (
+    input: GetInstancePeersInput,
+    context: AdapterOperationContext,
+  ) => Promise<InstancePeers>;
 }
 
 export interface AccountAdapterOperations {
@@ -92,6 +108,7 @@ export interface AccountAdapterOperations {
 }
 
 export interface PostAdapterOperations {
+  readonly updateSemantics?: PostUpdateSemantics;
   readonly get?: (input: GetPostInput, context: AdapterOperationContext) => Promise<Post>;
   readonly create?: (input: CreatePostInput, context: AdapterOperationContext) => Promise<Post>;
   readonly update?: (input: UpdatePostInput, context: AdapterOperationContext) => Promise<Post>;
@@ -103,6 +120,22 @@ export interface PostAdapterOperations {
     input: DeletePostInput,
     context: AdapterOperationContext,
   ) => Promise<DeletedEntity>;
+  readonly context?: (
+    input: GetPostContextInput,
+    context: AdapterOperationContext,
+  ) => Promise<PostContext>;
+  readonly quotes?: (
+    input: ListPostQuotesInput,
+    context: AdapterOperationContext,
+  ) => Promise<Connection<Post>>;
+  readonly translate?: (
+    input: TranslatePostInput,
+    context: AdapterOperationContext,
+  ) => Promise<PostTranslation>;
+}
+
+export interface PostUpdateSemantics {
+  readonly visibility: "exact" | "unsupported";
 }
 
 export interface TimelineAdapterOperations {
@@ -129,6 +162,10 @@ export interface SearchAdapterOperations {
 }
 
 export interface MediaAdapterOperations {
+  readonly get?: (
+    input: GetMediaInput,
+    context: AdapterOperationContext,
+  ) => Promise<MediaAttachment>;
   readonly upload?: (
     input: UploadMediaInput,
     context: AdapterOperationContext,
@@ -141,8 +178,13 @@ export interface MediaAdapterOperations {
     input: DeleteMediaInput,
     context: AdapterOperationContext,
   ) => Promise<DeletedEntity>;
+  readonly ingestUrl?: (
+    input: IngestMediaUrlInput,
+    context: AdapterOperationContext,
+  ) => Promise<MediaAttachment>;
+  /** @deprecated Implement `ingestUrl`; this alias is normalized by the client. */
   readonly uploadFromUrl?: (
-    input: UploadMediaFromUrlInput,
+    input: IngestMediaUrlInput,
     context: AdapterOperationContext,
   ) => Promise<MediaAttachment>;
 }
@@ -211,6 +253,37 @@ export interface NotificationAdapterOperations {
     input: ClearNotificationsInput,
     context: AdapterOperationContext,
   ) => Promise<void>;
+  readonly groups?: (
+    input: ListNotificationGroupsInput,
+    context: AdapterOperationContext,
+  ) => Promise<Connection<NotificationGroup>>;
+}
+
+export interface BookmarkFolderAdapterOperations {
+  readonly list?: (
+    input: ListBookmarkFoldersInput,
+    context: AdapterOperationContext,
+  ) => Promise<Connection<BookmarkFolder>>;
+  readonly create?: (
+    input: CreateBookmarkFolderInput,
+    context: AdapterOperationContext,
+  ) => Promise<BookmarkFolder>;
+  readonly update?: (
+    input: UpdateBookmarkFolderInput,
+    context: AdapterOperationContext,
+  ) => Promise<BookmarkFolder>;
+  readonly delete?: (
+    input: DeleteBookmarkFolderInput,
+    context: AdapterOperationContext,
+  ) => Promise<DeletedEntity>;
+  readonly addPost?: (
+    input: BookmarkFolderPostInput,
+    context: AdapterOperationContext,
+  ) => Promise<BookmarkFolder>;
+  readonly removePost?: (
+    input: BookmarkFolderPostInput,
+    context: AdapterOperationContext,
+  ) => Promise<BookmarkFolder>;
 }
 
 export interface ListAdapterOperations {
@@ -317,6 +390,7 @@ export interface ActivityPlugClientOptions {
   readonly origin: string;
   readonly capabilities?: CapabilitySet;
   readonly sessionStore?: AuthSessionStore;
+  readonly fetch?: typeof globalThis.fetch;
 }
 
 export interface ActivityPlugClient {
@@ -337,6 +411,7 @@ export interface ActivityPlugClient {
   readonly followRequests: FollowRequestService;
   readonly filters: FilterService;
   readonly scheduledPosts: ScheduledPostService;
+  readonly bookmarkFolders: BookmarkFolderService;
   readonly streams: StreamService;
 }
 
@@ -345,6 +420,14 @@ export interface DetectInstanceInput {
 }
 
 export interface GetInstanceProfileInput {
+  readonly origin?: string;
+}
+
+export interface GetInstanceOAuthMetadataInput {
+  readonly origin?: string;
+}
+
+export interface GetInstancePeersInput {
   readonly origin?: string;
 }
 
@@ -362,9 +445,7 @@ export interface PageInput {
   readonly limit?: number;
 }
 
-export interface SearchPageInput {
-  readonly limit?: number;
-}
+export type SearchPageInput = PageInput;
 
 export interface ListAccountPostsInput {
   readonly accountId: string;
@@ -401,6 +482,23 @@ export interface SessionPageInput {
 
 export interface GetPostInput {
   readonly id: string;
+  readonly session?: AuthSession;
+}
+
+export interface GetPostContextInput {
+  readonly id: string;
+}
+
+export interface ListPostQuotesInput {
+  readonly postId: string;
+  readonly page?: PageInput;
+}
+
+export interface TranslatePostInput {
+  readonly postId: string;
+  readonly session: AuthSession;
+  readonly targetLanguage: string;
+  readonly sourceLanguage?: string;
 }
 
 export interface CreatePostInput {
@@ -412,11 +510,13 @@ export interface CreatePostInput {
   readonly replyToId?: string;
   readonly quoteOfId?: string;
   readonly mediaIds?: readonly string[];
-  readonly poll?: {
-    readonly options: readonly string[];
-    readonly multiple?: boolean;
-    readonly expiresInSeconds?: number;
-  };
+  readonly poll?: PollCreateInput;
+}
+
+export interface PollCreateInput {
+  readonly options: readonly [string, string, ...string[]];
+  readonly expiresInSeconds: number;
+  readonly multiple?: boolean;
 }
 
 export interface UpdatePostInput {
@@ -429,11 +529,7 @@ export interface UpdatePostInput {
   readonly replyToId?: string;
   readonly quoteOfId?: string;
   readonly mediaIds?: readonly string[];
-  readonly poll?: {
-    readonly options: readonly string[];
-    readonly multiple?: boolean;
-    readonly expiresInSeconds?: number;
-  };
+  readonly poll?: PollCreateInput;
 }
 
 export interface PostHistoryInput {
@@ -479,6 +575,10 @@ export interface UploadMediaInput {
   readonly sensitive?: boolean;
 }
 
+export interface GetMediaInput {
+  readonly id: string;
+}
+
 export interface UpdateMediaInput {
   readonly session: AuthSession;
   readonly id: string;
@@ -491,12 +591,16 @@ export interface DeleteMediaInput {
   readonly id: string;
 }
 
-export interface UploadMediaFromUrlInput {
+export interface IngestMediaUrlInput {
   readonly session: AuthSession;
   readonly url: string;
   readonly description?: string;
   readonly sensitive?: boolean;
+  readonly signal?: AbortSignal;
 }
+
+/** @deprecated Use `IngestMediaUrlInput`. */
+export type UploadMediaFromUrlInput = IngestMediaUrlInput;
 
 export interface GetPollInput {
   readonly id: string;
@@ -526,6 +630,12 @@ export interface DismissNotificationInput {
 
 export interface ClearNotificationsInput {
   readonly session: AuthSession;
+}
+
+export interface ListNotificationGroupsInput {
+  readonly session: AuthSession;
+  readonly page?: PageInput;
+  readonly types?: readonly NotificationTypeInput[];
 }
 
 export interface RelationshipInput {
@@ -637,9 +747,36 @@ export interface DeleteScheduledPostInput {
   readonly id: string;
 }
 
+export interface ListBookmarkFoldersInput {
+  readonly session: AuthSession;
+  readonly page?: PageInput;
+}
+
+export interface CreateBookmarkFolderInput {
+  readonly session: AuthSession;
+  readonly name: string;
+}
+
+export interface UpdateBookmarkFolderInput extends CreateBookmarkFolderInput {
+  readonly id: string;
+}
+
+export interface DeleteBookmarkFolderInput {
+  readonly session: AuthSession;
+  readonly id: string;
+}
+
+export interface BookmarkFolderPostInput {
+  readonly session: AuthSession;
+  readonly folderId: string;
+  readonly postId: string;
+}
+
 export interface InstanceService {
   readonly detect: (input?: DetectInstanceInput) => Promise<InstanceProfile>;
   readonly getProfile: (input?: GetInstanceProfileInput) => Promise<InstanceProfile>;
+  readonly oauthMetadata: (input?: GetInstanceOAuthMetadataInput) => Promise<OAuthMetadata>;
+  readonly peers: (input?: GetInstancePeersInput) => Promise<InstancePeers>;
 }
 
 export interface AccountService {
@@ -657,6 +794,9 @@ export interface PostService {
   readonly update: (input: UpdatePostInput) => Promise<Post>;
   readonly history: (input: PostHistoryInput) => Promise<readonly PostRevision[]>;
   readonly delete: (input: DeletePostInput) => Promise<DeletedEntity>;
+  readonly context: (input: GetPostContextInput) => Promise<PostContext>;
+  readonly quotes: (input: ListPostQuotesInput) => Promise<Connection<Post>>;
+  readonly translate: (input: TranslatePostInput) => Promise<PostTranslation>;
 }
 
 export interface TimelineService {
@@ -672,10 +812,13 @@ export interface SearchService {
 }
 
 export interface MediaService {
+  readonly get: (input: GetMediaInput) => Promise<MediaAttachment>;
   readonly upload: (input: UploadMediaInput) => Promise<MediaAttachment>;
   readonly update: (input: UpdateMediaInput) => Promise<MediaAttachment>;
   readonly delete: (input: DeleteMediaInput) => Promise<DeletedEntity>;
-  readonly uploadFromUrl: (input: UploadMediaFromUrlInput) => Promise<MediaAttachment>;
+  readonly ingestUrl: (input: IngestMediaUrlInput) => Promise<MediaAttachment>;
+  /** @deprecated Use `ingestUrl`. */
+  readonly uploadFromUrl: (input: IngestMediaUrlInput) => Promise<MediaAttachment>;
 }
 
 export interface PollService {
@@ -706,6 +849,16 @@ export interface NotificationService {
   readonly unreadCount: (input: NotificationUnreadCountInput) => Promise<number>;
   readonly dismiss: (input: DismissNotificationInput) => Promise<DeletedEntity>;
   readonly clear: (input: ClearNotificationsInput) => Promise<void>;
+  readonly groups: (input: ListNotificationGroupsInput) => Promise<Connection<NotificationGroup>>;
+}
+
+export interface BookmarkFolderService {
+  readonly list: (input: ListBookmarkFoldersInput) => Promise<Connection<BookmarkFolder>>;
+  readonly create: (input: CreateBookmarkFolderInput) => Promise<BookmarkFolder>;
+  readonly update: (input: UpdateBookmarkFolderInput) => Promise<BookmarkFolder>;
+  readonly delete: (input: DeleteBookmarkFolderInput) => Promise<DeletedEntity>;
+  readonly addPost: (input: BookmarkFolderPostInput) => Promise<BookmarkFolder>;
+  readonly removePost: (input: BookmarkFolderPostInput) => Promise<BookmarkFolder>;
 }
 
 export interface ListService {
