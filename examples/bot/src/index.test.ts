@@ -1,4 +1,4 @@
-import { createEntityRef } from "@activityplug/core";
+import { createEntityRef, type PostVisibility } from "@activityplug/core";
 import { accountMappingFixtures } from "@activityplug/test-fixtures";
 import { describe, expect, it } from "vitest";
 
@@ -143,6 +143,90 @@ describe("sample bot client", () => {
     ]);
   });
 
+  it("matches only complete Unicode-aware mentions", async () => {
+    const fetch = mockFetch(async (request) => {
+      const url = new URL(request.url);
+      if (request.method === "GET" && url.pathname === "/api/v1/timelines/home") {
+        return jsonResponse([
+          {
+            ...accountMappingFixtures.mastodon.post,
+            id: "longer-domain",
+            content: "<p>@bot@example.computer is a different account.</p>",
+          },
+          {
+            ...accountMappingFixtures.mastodon.post,
+            id: "embedded",
+            content: "<p>prefix@bot@example.com is not a mention.</p>",
+          },
+          {
+            ...accountMappingFixtures.mastodon.post,
+            id: "punctuated",
+            content: "<p>Hello, (@bot@example.com)! Please check this.</p>",
+          },
+          {
+            ...accountMappingFixtures.mastodon.post,
+            id: "sentence-end",
+            content: "<p>Thanks @bot@example.com.</p>",
+          },
+        ]);
+      }
+      return jsonResponse({ error: "unexpected request" }, 404);
+    });
+    const bot = await createBotClient({
+      adapter: "mastodon",
+      origin: "https://mastodon.example",
+      accessToken: "bot-token",
+      fetch,
+    });
+    const timeline = await bot.pollHomeTimeline();
+
+    expect(
+      bot.findMentions(timeline.nodes, "bot@example.com").map((post) => post.ref.rawId),
+    ).toEqual(["punctuated", "sentence-end"]);
+  });
+
+  it.each<[PostVisibility, string]>([
+    ["public", "public"],
+    ["unlisted", "unlisted"],
+    ["followers", "private"],
+    ["direct", "direct"],
+    ["unknown", "private"],
+    ["local", "private"],
+    ["list", "private"],
+    ["none", "private"],
+  ])("does not escalate a %s reply beyond %s", async (sourceVisibility, remoteVisibility) => {
+    const fetch = mockFetch(async (request) => {
+      const url = new URL(request.url);
+      if (request.method === "POST" && url.pathname === "/api/v1/statuses") {
+        expect(await request.json()).toMatchObject({
+          status: "Safe reply",
+          in_reply_to_id: "900",
+          visibility: remoteVisibility,
+        });
+        return jsonResponse({ ...accountMappingFixtures.mastodon.post, id: "reply-1" });
+      }
+      return jsonResponse({ error: "unexpected request" }, 404);
+    });
+    const bot = await createBotClient({
+      adapter: "mastodon",
+      origin: "https://mastodon.example",
+      accessToken: "bot-token",
+      fetch,
+    });
+    const postId = createEntityRef({
+      adapter: "mastodon",
+      origin: "https://mastodon.example",
+      type: "post",
+      id: "900",
+    }).id;
+
+    await expect(bot.replyToMention(postId, "Safe reply", sourceVisibility)).resolves.toMatchObject(
+      {
+        ref: expect.objectContaining({ rawId: "reply-1" }),
+      },
+    );
+  });
+
   it("can create a direct reply with an injected token", async () => {
     const fetch = mockFetch(async (request) => {
       const url = new URL(request.url);
@@ -151,6 +235,7 @@ describe("sample bot client", () => {
         expect(await request.json()).toMatchObject({
           status: "Direct reply",
           in_reply_to_id: "900",
+          visibility: "private",
         });
         return jsonResponse({ ...accountMappingFixtures.mastodon.post, id: "reply-1" });
       }

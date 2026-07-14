@@ -6,7 +6,7 @@
   "license": "Apache-2.0 OR MIT",
   "type": "module",
   "scripts": {
-    "build": "tsdown",
+    "build": "rolldown -c rolldown.config.ts --configLoader native",
     "start": "pnpm -C ../.. --filter @activityplug/example-bot... build && node dist/cli.mjs",
     "test": "node --experimental-strip-types ../../scripts/run-package-tests.ts"
   },

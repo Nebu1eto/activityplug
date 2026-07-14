@@ -5,6 +5,7 @@ import {
   type AuthSession,
   type Connection,
   type Post,
+  type PostVisibility,
   type Relationship,
 } from "@activityplug/core";
 import { createMastodonAdapter } from "@activityplug/mastodon";
@@ -25,7 +26,11 @@ export interface BotClient {
   readonly verifyViewer: () => Promise<Account>;
   readonly pollHomeTimeline: (limit?: number) => Promise<Connection<Post>>;
   readonly findMentions: (posts: readonly Post[], username: string) => readonly Post[];
-  readonly replyToMention: (postId: string, content: string) => Promise<Post>;
+  readonly replyToMention: (
+    postId: string,
+    content: string,
+    sourceVisibility?: PostVisibility,
+  ) => Promise<Post>;
   readonly acknowledgeMention: (postId: string, emoji: string) => Promise<Post>;
   readonly handleTimelineMentions: (input: HandleTimelineMentionsInput) => Promise<readonly Post[]>;
   readonly follow: (accountId: string) => Promise<Relationship>;
@@ -44,11 +49,9 @@ export interface HandleTimelineMentionsInput {
 
 export async function createBotClient(input: CreateBotClientInput): Promise<BotClient> {
   const client = createActivityPlugClient({
-    adapter:
-      input.adapter === "mastodon"
-        ? createMastodonAdapter({ fetch: input.fetch })
-        : createMisskeyAdapter({ fetch: input.fetch }),
+    adapter: input.adapter === "mastodon" ? createMastodonAdapter() : createMisskeyAdapter(),
     origin: input.origin,
+    ...(input.fetch === undefined ? {} : { fetch: input.fetch }),
   });
   const session = await client.auth.injectToken({
     accessToken: input.accessToken,
@@ -59,8 +62,13 @@ export async function createBotClient(input: CreateBotClientInput): Promise<BotC
     verifyViewer: async () => (await client.auth.verifyCredentials(session)).account,
     pollHomeTimeline: (limit = 20) => client.timelines.home({ session, page: { limit } }),
     findMentions: (posts, username) => posts.filter((post) => mentionsUsername(post, username)),
-    replyToMention: (postId, content) =>
-      client.posts.create({ session, content, replyToId: postId, visibility: "public" }),
+    replyToMention: (postId, content, sourceVisibility = "unknown") =>
+      client.posts.create({
+        session,
+        content,
+        replyToId: postId,
+        visibility: safeReplyVisibility(sourceVisibility),
+      }),
     acknowledgeMention: async (postId, emoji) => {
       try {
         return await client.social.react({ session, postId, emoji });
@@ -83,7 +91,7 @@ export async function createBotClient(input: CreateBotClientInput): Promise<BotC
             session,
             content,
             replyToId: mention.ref.id,
-            visibility: "public",
+            visibility: safeReplyVisibility(mention.visibility),
           }),
         );
         if (acknowledgementEmoji !== undefined) {
@@ -101,8 +109,33 @@ export async function createBotClient(input: CreateBotClientInput): Promise<BotC
 }
 
 function mentionsUsername(post: Post, username: string): boolean {
-  const needle = `@${username.toLowerCase()}`;
-  return `${post.contentText ?? ""} ${stripHtml(post.contentHtml)}`.toLowerCase().includes(needle);
+  if (username.length === 0) return false;
+  const escapedUsername = escapeRegExp(username);
+  const mention = new RegExp(
+    `(?<![\\p{L}\\p{N}_])@${escapedUsername}(?![\\p{L}\\p{N}_@]|[.-][\\p{L}\\p{N}])`,
+    "iu",
+  );
+  return mention.test(`${post.contentText ?? ""} ${stripHtml(post.contentHtml)}`);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replaceAll(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function safeReplyVisibility(
+  sourceVisibility: PostVisibility,
+): "public" | "unlisted" | "followers" | "direct" {
+  switch (sourceVisibility) {
+    case "public":
+    case "unlisted":
+    case "followers":
+    case "direct":
+      return sourceVisibility;
+    default:
+      // Portable `followers` is the private/followers-only visibility used
+      // when a remote visibility cannot be represented without escalation.
+      return "followers";
+  }
 }
 
 function stripHtml(html: string): string {

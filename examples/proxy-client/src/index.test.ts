@@ -18,6 +18,7 @@ const session: AuthSession = {
   id: "session-1",
   adapter: "mastodon",
   origin: "https://example.test",
+  strategy: "token",
   scopes: ["read", "write", "follow"],
   capabilities: {},
 };
@@ -94,6 +95,97 @@ const relationship: Relationship = {
 };
 
 describe("sample proxy client", () => {
+  it.each([
+    [500, "INTERNAL_ERROR", "Unexpected server failure."],
+    [413, "REQUEST_LIMIT_EXCEEDED", "Request body is too large."],
+  ] as const)(
+    "decodes a typed %i JSON failure only after checking the HTTP status",
+    async (status, code, message) => {
+      const proxy = createProxyClient({
+        baseUrl: "http://activityplug.test",
+        fetch: async () =>
+          Response.json(
+            {
+              error: {
+                code,
+                message,
+                operation: "instance.detect",
+              },
+            },
+            { status },
+          ),
+      });
+
+      await expect(proxy.detectInstance({ origin: "https://example.test" })).rejects.toMatchObject({
+        code,
+        message,
+        context: expect.objectContaining({ operation: "instance.detect" }),
+      });
+    },
+  );
+
+  it.each([
+    [
+      "HTTP",
+      (proxy: ReturnType<typeof createProxyClient>) =>
+        proxy.detectInstance({ origin: "https://example.test" }),
+    ],
+    [
+      "GraphQL",
+      (proxy: ReturnType<typeof createProxyClient>) =>
+        proxy.publicTimeline({ origin: "https://example.test" }),
+    ],
+  ])("rejects a successful %s response with a non-JSON content type", async (_name, invoke) => {
+    const proxy = createProxyClient({
+      baseUrl: "http://activityplug.test",
+      fetch: async () =>
+        new Response("<html>not JSON</html>", {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        }),
+    });
+
+    await expect(invoke(proxy)).rejects.toThrow("ActivityPlug proxy returned a non-JSON response.");
+  });
+
+  it("rejects an empty 204 response instead of decoding it as data", async () => {
+    const proxy = createProxyClient({
+      baseUrl: "http://activityplug.test",
+      fetch: async () => new Response(null, { status: 204 }),
+    });
+
+    await expect(proxy.detectInstance({ origin: "https://example.test" })).rejects.toThrow(
+      "ActivityPlug proxy returned a non-JSON response.",
+    );
+  });
+
+  it.each([
+    [
+      "HTTP",
+      (proxy: ReturnType<typeof createProxyClient>) =>
+        proxy.detectInstance({ origin: "https://example.test" }),
+    ],
+    [
+      "GraphQL",
+      (proxy: ReturnType<typeof createProxyClient>) =>
+        proxy.publicTimeline({ origin: "https://example.test" }),
+    ],
+  ])("returns a typed error for malformed %s JSON", async (_name, invoke) => {
+    const proxy = createProxyClient({
+      baseUrl: "http://activityplug.test",
+      fetch: async () =>
+        new Response("{not-json", {
+          status: 200,
+          headers: { "content-type": "application/json; charset=utf-8" },
+        }),
+    });
+
+    await expect(invoke(proxy)).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      message: "ActivityPlug proxy returned malformed JSON.",
+    });
+  });
+
   it("uses HTTP for auth, viewer, instance detection, post creation, and social actions", async () => {
     const app = createActivityPlugApp({
       service: createService(),
@@ -230,6 +322,37 @@ describe("sample proxy client", () => {
       context: expect.objectContaining({ operation: "social.reaction" }),
     });
   });
+
+  it("preserves remote protocol errors from server responses", async () => {
+    const app = createActivityPlugApp({
+      service: createService({
+        createPost: async () => {
+          throw new ActivityPlugError(
+            "REMOTE_PROTOCOL_ERROR",
+            "HackersPub createNote returned an unexpected payload type.",
+            { operation: "post.create" },
+          );
+        },
+      }),
+      tokenImport: { enabled: true },
+    });
+    const proxy = createProxyClient({
+      baseUrl: "http://activityplug.test",
+      fetch: honoFetch(app.fetch),
+    });
+
+    await expect(
+      proxy.createPost({
+        adapter: "hackerspub",
+        origin: "https://example.test",
+        sessionId: "session-1",
+        content: "Hello",
+      }),
+    ).rejects.toMatchObject({
+      code: "REMOTE_PROTOCOL_ERROR",
+      context: expect.objectContaining({ operation: "post.create" }),
+    });
+  });
 });
 
 interface ServiceOverrides {
@@ -244,6 +367,12 @@ function createService(overrides: ServiceOverrides = {}): ActivityPlugApiService
     instances: {
       detect: async () => instance,
       get: async () => instance,
+      oauthMetadata: async () => {
+        throw new TypeError("OAuth metadata is outside this example.");
+      },
+      peers: async () => {
+        throw new TypeError("Peers are outside this example.");
+      },
     },
     accounts: {
       get: async () => account,
@@ -259,6 +388,11 @@ function createService(overrides: ServiceOverrides = {}): ActivityPlugApiService
       update: async () => post,
       history: async () => [],
       delete: async () => ({ ref: post.ref, deleted: true }),
+      context: async () => ({ ancestors: [], descendants: [] }),
+      quotes: async () => ({ nodes: [], pageInfo: pageInfo() }),
+      translate: async () => {
+        throw new TypeError("Translation is outside this example.");
+      },
     },
     timelines: {
       home: async () => ({ nodes: [post], pageInfo: pageInfo() }),
@@ -268,9 +402,16 @@ function createService(overrides: ServiceOverrides = {}): ActivityPlugApiService
       list: async () => ({ nodes: [post], pageInfo: pageInfo() }),
     },
     search: {
-      search: async () => ({ accounts: [account], posts: [post], hashtags: [], raw: {} }),
+      search: async () => ({
+        accounts: [account],
+        posts: [post],
+        hashtags: [],
+        pageInfo: pageInfo(),
+        raw: {},
+      }),
     },
     media: {
+      get: async () => media(),
       upload: async () => media(),
       update: async () => media(),
       delete: async () => ({ ref: media().ref, deleted: true }),
@@ -303,6 +444,7 @@ function createService(overrides: ServiceOverrides = {}): ActivityPlugApiService
     },
     notifications: {
       list: async () => ({ nodes: [], pageInfo: pageInfo() }),
+      groups: async () => ({ nodes: [], pageInfo: pageInfo() }),
       unreadCount: async () => 0,
       dismiss: async () => ({ ref: post.ref, deleted: true }),
       clear: async () => undefined,
@@ -359,6 +501,22 @@ function createService(overrides: ServiceOverrides = {}): ActivityPlugApiService
       },
       delete: async () => ({ ref: post.ref, deleted: true }),
     },
+    bookmarkFolders: {
+      list: async () => ({ nodes: [], pageInfo: pageInfo() }),
+      create: async () => {
+        throw new TypeError("Bookmark folders are outside this example.");
+      },
+      update: async () => {
+        throw new TypeError("Bookmark folders are outside this example.");
+      },
+      delete: async () => ({ ref: post.ref, deleted: true }),
+      addPost: async () => {
+        throw new TypeError("Bookmark folders are outside this example.");
+      },
+      removePost: async () => {
+        throw new TypeError("Bookmark folders are outside this example.");
+      },
+    },
     streams: {
       timeline: async () => streamEvents([{ type: "timeline.update", stream: "timeline", post }]),
       notifications: async () => streamEvents([]),
@@ -366,6 +524,26 @@ function createService(overrides: ServiceOverrides = {}): ActivityPlugApiService
     },
     auth: {
       importToken: async () => session,
+      emailChallenge: {
+        start: async () => {
+          throw new TypeError("Email authentication is outside this example.");
+        },
+        verify: async () => {
+          throw new TypeError("Email authentication is outside this example.");
+        },
+      },
+      passkey: {
+        start: async () => {
+          throw new TypeError("Passkey authentication is outside this example.");
+        },
+        finish: async () => {
+          throw new TypeError("Passkey authentication is outside this example.");
+        },
+      },
+      registerClient: async () => ({
+        clientId: "client-1",
+        redirectUris: ["https://client.example/callback"],
+      }),
       start: async () => ({
         client: { clientId: "client-1", redirectUris: ["https://client.example/callback"] },
         authorization: {

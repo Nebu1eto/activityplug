@@ -6,11 +6,12 @@
   "license": "Apache-2.0 OR MIT",
   "type": "module",
   "scripts": {
-    "build": "tsdown",
+    "build": "rolldown -c ../../rolldown.config.ts --configLoader native",
     "test": "node --experimental-strip-types ../../scripts/run-package-tests.ts"
   },
   "dependencies": {
     "@activityplug/core": "workspace:*",
-    "@activityplug/server": "workspace:*"
+    "@activityplug/server": "workspace:*",
+    "zod": "^4.4.3"
   }
 }

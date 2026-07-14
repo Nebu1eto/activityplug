@@ -15,6 +15,7 @@ import {
   type PublicPost,
   type PublicRelationship,
 } from "@activityplug/server";
+import { z } from "zod";
 
 export interface ProxyClientOptions {
   readonly baseUrl: string;
@@ -81,8 +82,10 @@ export function createProxyClient(options: ProxyClientOptions): ProxyClient {
           url(baseUrl, "/api/v1/auth/import-token"),
           jsonRequest("POST", {
             ...instanceSelectorBody(input),
-            accessToken: input.accessToken,
-            ...(input.scopes === undefined ? {} : { scopes: input.scopes }),
+            token: {
+              accessToken: input.accessToken,
+              ...(input.scopes === undefined ? {} : { scopes: input.scopes }),
+            },
           }),
         ),
       ),
@@ -114,21 +117,21 @@ export function createProxyClient(options: ProxyClientOptions): ProxyClient {
           url(baseUrl, "/graphql"),
           graphqlRequest(
             `
-              query PublicTimeline($origin: String!, $adapter: AdapterKind, $sessionId: ID, $local: Boolean, $limit: Int) {
-                publicTimeline(origin: $origin, adapter: $adapter, sessionId: $sessionId, local: $local, page: { limit: $limit }) {
+              query PublicTimeline($origin: String!, $adapter: AdapterId, $local: Boolean, $limit: Int) {
+                publicTimeline(origin: $origin, adapter: $adapter, local: $local, page: { limit: $limit }) {
                   nodes { ...ProxyPostFields }
-                  pageInfo { hasNextPage hasPreviousPage startCursor endCursor raw }
+                  pageInfo { hasNextPage hasPreviousPage startCursor endCursor }
                 }
               }
               ${proxyPostFieldsFragment}
             `,
             {
               origin: input.origin,
-              adapter: adapterKind(input.adapter),
-              sessionId: input.sessionId,
+              adapter: input.adapter,
               local: input.local,
               limit: input.limit,
             },
+            input.sessionId,
           ),
         ),
       ).then((data) => normalizePostConnection(data.publicTimeline)),
@@ -138,14 +141,15 @@ export function createProxyClient(options: ProxyClientOptions): ProxyClient {
           url(baseUrl, "/graphql"),
           graphqlRequest(
             `
-              mutation FavouritePost($id: ID!, $sessionId: ID!) {
-                favouritePost(id: $id, sessionId: $sessionId) {
+              mutation FavouritePost($id: ID!) {
+                favouritePost(id: $id) {
                   ...ProxyPostFields
                 }
               }
               ${proxyPostFieldsFragment}
             `,
-            { id: postId, sessionId },
+            { id: postId },
+            sessionId,
           ),
         ),
       ).then((data) => normalizePost(data.favouritePost)),
@@ -165,10 +169,10 @@ export function createProxyClient(options: ProxyClientOptions): ProxyClient {
             {
               input: {
                 postId: input.postId,
-                sessionId: input.sessionId,
                 emoji: input.emoji,
               },
             },
+            input.sessionId,
           ),
         ),
       ).then((data) => normalizePost(data.reactToPost)),
@@ -182,34 +186,150 @@ export function createProxyClient(options: ProxyClientOptions): ProxyClient {
   };
 }
 
+const activityPlugErrorCodes = [
+  "ADAPTER_NOT_FOUND",
+  "AUTH_REQUIRED",
+  "AUTH_EXPIRED",
+  "AUTH_UNSUPPORTED",
+  "CAPABILITY_UNKNOWN",
+  "UNSUPPORTED_OPERATION",
+  "VALIDATION_FAILED",
+  "NOT_FOUND",
+  "CONFLICT",
+  "RATE_LIMITED",
+  "REMOTE_PROTOCOL_ERROR",
+  "REMOTE_ERROR",
+  "NETWORK_ERROR",
+  "TIMEOUT",
+  "ORIGIN_NOT_ALLOWED",
+  "REQUEST_LIMIT_EXCEEDED",
+  "INTERNAL_ERROR",
+] as const satisfies readonly ActivityPlugErrorCode[];
+
+const recordSchema = z.looseObject({});
+
+const httpDataEnvelopeSchema = recordSchema.refine((value) => "data" in value);
+
+const serverErrorRecordSchema = z.looseObject({
+  code: z.enum(activityPlugErrorCodes),
+  message: z.string().optional().catch(undefined),
+  operation: z.string().optional().catch(undefined),
+  adapter: z.string().optional().catch(undefined),
+  origin: z.string().optional().catch(undefined),
+  capability: z.string().optional().catch(undefined),
+});
+
+const graphqlErrorsSchema = z.looseObject({ errors: z.array(z.unknown()) });
+
+const graphqlErrorEntrySchema = z.looseObject({
+  extensions: z.looseObject({ activityplug: z.unknown().optional() }),
+});
+
 async function readHttpData<T>(responsePromise: Promise<Response>): Promise<T> {
   const response = await responsePromise;
-  const payload = (await response.json()) as unknown;
   if (!response.ok) {
-    throw serverErrorFromPayload(payload, "proxy.http", "ActivityPlug HTTP request failed.");
+    throw await decodeFailedResponse(
+      response,
+      "proxy.http",
+      "ActivityPlug HTTP request failed.",
+      serverErrorFromPayload,
+    );
   }
-  if (!isRecord(payload) || !("data" in payload)) {
+  const payload = await readSuccessfulJson(response, "proxy.http");
+  if (!httpDataEnvelopeSchema.safeParse(payload).success) {
     throw new ActivityPlugError("REMOTE_ERROR", "ActivityPlug HTTP response was malformed.", {
       operation: "proxy.http",
       raw: payload,
     });
   }
-  return payload.data as T;
+  return (payload as Record<string, unknown>)["data"] as T;
 }
 
 async function readGraphQLData<T>(responsePromise: Promise<Response>): Promise<T> {
   const response = await responsePromise;
-  const payload = (await response.json()) as unknown;
-  if (!response.ok || !isRecord(payload) || Array.isArray(payload["errors"])) {
+  if (!response.ok) {
+    throw await decodeFailedResponse(
+      response,
+      "proxy.graphql",
+      "ActivityPlug GraphQL request failed.",
+      (payload, _operation, fallbackMessage) =>
+        serverErrorFromGraphQLPayload(payload, fallbackMessage),
+    );
+  }
+  const payload = await readSuccessfulJson(response, "proxy.graphql");
+  if (
+    !recordSchema.safeParse(payload).success ||
+    Array.isArray((payload as Record<string, unknown>)["errors"])
+  ) {
     throw serverErrorFromGraphQLPayload(payload, "ActivityPlug GraphQL request failed.");
   }
-  if (!isRecord(payload["data"])) {
+  const data = (payload as Record<string, unknown>)["data"];
+  if (!recordSchema.safeParse(data).success) {
     throw new ActivityPlugError("REMOTE_ERROR", "ActivityPlug GraphQL response was malformed.", {
       operation: "proxy.graphql",
       raw: payload,
     });
   }
-  return payload["data"] as T;
+  return data as T;
+}
+
+type ErrorDecoder = (
+  payload: unknown,
+  operation: string,
+  fallbackMessage: string,
+) => ActivityPlugError;
+
+async function decodeFailedResponse(
+  response: Response,
+  operation: string,
+  fallbackMessage: string,
+  decoder: ErrorDecoder,
+): Promise<ActivityPlugError> {
+  if (!hasJsonContentType(response)) {
+    return new ActivityPlugError("REMOTE_ERROR", fallbackMessage, {
+      operation,
+      raw: responseMetadata(response),
+    });
+  }
+  try {
+    return decoder((await response.json()) as unknown, operation, fallbackMessage);
+  } catch (cause) {
+    return new ActivityPlugError(
+      "REMOTE_ERROR",
+      fallbackMessage,
+      { operation, raw: responseMetadata(response) },
+      { cause },
+    );
+  }
+}
+
+async function readSuccessfulJson(response: Response, operation: string): Promise<unknown> {
+  if (!hasJsonContentType(response)) {
+    throw new TypeError("ActivityPlug proxy returned a non-JSON response.");
+  }
+  try {
+    return (await response.json()) as unknown;
+  } catch (cause) {
+    throw new ActivityPlugError(
+      "REMOTE_ERROR",
+      "ActivityPlug proxy returned malformed JSON.",
+      { operation, raw: responseMetadata(response) },
+      { cause },
+    );
+  }
+}
+
+function hasJsonContentType(response: Response): boolean {
+  return (
+    response.headers.get("content-type")?.toLowerCase().startsWith("application/json") ?? false
+  );
+}
+
+function responseMetadata(response: Response): Readonly<Record<string, unknown>> {
+  return {
+    status: response.status,
+    contentType: response.headers.get("content-type"),
+  };
 }
 
 function normalizeBaseUrl(value: string): URL {
@@ -248,16 +368,12 @@ function bearerRequest(method: "GET" | "POST" | "DELETE", sessionId: string): Re
   };
 }
 
-function graphqlRequest(query: string, variables: Readonly<Record<string, unknown>>): RequestInit {
-  return jsonRequest("POST", { query, variables });
-}
-
-function adapterKind(adapter: string | undefined): string | undefined {
-  return adapter === undefined ? undefined : adapter.toUpperCase().replaceAll("-", "_");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+function graphqlRequest(
+  query: string,
+  variables: Readonly<Record<string, unknown>>,
+  sessionId?: string,
+): RequestInit {
+  return jsonRequest("POST", { query, variables }, sessionId);
 }
 
 interface GraphQLPostConnection {
@@ -270,7 +386,6 @@ interface GraphQLPageInfo {
   readonly hasPreviousPage: boolean;
   readonly startCursor: string | null;
   readonly endCursor: string | null;
-  readonly raw: unknown | null;
 }
 
 interface GraphQLPost {
@@ -371,7 +486,6 @@ function normalizePageInfo(pageInfo: GraphQLPageInfo): PublicPageInfo {
     hasPreviousPage: pageInfo.hasPreviousPage,
     ...(pageInfo.startCursor === null ? {} : { startCursor: pageInfo.startCursor }),
     ...(pageInfo.endCursor === null ? {} : { endCursor: pageInfo.endCursor }),
-    ...(pageInfo.raw === null ? {} : { raw: pageInfo.raw }),
   };
 }
 
@@ -435,13 +549,11 @@ function serverErrorFromGraphQLPayload(
   payload: unknown,
   fallbackMessage: string,
 ): ActivityPlugError {
-  const error =
-    isRecord(payload) && Array.isArray(payload["errors"]) ? payload["errors"][0] : undefined;
-  if (isRecord(error)) {
-    const extensions = error["extensions"];
-    if (isRecord(extensions)) {
-      const activityplug = extensions["activityplug"];
-      const parsed = serverErrorFromRecord(activityplug, "proxy.graphql");
+  const envelope = graphqlErrorsSchema.safeParse(payload);
+  if (envelope.success) {
+    const entry = graphqlErrorEntrySchema.safeParse(envelope.data.errors[0]);
+    if (entry.success) {
+      const parsed = serverErrorFromRecord(entry.data.extensions.activityplug, "proxy.graphql");
       if (parsed !== undefined) return parsed;
     }
   }
@@ -456,51 +568,24 @@ function serverErrorFromPayload(
   operation: string,
   fallbackMessage: string,
 ): ActivityPlugError {
-  if (isRecord(payload)) {
-    const parsed = serverErrorFromRecord(payload["error"], operation);
+  if (recordSchema.safeParse(payload).success) {
+    const parsed = serverErrorFromRecord((payload as Record<string, unknown>)["error"], operation);
     if (parsed !== undefined) return parsed;
   }
   return new ActivityPlugError("REMOTE_ERROR", fallbackMessage, { operation, raw: payload });
 }
 
 function serverErrorFromRecord(value: unknown, operation: string): ActivityPlugError | undefined {
-  if (!isRecord(value) || !isActivityPlugErrorCode(value["code"])) return undefined;
-  return new ActivityPlugError(
-    value["code"],
-    typeof value["message"] === "string" ? value["message"] : "ActivityPlug request failed.",
-    {
-      operation: typeof value["operation"] === "string" ? value["operation"] : operation,
-      ...optionalStringContext(value, "adapter"),
-      ...optionalStringContext(value, "origin"),
-      ...optionalStringContext(value, "capability"),
-      raw: value,
-    },
-  );
-}
-
-function optionalStringContext(
-  value: Readonly<Record<string, unknown>>,
-  key: keyof ActivityPlugErrorContext,
-): ActivityPlugErrorContext {
-  const field = value[key];
-  return typeof field === "string" ? { [key]: field } : {};
-}
-
-function isActivityPlugErrorCode(value: unknown): value is ActivityPlugErrorCode {
-  return (
-    value === "ADAPTER_NOT_FOUND" ||
-    value === "AUTH_REQUIRED" ||
-    value === "AUTH_EXPIRED" ||
-    value === "AUTH_UNSUPPORTED" ||
-    value === "CAPABILITY_UNKNOWN" ||
-    value === "UNSUPPORTED_OPERATION" ||
-    value === "VALIDATION_FAILED" ||
-    value === "NOT_FOUND" ||
-    value === "CONFLICT" ||
-    value === "RATE_LIMITED" ||
-    value === "REMOTE_ERROR" ||
-    value === "NETWORK_ERROR" ||
-    value === "TIMEOUT" ||
-    value === "INTERNAL_ERROR"
-  );
+  const parsed = serverErrorRecordSchema.safeParse(value);
+  if (!parsed.success) return undefined;
+  const record = parsed.data;
+  return new ActivityPlugError(record.code, record.message ?? "ActivityPlug request failed.", {
+    operation: record.operation ?? operation,
+    ...(record.adapter === undefined ? {} : { adapter: record.adapter }),
+    ...(record.origin === undefined ? {} : { origin: record.origin }),
+    ...(record.capability === undefined
+      ? {}
+      : { capability: record.capability as NonNullable<ActivityPlugErrorContext["capability"]> }),
+    raw: value,
+  });
 }
