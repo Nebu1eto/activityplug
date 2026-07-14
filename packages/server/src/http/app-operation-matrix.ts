@@ -1,5 +1,20 @@
+import { publicOperations, type PublicOperationName } from "@activityplug/core";
+
+export const lifecycleStatusOperations = new Set<PublicOperationName>(["auth.verifyCredentials"]);
+
+export const streamingOperations = new Set<PublicOperationName>([
+  "stream.timeline",
+  "stream.notifications",
+  "stream.conversations",
+]);
+
+export const publicTransportOperations = publicOperations
+  .map(({ name }) => name)
+  .filter((name) => !lifecycleStatusOperations.has(name) && !streamingOperations.has(name));
+
 export const publicOperationMatrix = [
   {
+    operation: publicOperationName("capabilities"),
     graphqlType: "query",
     graphqlField: "capabilities",
     graphqlArgs: ["adapter", "origin"],
@@ -10,6 +25,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/CapabilitySet",
   },
   {
+    operation: publicOperationName("instance.get"),
     graphqlType: "query",
     graphqlField: "instance",
     graphqlArgs: ["adapter", "origin"],
@@ -20,6 +36,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/InstanceProfile",
   },
   {
+    operation: publicOperationName("instance.detect"),
     graphqlType: "query",
     graphqlField: "detectInstance",
     graphqlArgs: ["input"],
@@ -30,6 +47,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/InstanceProfile",
   },
   {
+    operation: publicOperationName("account.get"),
     graphqlType: "query",
     graphqlField: "account",
     graphqlArgs: ["id"],
@@ -40,6 +58,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Account",
   },
   {
+    operation: publicOperationName("account.lookup"),
     graphqlType: "query",
     graphqlField: "accountByHandle",
     graphqlArgs: ["adapter", "handle", "origin"],
@@ -50,9 +69,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Account",
   },
   {
+    operation: publicOperationName("account.posts"),
     graphqlType: "query",
     graphqlField: "accountPosts",
-    graphqlArgs: ["id", "page", "sessionId"],
+    graphqlArgs: ["id", "page"],
     graphqlReturnType: "PostConnection",
     httpMethod: "get",
     httpPath: "/api/v1/accounts/{id}/posts",
@@ -60,9 +80,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Post",
   },
   {
+    operation: publicOperationName("account.followers"),
     graphqlType: "query",
     graphqlField: "accountFollowers",
-    graphqlArgs: ["id", "page", "sessionId"],
+    graphqlArgs: ["id", "page"],
     graphqlReturnType: "AccountConnection",
     httpMethod: "get",
     httpPath: "/api/v1/accounts/{id}/followers",
@@ -70,9 +91,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Account",
   },
   {
+    operation: publicOperationName("account.following"),
     graphqlType: "query",
     graphqlField: "accountFollowing",
-    graphqlArgs: ["id", "page", "sessionId"],
+    graphqlArgs: ["id", "page"],
     graphqlReturnType: "AccountConnection",
     httpMethod: "get",
     httpPath: "/api/v1/accounts/{id}/following",
@@ -80,9 +102,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Account",
   },
   {
+    operation: publicOperationName("account.relationships"),
     graphqlType: "query",
     graphqlField: "accountRelationship",
-    graphqlArgs: ["id", "sessionId"],
+    graphqlArgs: ["id"],
     graphqlReturnType: "Relationship",
     httpMethod: "get",
     httpPath: "/api/v1/accounts/{id}/relationships",
@@ -90,6 +113,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Relationship",
   },
   {
+    operation: publicOperationName("auth.tokenInjection"),
     graphqlType: "mutation",
     graphqlField: "importToken",
     graphqlArgs: ["input"],
@@ -100,6 +124,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/AuthSession",
   },
   {
+    operation: publicOperationName("auth.oauth.authorizationUrl"),
     graphqlType: "mutation",
     graphqlField: "authStart",
     graphqlArgs: ["input"],
@@ -110,6 +135,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/AuthStartPayload",
   },
   {
+    operation: publicOperationName("auth.oauth.callback"),
     graphqlType: "mutation",
     graphqlField: "authParseCallback",
     graphqlArgs: ["input"],
@@ -120,6 +146,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/ParsedAuthCallback",
   },
   {
+    operation: publicOperationName("auth.oauth.exchangeCode"),
     graphqlType: "mutation",
     graphqlField: "authExchange",
     graphqlArgs: ["input"],
@@ -130,9 +157,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/AuthSession",
   },
   {
+    operation: publicOperationName("auth.oauth.refresh"),
     graphqlType: "mutation",
     graphqlField: "authRefresh",
-    graphqlArgs: ["sessionId"],
+    graphqlArgs: [],
     graphqlReturnType: "AuthSession",
     httpMethod: "post",
     httpPath: "/api/v1/auth/refresh",
@@ -140,9 +168,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/AuthSession",
   },
   {
+    operation: publicOperationName("auth.oauth.revoke"),
     graphqlType: "mutation",
     graphqlField: "authRevoke",
-    graphqlArgs: ["sessionId"],
+    graphqlArgs: [],
     graphqlReturnType: "Boolean",
     httpMethod: "post",
     httpPath: "/api/v1/auth/revoke",
@@ -150,6 +179,51 @@ export const publicOperationMatrix = [
     httpResponseDataRef: undefined,
   },
   {
+    operation: publicOperationName("auth.emailChallenge.start"),
+    graphqlType: "mutation",
+    graphqlField: "authEmailChallengeStart",
+    graphqlArgs: ["input"],
+    graphqlReturnType: "EmailChallengeStartPayload",
+    httpMethod: "post",
+    httpPath: "/api/v1/auth/email-challenge/start",
+    httpRequestRef: "#/components/schemas/EmailChallengeStartRequest",
+    httpResponseDataRef: "#/components/schemas/EmailChallengeStartPayload",
+  },
+  {
+    operation: publicOperationName("auth.emailChallenge.verify"),
+    graphqlType: "mutation",
+    graphqlField: "authEmailChallengeVerify",
+    graphqlArgs: ["input"],
+    graphqlReturnType: "AuthSession",
+    httpMethod: "post",
+    httpPath: "/api/v1/auth/email-challenge/verify",
+    httpRequestRef: "#/components/schemas/EmailChallengeVerifyRequest",
+    httpResponseDataRef: "#/components/schemas/AuthSession",
+  },
+  {
+    operation: publicOperationName("auth.passkey.start"),
+    graphqlType: "mutation",
+    graphqlField: "authPasskeyStart",
+    graphqlArgs: ["input"],
+    graphqlReturnType: "PasskeyStartPayload",
+    httpMethod: "post",
+    httpPath: "/api/v1/auth/passkey/start",
+    httpRequestRef: "#/components/schemas/PasskeyStartRequest",
+    httpResponseDataRef: "#/components/schemas/PasskeyStartPayload",
+  },
+  {
+    operation: publicOperationName("auth.passkey.finish"),
+    graphqlType: "mutation",
+    graphqlField: "authPasskeyFinish",
+    graphqlArgs: ["input"],
+    graphqlReturnType: "AuthSession",
+    httpMethod: "post",
+    httpPath: "/api/v1/auth/passkey/finish",
+    httpRequestRef: "#/components/schemas/PasskeyFinishRequest",
+    httpResponseDataRef: "#/components/schemas/AuthSession",
+  },
+  {
+    operation: publicOperationName("media.upload"),
     graphqlType: "mutation",
     graphqlField: "uploadMedia",
     graphqlArgs: ["input"],
@@ -160,6 +234,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/MediaAttachment",
   },
   {
+    operation: publicOperationName("media.ingestUrl"),
     graphqlType: "mutation",
     graphqlField: "ingestMediaFromUrl",
     graphqlArgs: ["input"],
@@ -170,6 +245,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/MediaAttachment",
   },
   {
+    operation: publicOperationName("media.update"),
     graphqlType: "mutation",
     graphqlField: "updateMedia",
     graphqlArgs: ["input"],
@@ -180,6 +256,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/MediaAttachment",
   },
   {
+    operation: publicOperationName("media.delete"),
     graphqlType: "mutation",
     graphqlField: "deleteMedia",
     graphqlArgs: ["input"],
@@ -190,6 +267,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/DeletedEntity",
   },
   {
+    operation: publicOperationName("account.updateProfile"),
     graphqlType: "mutation",
     graphqlField: "updateProfile",
     graphqlArgs: ["input"],
@@ -200,9 +278,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Account",
   },
   {
+    operation: publicOperationName("viewer"),
     graphqlType: "query",
     graphqlField: "viewer",
-    graphqlArgs: ["sessionId"],
+    graphqlArgs: [],
     graphqlReturnType: "Account",
     httpMethod: "get",
     httpPath: "/api/v1/viewer",
@@ -210,6 +289,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Account",
   },
   {
+    operation: publicOperationName("post.get"),
     graphqlType: "query",
     graphqlField: "post",
     graphqlArgs: ["id"],
@@ -220,9 +300,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Post",
   },
   {
+    operation: publicOperationName("timeline.home"),
     graphqlType: "query",
     graphqlField: "homeTimeline",
-    graphqlArgs: ["origin", "page", "sessionId"],
+    graphqlArgs: ["origin", "page"],
     graphqlReturnType: "TimelineConnection",
     httpMethod: "get",
     httpPath: "/api/v1/timelines/home",
@@ -230,9 +311,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Post",
   },
   {
+    operation: publicOperationName("timeline.public"),
     graphqlType: "query",
     graphqlField: "publicTimeline",
-    graphqlArgs: ["adapter", "local", "origin", "page", "sessionId"],
+    graphqlArgs: ["adapter", "local", "origin", "page"],
     graphqlReturnType: "TimelineConnection",
     httpMethod: "get",
     httpPath: "/api/v1/timelines/public",
@@ -240,6 +322,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Post",
   },
   {
+    operation: publicOperationName("timeline.hashtag"),
     graphqlType: "query",
     graphqlField: "hashtagTimeline",
     graphqlArgs: ["adapter", "origin", "page", "tag"],
@@ -250,6 +333,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Post",
   },
   {
+    operation: publicOperationName("search"),
     graphqlType: "query",
     graphqlField: "search",
     graphqlArgs: ["input"],
@@ -260,6 +344,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/SearchResult",
   },
   {
+    operation: publicOperationName("post.create"),
     graphqlType: "mutation",
     graphqlField: "createPost",
     graphqlArgs: ["input"],
@@ -270,9 +355,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Post",
   },
   {
+    operation: publicOperationName("post.delete"),
     graphqlType: "mutation",
     graphqlField: "deletePost",
-    graphqlArgs: ["id", "sessionId"],
+    graphqlArgs: ["id"],
     graphqlReturnType: "DeletedEntity",
     httpMethod: "delete",
     httpPath: "/api/v1/posts/{id}",
@@ -280,6 +366,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/DeletedEntity",
   },
   {
+    operation: publicOperationName("post.update"),
     graphqlType: "mutation",
     graphqlField: "updatePost",
     graphqlArgs: ["input"],
@@ -290,9 +377,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Post",
   },
   {
+    operation: publicOperationName("social.follow"),
     graphqlType: "mutation",
     graphqlField: "followAccount",
-    graphqlArgs: ["id", "sessionId"],
+    graphqlArgs: ["id"],
     graphqlReturnType: "Relationship",
     httpMethod: "post",
     httpPath: "/api/v1/accounts/{id}/follow",
@@ -300,9 +388,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Relationship",
   },
   {
+    operation: publicOperationName("social.unfollow"),
     graphqlType: "mutation",
     graphqlField: "unfollowAccount",
-    graphqlArgs: ["id", "sessionId"],
+    graphqlArgs: ["id"],
     graphqlReturnType: "Relationship",
     httpMethod: "post",
     httpPath: "/api/v1/accounts/{id}/unfollow",
@@ -310,9 +399,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Relationship",
   },
   {
+    operation: publicOperationName("social.block"),
     graphqlType: "mutation",
     graphqlField: "blockAccount",
-    graphqlArgs: ["id", "sessionId"],
+    graphqlArgs: ["id"],
     graphqlReturnType: "Relationship",
     httpMethod: "post",
     httpPath: "/api/v1/accounts/{id}/block",
@@ -320,9 +410,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Relationship",
   },
   {
+    operation: publicOperationName("social.unblock"),
     graphqlType: "mutation",
     graphqlField: "unblockAccount",
-    graphqlArgs: ["id", "sessionId"],
+    graphqlArgs: ["id"],
     graphqlReturnType: "Relationship",
     httpMethod: "post",
     httpPath: "/api/v1/accounts/{id}/unblock",
@@ -330,6 +421,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Relationship",
   },
   {
+    operation: publicOperationName("social.mute"),
     graphqlType: "mutation",
     graphqlField: "muteAccount",
     graphqlArgs: ["input"],
@@ -340,9 +432,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Relationship",
   },
   {
+    operation: publicOperationName("social.unmute"),
     graphqlType: "mutation",
     graphqlField: "unmuteAccount",
-    graphqlArgs: ["id", "sessionId"],
+    graphqlArgs: ["id"],
     graphqlReturnType: "Relationship",
     httpMethod: "post",
     httpPath: "/api/v1/accounts/{id}/unmute",
@@ -350,9 +443,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Relationship",
   },
   {
+    operation: publicOperationName("social.favourite"),
     graphqlType: "mutation",
     graphqlField: "favouritePost",
-    graphqlArgs: ["id", "sessionId"],
+    graphqlArgs: ["id"],
     graphqlReturnType: "Post",
     httpMethod: "post",
     httpPath: "/api/v1/posts/{id}/favourite",
@@ -360,9 +454,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Post",
   },
   {
+    operation: publicOperationName("social.unfavourite"),
     graphqlType: "mutation",
     graphqlField: "unfavouritePost",
-    graphqlArgs: ["id", "sessionId"],
+    graphqlArgs: ["id"],
     graphqlReturnType: "Post",
     httpMethod: "post",
     httpPath: "/api/v1/posts/{id}/unfavourite",
@@ -370,9 +465,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Post",
   },
   {
+    operation: publicOperationName("social.bookmark"),
     graphqlType: "mutation",
     graphqlField: "bookmarkPost",
-    graphqlArgs: ["id", "sessionId"],
+    graphqlArgs: ["id"],
     graphqlReturnType: "Post",
     httpMethod: "post",
     httpPath: "/api/v1/posts/{id}/bookmark",
@@ -380,9 +476,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Post",
   },
   {
+    operation: publicOperationName("social.unbookmark"),
     graphqlType: "mutation",
     graphqlField: "unbookmarkPost",
-    graphqlArgs: ["id", "sessionId"],
+    graphqlArgs: ["id"],
     graphqlReturnType: "Post",
     httpMethod: "post",
     httpPath: "/api/v1/posts/{id}/unbookmark",
@@ -390,6 +487,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Post",
   },
   {
+    operation: publicOperationName("social.boost"),
     graphqlType: "mutation",
     graphqlField: "boostPost",
     graphqlArgs: ["input"],
@@ -400,9 +498,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Post",
   },
   {
+    operation: publicOperationName("social.unboost"),
     graphqlType: "mutation",
     graphqlField: "unboostPost",
-    graphqlArgs: ["id", "sessionId"],
+    graphqlArgs: ["id"],
     graphqlReturnType: "Post",
     httpMethod: "post",
     httpPath: "/api/v1/posts/{id}/unboost",
@@ -410,6 +509,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Post",
   },
   {
+    operation: publicOperationName("social.reaction"),
     graphqlType: "mutation",
     graphqlField: "reactToPost",
     graphqlArgs: ["input"],
@@ -420,6 +520,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Post",
   },
   {
+    operation: publicOperationName("social.unreaction"),
     graphqlType: "mutation",
     graphqlField: "unreactToPost",
     graphqlArgs: ["input"],
@@ -430,9 +531,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Post",
   },
   {
+    operation: publicOperationName("poll.get"),
     graphqlType: "query",
     graphqlField: "poll",
-    graphqlArgs: ["id", "sessionId"],
+    graphqlArgs: ["id"],
     graphqlReturnType: "Poll",
     httpMethod: "get",
     httpPath: "/api/v1/polls/{id}",
@@ -440,6 +542,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Poll",
   },
   {
+    operation: publicOperationName("poll.vote"),
     graphqlType: "mutation",
     graphqlField: "votePoll",
     graphqlArgs: ["input"],
@@ -451,9 +554,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Poll",
   },
   {
+    operation: publicOperationName("timeline.list"),
     graphqlType: "query",
     graphqlField: "listTimeline",
-    graphqlArgs: ["listId", "page", "sessionId"],
+    graphqlArgs: ["listId", "page"],
     graphqlReturnType: "TimelineConnection",
     httpMethod: "get",
     httpPath: "/api/v1/timelines/lists/{id}",
@@ -461,9 +565,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Post",
   },
   {
+    operation: publicOperationName("notification.list"),
     graphqlType: "query",
     graphqlField: "notifications",
-    graphqlArgs: ["adapter", "origin", "page", "sessionId", "types"],
+    graphqlArgs: ["adapter", "origin", "page", "types"],
     graphqlReturnType: "NotificationConnection",
     httpMethod: "get",
     httpPath: "/api/v1/notifications",
@@ -471,9 +576,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Notification",
   },
   {
+    operation: publicOperationName("notification.unreadCount"),
     graphqlType: "query",
     graphqlField: "notificationUnreadCount",
-    graphqlArgs: ["adapter", "origin", "sessionId"],
+    graphqlArgs: ["adapter", "origin"],
     graphqlReturnType: "Int",
     httpMethod: "get",
     httpPath: "/api/v1/notifications/unread-count",
@@ -482,9 +588,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: undefined,
   },
   {
+    operation: publicOperationName("followRequest.list"),
     graphqlType: "query",
     graphqlField: "followRequests",
-    graphqlArgs: ["adapter", "origin", "page", "sessionId"],
+    graphqlArgs: ["adapter", "origin", "page"],
     graphqlReturnType: "AccountConnection",
     httpMethod: "get",
     httpPath: "/api/v1/follow-requests",
@@ -492,9 +599,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Account",
   },
   {
+    operation: publicOperationName("list.list"),
     graphqlType: "query",
     graphqlField: "lists",
-    graphqlArgs: ["adapter", "origin", "page", "sessionId"],
+    graphqlArgs: ["adapter", "origin", "page"],
     graphqlReturnType: "ListConnection",
     httpMethod: "get",
     httpPath: "/api/v1/lists",
@@ -502,9 +610,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/List",
   },
   {
+    operation: publicOperationName("list.get"),
     graphqlType: "query",
     graphqlField: "list",
-    graphqlArgs: ["id", "sessionId"],
+    graphqlArgs: ["id"],
     graphqlReturnType: "List",
     httpMethod: "get",
     httpPath: "/api/v1/lists/{id}",
@@ -512,9 +621,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/List",
   },
   {
+    operation: publicOperationName("list.accounts"),
     graphqlType: "query",
     graphqlField: "listAccounts",
-    graphqlArgs: ["id", "page", "sessionId"],
+    graphqlArgs: ["id", "page"],
     graphqlReturnType: "AccountConnection",
     httpMethod: "get",
     httpPath: "/api/v1/lists/{id}/accounts",
@@ -522,9 +632,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Account",
   },
   {
+    operation: publicOperationName("followRequest.accept"),
     graphqlType: "mutation",
     graphqlField: "acceptFollowRequest",
-    graphqlArgs: ["id", "sessionId"],
+    graphqlArgs: ["id"],
     graphqlReturnType: "Relationship",
     httpMethod: "post",
     httpPath: "/api/v1/follow-requests/{id}/accept",
@@ -532,9 +643,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Relationship",
   },
   {
+    operation: publicOperationName("followRequest.reject"),
     graphqlType: "mutation",
     graphqlField: "rejectFollowRequest",
-    graphqlArgs: ["id", "sessionId"],
+    graphqlArgs: ["id"],
     graphqlReturnType: "Relationship",
     httpMethod: "post",
     httpPath: "/api/v1/follow-requests/{id}/reject",
@@ -542,6 +654,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Relationship",
   },
   {
+    operation: publicOperationName("list.create"),
     graphqlType: "mutation",
     graphqlField: "createList",
     graphqlArgs: ["input"],
@@ -553,6 +666,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/List",
   },
   {
+    operation: publicOperationName("list.update"),
     graphqlType: "mutation",
     graphqlField: "updateList",
     graphqlArgs: ["input"],
@@ -564,9 +678,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/List",
   },
   {
+    operation: publicOperationName("list.delete"),
     graphqlType: "mutation",
     graphqlField: "deleteList",
-    graphqlArgs: ["id", "sessionId"],
+    graphqlArgs: ["id"],
     graphqlReturnType: "DeletedEntity",
     httpMethod: "delete",
     httpPath: "/api/v1/lists/{id}",
@@ -574,6 +689,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/DeletedEntity",
   },
   {
+    operation: publicOperationName("list.addAccount"),
     graphqlType: "mutation",
     graphqlField: "addListAccount",
     graphqlArgs: ["input"],
@@ -585,6 +701,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/List",
   },
   {
+    operation: publicOperationName("list.removeAccount"),
     graphqlType: "mutation",
     graphqlField: "removeListAccount",
     graphqlArgs: ["input"],
@@ -596,9 +713,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/List",
   },
   {
+    operation: publicOperationName("notification.dismiss"),
     graphqlType: "mutation",
     graphqlField: "dismissNotification",
-    graphqlArgs: ["id", "sessionId"],
+    graphqlArgs: ["id"],
     graphqlReturnType: "DeletedEntity",
     httpMethod: "post",
     httpPath: "/api/v1/notifications/{id}/dismiss",
@@ -606,9 +724,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/DeletedEntity",
   },
   {
+    operation: publicOperationName("notification.clear"),
     graphqlType: "mutation",
     graphqlField: "clearNotifications",
-    graphqlArgs: ["adapter", "origin", "sessionId"],
+    graphqlArgs: ["adapter", "origin"],
     graphqlReturnType: "Boolean",
     httpMethod: "post",
     httpPath: "/api/v1/notifications/clear",
@@ -617,9 +736,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: undefined,
   },
   {
+    operation: publicOperationName("post.history"),
     graphqlType: "query",
     graphqlField: "postHistory",
-    graphqlArgs: ["id", "sessionId"],
+    graphqlArgs: ["id"],
     graphqlReturnType: "PostRevision",
     graphqlReturnTypeSignature: "[PostRevision!]",
     httpMethod: "get",
@@ -629,9 +749,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: undefined,
   },
   {
+    operation: publicOperationName("filter.list"),
     graphqlType: "query",
     graphqlField: "filters",
-    graphqlArgs: ["adapter", "origin", "page", "sessionId"],
+    graphqlArgs: ["adapter", "origin", "page"],
     graphqlReturnType: "FilterConnection",
     httpMethod: "get",
     httpPath: "/api/v1/filters",
@@ -639,9 +760,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Filter",
   },
   {
+    operation: publicOperationName("filter.get"),
     graphqlType: "query",
     graphqlField: "filter",
-    graphqlArgs: ["id", "sessionId"],
+    graphqlArgs: ["id"],
     graphqlReturnType: "Filter",
     httpMethod: "get",
     httpPath: "/api/v1/filters/{id}",
@@ -649,6 +771,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Filter",
   },
   {
+    operation: publicOperationName("filter.create"),
     graphqlType: "mutation",
     graphqlField: "createFilter",
     graphqlArgs: ["input"],
@@ -660,6 +783,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Filter",
   },
   {
+    operation: publicOperationName("filter.update"),
     graphqlType: "mutation",
     graphqlField: "updateFilter",
     graphqlArgs: ["input"],
@@ -671,9 +795,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/Filter",
   },
   {
+    operation: publicOperationName("filter.delete"),
     graphqlType: "mutation",
     graphqlField: "deleteFilter",
-    graphqlArgs: ["id", "sessionId"],
+    graphqlArgs: ["id"],
     graphqlReturnType: "DeletedEntity",
     httpMethod: "delete",
     httpPath: "/api/v1/filters/{id}",
@@ -681,9 +806,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/DeletedEntity",
   },
   {
+    operation: publicOperationName("scheduledPost.list"),
     graphqlType: "query",
     graphqlField: "scheduledPosts",
-    graphqlArgs: ["adapter", "origin", "page", "sessionId"],
+    graphqlArgs: ["adapter", "origin", "page"],
     graphqlReturnType: "ScheduledPostConnection",
     httpMethod: "get",
     httpPath: "/api/v1/scheduled-posts",
@@ -691,9 +817,10 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/ScheduledPost",
   },
   {
+    operation: publicOperationName("scheduledPost.get"),
     graphqlType: "query",
     graphqlField: "scheduledPost",
-    graphqlArgs: ["id", "sessionId"],
+    graphqlArgs: ["id"],
     graphqlReturnType: "ScheduledPost",
     httpMethod: "get",
     httpPath: "/api/v1/scheduled-posts/{id}",
@@ -701,6 +828,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/ScheduledPost",
   },
   {
+    operation: publicOperationName("scheduledPost.create"),
     graphqlType: "mutation",
     graphqlField: "schedulePost",
     graphqlArgs: ["input"],
@@ -711,6 +839,7 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/ScheduledPost",
   },
   {
+    operation: publicOperationName("scheduledPost.update"),
     graphqlType: "mutation",
     graphqlField: "updateScheduledPost",
     graphqlArgs: ["input"],
@@ -722,24 +851,196 @@ export const publicOperationMatrix = [
     httpResponseDataRef: "#/components/schemas/ScheduledPost",
   },
   {
+    operation: publicOperationName("scheduledPost.delete"),
     graphqlType: "mutation",
     graphqlField: "deleteScheduledPost",
-    graphqlArgs: ["id", "sessionId"],
+    graphqlArgs: ["id"],
     graphqlReturnType: "DeletedEntity",
     httpMethod: "delete",
     httpPath: "/api/v1/scheduled-posts/{id}",
     httpRequestRef: undefined,
     httpResponseDataRef: "#/components/schemas/DeletedEntity",
   },
+  {
+    operation: publicOperationName("instance.oauthMetadata"),
+    graphqlType: "query",
+    graphqlField: "oauthMetadata",
+    graphqlArgs: ["adapter", "origin"],
+    graphqlReturnType: "OAuthMetadata",
+    httpMethod: "get",
+    httpPath: "/api/v1/instances/{origin}/oauth",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/OAuthMetadata",
+  },
+  {
+    operation: publicOperationName("instance.peers"),
+    graphqlType: "query",
+    graphqlField: "peers",
+    graphqlArgs: ["adapter", "origin"],
+    graphqlReturnType: "InstancePeers",
+    httpMethod: "get",
+    httpPath: "/api/v1/instances/{origin}/peers",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/InstancePeers",
+  },
+  {
+    operation: publicOperationName("auth.registerClient"),
+    graphqlType: "mutation",
+    graphqlField: "registerOAuthClient",
+    graphqlArgs: ["input"],
+    graphqlReturnType: "OAuthClientRegistration",
+    httpMethod: "post",
+    httpPath: "/api/v1/auth/clients",
+    httpRequestRef: "#/components/schemas/RegisterOAuthClientRequest",
+    httpResponseDataRef: "#/components/schemas/OAuthClientRegistration",
+  },
+  {
+    operation: publicOperationName("post.context"),
+    graphqlType: "query",
+    graphqlField: "postContext",
+    graphqlArgs: ["id"],
+    graphqlReturnType: "PostContext",
+    httpMethod: "get",
+    httpPath: "/api/v1/posts/{id}/context",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/PostContext",
+  },
+  {
+    operation: publicOperationName("post.quotes"),
+    graphqlType: "query",
+    graphqlField: "postQuotes",
+    graphqlArgs: ["id", "page"],
+    graphqlReturnType: "PostConnection",
+    httpMethod: "get",
+    httpPath: "/api/v1/posts/{id}/quotes",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/Post",
+  },
+  {
+    operation: publicOperationName("post.translate"),
+    graphqlType: "mutation",
+    graphqlField: "translatePost",
+    graphqlArgs: ["input"],
+    graphqlReturnType: "PostTranslation",
+    httpMethod: "post",
+    httpPath: "/api/v1/posts/{id}/translate",
+    httpRequestRef: "#/components/schemas/TranslatePostRequest",
+    httpResponseDataRef: "#/components/schemas/PostTranslation",
+  },
+  {
+    operation: publicOperationName("media.get"),
+    graphqlType: "query",
+    graphqlField: "media",
+    graphqlArgs: ["id"],
+    graphqlReturnType: "MediaAttachment",
+    httpMethod: "get",
+    httpPath: "/api/v1/media/{id}",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/MediaAttachment",
+  },
+  {
+    operation: publicOperationName("notification.groups"),
+    graphqlType: "query",
+    graphqlField: "notificationGroups",
+    graphqlArgs: ["adapter", "origin", "page", "types"],
+    graphqlReturnType: "NotificationGroupConnection",
+    httpMethod: "get",
+    httpPath: "/api/v1/notifications/groups",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/NotificationGroup",
+  },
+  {
+    operation: publicOperationName("bookmarkFolder.list"),
+    graphqlType: "query",
+    graphqlField: "bookmarkFolders",
+    graphqlArgs: ["adapter", "origin", "page"],
+    graphqlReturnType: "BookmarkFolderConnection",
+    httpMethod: "get",
+    httpPath: "/api/v1/bookmark-folders",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/BookmarkFolder",
+  },
+  {
+    operation: publicOperationName("bookmarkFolder.create"),
+    graphqlType: "mutation",
+    graphqlField: "createBookmarkFolder",
+    graphqlArgs: ["input"],
+    graphqlReturnType: "BookmarkFolder",
+    httpMethod: "post",
+    httpPath: "/api/v1/bookmark-folders",
+    httpRequestRef: "#/components/schemas/CreateBookmarkFolderRequest",
+    httpResponseDataRef: "#/components/schemas/BookmarkFolder",
+  },
+  {
+    operation: publicOperationName("bookmarkFolder.update"),
+    graphqlType: "mutation",
+    graphqlField: "updateBookmarkFolder",
+    graphqlArgs: ["input"],
+    graphqlReturnType: "BookmarkFolder",
+    httpMethod: "patch",
+    httpPath: "/api/v1/bookmark-folders/{id}",
+    httpRequestRef: "#/components/schemas/UpdateBookmarkFolderRequest",
+    httpResponseDataRef: "#/components/schemas/BookmarkFolder",
+  },
+  {
+    operation: publicOperationName("bookmarkFolder.delete"),
+    graphqlType: "mutation",
+    graphqlField: "deleteBookmarkFolder",
+    graphqlArgs: ["id"],
+    graphqlReturnType: "DeletedEntity",
+    httpMethod: "delete",
+    httpPath: "/api/v1/bookmark-folders/{id}",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/DeletedEntity",
+  },
+  {
+    operation: publicOperationName("bookmarkFolder.addPost"),
+    graphqlType: "mutation",
+    graphqlField: "addPostToBookmarkFolder",
+    graphqlArgs: ["input"],
+    graphqlReturnType: "BookmarkFolder",
+    httpMethod: "post",
+    httpPath: "/api/v1/bookmark-folders/{id}/posts",
+    httpRequestRef: "#/components/schemas/BookmarkFolderPostRequest",
+    httpResponseDataRef: "#/components/schemas/BookmarkFolder",
+  },
+  {
+    operation: publicOperationName("bookmarkFolder.removePost"),
+    graphqlType: "mutation",
+    graphqlField: "removePostFromBookmarkFolder",
+    graphqlArgs: ["input"],
+    graphqlReturnType: "BookmarkFolder",
+    httpMethod: "delete",
+    httpPath: "/api/v1/bookmark-folders/{id}/posts/{postId}",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/BookmarkFolder",
+  },
+  {
+    operation: publicOperationName("timeline.local"),
+    graphqlType: "query",
+    graphqlField: "localTimeline",
+    graphqlArgs: ["adapter", "origin", "page"],
+    graphqlReturnType: "TimelineConnection",
+    httpMethod: "get",
+    httpPath: "/api/v1/timelines/local",
+    httpRequestRef: undefined,
+    httpResponseDataRef: "#/components/schemas/Post",
+  },
 ] as const;
 
-export const reservedOperationMatrix = [
-  reserved("query", "postContext", "PostContext", "get", "/api/v1/posts/{id}/context", false),
-  reserved("query", "postQuotes", "PostConnection", "get", "/api/v1/posts/{id}/quotes", false),
-] as const;
+interface ReservedOperation {
+  readonly operation: PublicOperationName;
+  readonly graphqlType: "query" | "mutation";
+  readonly graphqlField: string;
+  readonly graphqlReturnType: string;
+  readonly httpMethod: "get" | "post" | "patch" | "delete";
+  readonly httpPath: string;
+  readonly requiresAuth: boolean;
+}
+
+export const reservedOperationMatrix: readonly ReservedOperation[] = [];
 
 export const implementedHttpOnlyOperations = new Set([
-  "GET /api/v1/timelines/local",
   "POST /api/v1/media",
   "GET /api/v1/streams",
   "GET /api/v1/streams/timelines/home",
@@ -747,7 +1048,7 @@ export const implementedHttpOnlyOperations = new Set([
   "GET /api/v1/streams/notifications",
 ]);
 
-export const reservedHttpOnlyOperations = new Set(["GET /api/v1/media/{id}"]);
+export const reservedHttpOnlyOperations = new Set<string>();
 
 export const authenticatedHttpOnlyOperations = new Set([
   "POST /api/v1/media",
@@ -774,20 +1075,6 @@ export const reservedGraphQLOperations = new Set(
   reservedOperationMatrix.map((operation) => `${operation.graphqlType} ${operation.graphqlField}`),
 );
 
-function reserved(
-  graphqlType: "query" | "mutation",
-  graphqlField: string,
-  graphqlReturnType: string,
-  httpMethod: "get" | "post" | "patch" | "delete",
-  httpPath: string,
-  requiresAuth: boolean,
-) {
-  return {
-    graphqlType,
-    graphqlField,
-    graphqlReturnType,
-    httpMethod,
-    httpPath,
-    requiresAuth,
-  };
+function publicOperationName<Name extends PublicOperationName>(name: Name): Name {
+  return name;
 }

@@ -26,6 +26,151 @@ import {
 import { createActivityPlugApp } from "./app.js";
 
 describe("ActivityPlug HTTP and GraphQL shells", () => {
+  it("bounds the GraphQL transport to POST requests", async () => {
+    const app = createActivityPlugApp({ service: createTestService() });
+
+    const response = await app.request("/graphql?query=%7Bhealth%7Bok%7D%7D");
+
+    expect(response.status).toBe(404);
+  });
+
+  it("rejects malformed GraphQL JSON at the transport boundary", async () => {
+    const app = createActivityPlugApp({ service: createTestService() });
+
+    const response = await app.request("/graphql", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{",
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      errors: [{ message: "GraphQL request body must be valid JSON." }],
+    });
+  });
+
+  it("treats a null GraphQL operation name as omitted", async () => {
+    const app = createActivityPlugApp({ service: createTestService() });
+
+    const response = await app.request("/graphql", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        query: "query { health { ok version } }",
+        operationName: null,
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      data: { health: { ok: true, version: "v1" } },
+    });
+  });
+
+  it("treats null GraphQL variables as omitted", async () => {
+    const app = createActivityPlugApp({ service: createTestService() });
+
+    const response = await app.request("/graphql", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        query: "query { health { ok version } }",
+        variables: null,
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      data: { health: { ok: true, version: "v1" } },
+    });
+  });
+
+  it("passes REST request aborts to the underlying service operation", async () => {
+    let resolveStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    let operationSignal: AbortSignal | undefined;
+    const base = createTestService();
+    const app = createActivityPlugApp({
+      service: createTestService({
+        timelines: {
+          ...base.timelines,
+          public: async (input) => {
+            operationSignal = (input as typeof input & { readonly signal?: AbortSignal }).signal;
+            resolveStarted();
+            await new Promise<void>((resolve) => {
+              operationSignal?.addEventListener("abort", () => resolve(), { once: true });
+            });
+            return {
+              nodes: [testPost],
+              pageInfo: { hasNextPage: false, hasPreviousPage: false },
+            };
+          },
+        },
+      }),
+    });
+    const controller = new AbortController();
+    const response = app.request(
+      new Request("http://localhost/api/v1/timelines/public?origin=https://example.test", {
+        signal: controller.signal,
+      }),
+    );
+
+    await started;
+    expect(operationSignal).toBeInstanceOf(AbortSignal);
+    expect(operationSignal?.aborted).toBe(false);
+
+    controller.abort();
+
+    await expect(response).resolves.toHaveProperty("status", 200);
+    expect(operationSignal?.aborted).toBe(true);
+  });
+
+  it("passes GraphQL request aborts to the underlying service operation", async () => {
+    let resolveStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    let operationSignal: AbortSignal | undefined;
+    const base = createTestService();
+    const app = createActivityPlugApp({
+      service: createTestService({
+        accounts: {
+          ...base.accounts,
+          get: async (input) => {
+            operationSignal = (input as typeof input & { readonly signal?: AbortSignal }).signal;
+            resolveStarted();
+            await new Promise<void>((resolve) => {
+              operationSignal?.addEventListener("abort", () => resolve(), { once: true });
+            });
+            return testViewerAccount;
+          },
+        },
+      }),
+    });
+    const controller = new AbortController();
+    const response = app.request(
+      new Request("http://localhost/graphql", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: `query { account(id: "${testViewerAccount.ref.id}") { ref { id } } }`,
+        }),
+        signal: controller.signal,
+      }),
+    );
+
+    await started;
+    expect(operationSignal).toBeInstanceOf(AbortSignal);
+    expect(operationSignal?.aborted).toBe(false);
+
+    controller.abort();
+
+    await expect(response).resolves.toHaveProperty("status", 200);
+    expect(operationSignal?.aborted).toBe(true);
+  });
+
   it("serves health, API root, and a validated OpenAPI document", async () => {
     const app = createActivityPlugApp({
       service: createTestService(),
@@ -39,6 +184,24 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
       },
     });
 
+    const unhealthyApp = createActivityPlugApp({
+      service: createTestService({ health: () => ({ ok: false, version: "v1" }) }),
+    });
+    const unhealthyHealth = await unhealthyApp.request("/health");
+    expect(unhealthyHealth.status).toBe(503);
+    await expect(unhealthyHealth.json()).resolves.toEqual({
+      data: { ok: false, version: "v1" },
+    });
+    const graphqlHealth = await unhealthyApp.request("/graphql", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: "query { health { ok version } }" }),
+    });
+    expect(graphqlHealth.status).toBe(200);
+    await expect(graphqlHealth.json()).resolves.toEqual({
+      data: { health: { ok: false, version: "v1" } },
+    });
+
     const openapiResponse = await app.request("/api/v1/openapi.json");
     const openapi = (await openapiResponse.json()) as ReturnType<typeof createOpenApiDocument>;
 
@@ -46,6 +209,23 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
     expect(() => validateOpenApiDocument(openapi)).not.toThrow();
     await expect(SwaggerParser.validate(openapi)).resolves.toBeDefined();
     expect(openapi.paths).toHaveProperty("/api/v1/instances/{origin}/capabilities");
+    expect(openapi.paths["/health"]?.get.responses["503"]).toMatchObject({
+      description: "A required local dependency is not ready.",
+      content: {
+        "application/json": {
+          schema: {
+            required: ["data"],
+            properties: {
+              data: {
+                type: "object",
+                required: ["ok", "version"],
+                properties: { ok: { type: "boolean" }, version: { type: "string" } },
+              },
+            },
+          },
+        },
+      },
+    });
     expect(openapi.paths).not.toHaveProperty("/api/v1/capabilities");
     expect(parameterSchema(openapi, "/api/v1/search", "get", "q")).toMatchObject({
       minLength: 1,
@@ -64,45 +244,51 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
     expect(parameterSchema(openapi, "/api/v1/accounts/lookup", "get", "handle")).toMatchObject({
       minLength: 1,
     });
-    expect(
-      parameterSchema(openapi, "/api/v1/accounts/{id}/posts", "get", "sessionId"),
-    ).toMatchObject({
-      minLength: 1,
-    });
-    expect(parameterSchema(openapi, "/api/v1/timelines/public", "get", "sessionId")).toMatchObject({
-      minLength: 1,
-    });
-    expect(parameterSchema(openapi, "/api/v1/timelines/local", "get", "sessionId")).toMatchObject({
-      minLength: 1,
-    });
-    expect(parameterSchema(openapi, "/api/v1/search", "get", "sessionId")).toMatchObject({
-      minLength: 1,
-    });
-    expect(
-      parameterSchema(openapi, "/api/v1/posts/{id}/history", "get", "sessionId"),
-    ).toMatchObject({
-      minLength: 1,
-    });
+    for (const [path, method] of [
+      ["/api/v1/accounts/{id}/posts", "get"],
+      ["/api/v1/timelines/public", "get"],
+      ["/api/v1/timelines/local", "get"],
+      ["/api/v1/search", "get"],
+      ["/api/v1/posts/{id}/history", "get"],
+    ] as const) {
+      expect(parameterSchema(openapi, path, method, "sessionId")).toBeUndefined();
+    }
     expect(requestSchemaProperty(openapi, "/api/v1/posts", "post", "origin")).toMatchObject({
       minLength: 1,
     });
+    for (const schemaName of ["CreatePostRequest", "UpdatePostRequest", "SchedulePostRequest"]) {
+      expect(componentSchemaProperty(openapi, schemaName, "poll")).toMatchObject({
+        required: ["options", "expiresInSeconds"],
+      });
+    }
     expect(componentSchemaProperty(openapi, "AuthImportTokenRequest", "origin")).toMatchObject({
       minLength: 1,
     });
     expect(componentSchemaProperty(openapi, "AuthStartRequest", "origin")).toMatchObject({
       minLength: 1,
     });
-    expect(componentSchemaProperty(openapi, "AuthSessionInput", "id")).toMatchObject({
-      minLength: 1,
-    });
-    expect(componentSchemaProperty(openapi, "AuthSessionInput", "origin")).toMatchObject({
-      minLength: 1,
-    });
+    expect(
+      (openapi.components.schemas as Record<string, unknown>)["AuthSessionInput"],
+    ).toBeUndefined();
     expect(componentSchemaProperty(openapi, "OAuthCallbackStateBinding", "origin")).toMatchObject({
       minLength: 1,
     });
     expect(componentOneOfProperty(openapi, "AuthExchangeRequest", 0, "origin")).toMatchObject({
       minLength: 1,
+    });
+    expect(componentOneOfProperty(openapi, "OAuthClientInput", 0, "name")).toMatchObject({
+      minLength: 1,
+    });
+    expect(componentOneOfProperty(openapi, "OAuthClientInput", 0, "redirectUri")).toMatchObject({
+      format: "uri",
+      minLength: 1,
+    });
+    expect(componentOneOfProperty(openapi, "OAuthClientInput", 1, "clientName")).toMatchObject({
+      minLength: 1,
+    });
+    expect(componentOneOfProperty(openapi, "OAuthClientInput", 1, "redirectUris")).toMatchObject({
+      minItems: 1,
+      items: { format: "uri", minLength: 1 },
     });
     expect(operationRequestBody(openapi, "/api/v1/auth/refresh", "post")).toBeUndefined();
     expect(operationRequestBody(openapi, "/api/v1/auth/revoke", "post")).toBeUndefined();
@@ -158,10 +344,12 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
 
     const graphql = await app.request("/graphql", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        authorization: `Bearer ${testSession.id}`,
+        "content-type": "application/json",
+      },
       body: JSON.stringify({
-        query: "mutation($sessionId: ID!) { authRefresh(sessionId: $sessionId) { id } }",
-        variables: { sessionId: testSession.id },
+        query: "mutation { authRefresh { id } }",
       }),
     });
     expect(graphql.status).toBe(200);
@@ -210,7 +398,7 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
             "content-type": "application/json",
           },
           body: JSON.stringify({
-            query: `query($adapter: AdapterKind!, $origin: String!) {
+            query: `query($adapter: AdapterId!, $origin: String!) {
               capabilities(adapter: $adapter, origin: $origin) {
                 auth {
                   name
@@ -221,7 +409,7 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
               }
             }`,
             variables: {
-              adapter: "MASTODON",
+              adapter: "mastodon",
               origin,
             },
           }),
@@ -236,7 +424,7 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
       source: "static",
       reason: "OAuth is available.",
     });
-    expect(selectors).toEqual([
+    expect(selectors).toMatchObject([
       {
         origin,
       },
@@ -245,6 +433,12 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
         origin,
       },
     ]);
+    expect(selectors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ]),
+    );
   });
 
   it("exposes auth operations through HTTP and GraphQL", async () => {
@@ -289,7 +483,7 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
             }`,
             variables: {
               input: {
-                adapter: "MASTODON",
+                adapter: "mastodon",
                 origin: "https://example.test",
                 token: {
                   accessToken: "token",
@@ -304,7 +498,7 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
       data: {
         importToken: {
           id: testSession.id,
-          adapter: "MASTODON",
+          adapter: "mastodon",
           origin: testSession.origin,
           scopes: testSession.scopes,
         },
@@ -567,7 +761,7 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
               }
               accountPosts(id: $id) {
                 nodes { ref { rawId } author { ref { rawId } } contentHtml media { ref { rawId } } }
-                pageInfo { hasNextPage hasPreviousPage raw }
+                pageInfo { hasNextPage hasPreviousPage }
               }
             }`,
             variables: { id: accountId },
@@ -579,7 +773,7 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
         account: {
           ref: {
             id: accountId,
-            adapter: "MASTODON",
+            adapter: "mastodon",
             origin: "https://example.test",
             rawId: "1",
           },
@@ -598,7 +792,6 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
           pageInfo: {
             hasNextPage: false,
             hasPreviousPage: false,
-            raw: { cursor: null },
           },
         },
       },
@@ -653,28 +846,32 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
     });
 
     const httpResponse = await app.request(
-      `/api/v1/accounts/${testViewerAccount.ref.id}/posts?limit=201&sessionId=${testSession.id}`,
+      `/api/v1/accounts/${testViewerAccount.ref.id}/posts?limit=201`,
+      { headers: { authorization: `Bearer ${testSession.id}` } },
     );
     expect(httpResponse.status).toBe(200);
 
     const graphqlResponse = await jsonRequest(
       app.request("/graphql", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          authorization: `Bearer ${testSession.id}`,
+          "content-type": "application/json",
+        },
         body: JSON.stringify({
-          query: `query($id: ID!, $sessionId: ID!) {
-            accountPosts(id: $id, sessionId: $sessionId, page: { limit: 201 }) {
+          query: `query($id: ID!) {
+            accountPosts(id: $id, page: { limit: 201 }) {
               nodes { contentHtml }
             }
           }`,
-          variables: { id: testViewerAccount.ref.id, sessionId: testSession.id },
+          variables: { id: testViewerAccount.ref.id },
         }),
       }),
     );
     expect(graphqlResponse).toMatchObject({ data: { accountPosts: { nodes: [] } } });
     expect(seenInputs).toEqual([
-      { limit: 200, sessionId: testSession.id },
-      { limit: 200, sessionId: testSession.id },
+      { limit: 100, sessionId: testSession.id },
+      { limit: 100, sessionId: testSession.id },
     ]);
   });
 
@@ -718,6 +915,7 @@ describe("ActivityPlug HTTP and GraphQL shells", () => {
     const app = createActivityPlugApp({
       service: createTestService({
         notifications: {
+          ...createTestService().notifications,
           list: async () => {
             calls.push("notifications.list");
             return {

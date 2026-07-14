@@ -15,29 +15,36 @@ import { type ActivityPlugApiService } from "../api/service.js";
 import {
   authenticatedHttpOnlyOperations,
   implementedHttpOnlyOperations,
+  lifecycleStatusOperations,
   publicOperationMatrix,
   reservedGraphQLOperations,
   reservedHttpOnlyOperations,
   reservedOperationMatrix,
+  publicTransportOperations,
   standaloneGraphQLOperations,
   standaloneHttpOperations,
+  streamingOperations,
 } from "./app-operation-matrix.js";
 
 export {
   authenticatedHttpOnlyOperations,
   implementedHttpOnlyOperations,
+  lifecycleStatusOperations,
   publicOperationMatrix,
   reservedGraphQLOperations,
   reservedHttpOnlyOperations,
   reservedOperationMatrix,
+  publicTransportOperations,
   standaloneGraphQLOperations,
   standaloneHttpOperations,
+  streamingOperations,
 };
 
 export const testSession: AuthSession = {
   id: "session-1",
   adapter: "mastodon",
   origin: "https://example.test",
+  strategy: "token",
   scopes: ["read"],
   capabilities: {},
 };
@@ -145,6 +152,14 @@ export function createTestService(
     instances: {
       detect: async () => testInstance,
       get: async () => testInstance,
+      oauthMetadata: async () => ({
+        authorizationEndpoint: "https://example.test/oauth/authorize",
+        tokenEndpoint: "https://example.test/oauth/token",
+        scopesSupported: ["read"],
+        codeChallengeMethodsSupported: ["S256"],
+        raw: {},
+      }),
+      peers: async () => ({ origins: ["https://peer.example"], raw: {} }),
     },
     accounts: {
       get: async () => testViewerAccount,
@@ -178,6 +193,12 @@ export function createTestService(
       update: async () => testPost,
       history: async () => [],
       delete: async () => ({ ref: testPost.ref, deleted: true }),
+      context: async () => ({ ancestors: [], descendants: [] }),
+      quotes: async () => ({
+        nodes: [],
+        pageInfo: { hasNextPage: false, hasPreviousPage: false },
+      }),
+      translate: async () => ({ contentHtml: "<p>Hello</p>", raw: {} }),
     },
     timelines: {
       home: async () => ({
@@ -206,10 +227,12 @@ export function createTestService(
         accounts: [testViewerAccount],
         posts: [testPost],
         hashtags: [],
+        pageInfo: { hasNextPage: false, hasPreviousPage: false },
         raw: {},
       }),
     },
     media: {
+      get: async () => testMedia,
       upload: async () => ({
         ref: createEntityRef({
           adapter: "mastodon",
@@ -276,6 +299,7 @@ export function createTestService(
     },
     notifications: {
       list: async () => ({ nodes: [], pageInfo: { hasNextPage: false, hasPreviousPage: false } }),
+      groups: async () => ({ nodes: [], pageInfo: { hasNextPage: false, hasPreviousPage: false } }),
       unreadCount: async () => 0,
       dismiss: async () => ({ ref: testPost.ref, deleted: true }),
       clear: async () => undefined,
@@ -338,6 +362,50 @@ export function createTestService(
       },
       delete: async () => ({ ref: testPost.ref, deleted: true }),
     },
+    bookmarkFolders: {
+      list: async () => ({ nodes: [], pageInfo: { hasNextPage: false, hasPreviousPage: false } }),
+      create: async () => ({
+        ref: createEntityRef({
+          adapter: "mastodon",
+          origin: "https://example.test",
+          type: "bookmarkFolder",
+          id: "folder-1",
+        }),
+        name: "Read later",
+        raw: {},
+      }),
+      update: async () => ({
+        ref: createEntityRef({
+          adapter: "mastodon",
+          origin: "https://example.test",
+          type: "bookmarkFolder",
+          id: "folder-1",
+        }),
+        name: "Read later",
+        raw: {},
+      }),
+      delete: async () => ({ ref: testPost.ref, deleted: true }),
+      addPost: async () => ({
+        ref: createEntityRef({
+          adapter: "mastodon",
+          origin: "https://example.test",
+          type: "bookmarkFolder",
+          id: "folder-1",
+        }),
+        name: "Read later",
+        raw: {},
+      }),
+      removePost: async () => ({
+        ref: createEntityRef({
+          adapter: "mastodon",
+          origin: "https://example.test",
+          type: "bookmarkFolder",
+          id: "folder-1",
+        }),
+        name: "Read later",
+        raw: {},
+      }),
+    },
     streams: {
       timeline: async () =>
         streamEvents([{ type: "timeline.update", stream: "timeline", post: testPost }]),
@@ -346,6 +414,11 @@ export function createTestService(
     },
     auth: {
       importToken: async () => testSession,
+      registerClient: async () => ({
+        clientId: "client-id",
+        clientSecret: "client-secret",
+        redirectUris: ["https://client.example/callback"],
+      }),
       start: async () => ({
         client: {
           clientId: "client-id",
@@ -367,6 +440,21 @@ export function createTestService(
       refreshSession: async () => testSession,
       revoke: async () => undefined,
       revokeSession: async () => undefined,
+      emailChallenge: {
+        start: async () => ({
+          challengeId: "email-challenge",
+          expiresAt: "2026-07-13T00:00:00.000Z",
+        }),
+        verify: async () => testSession,
+      },
+      passkey: {
+        start: async () => ({
+          challengeId: "passkey-challenge",
+          options: { challenge: "challenge", userVerification: "preferred" },
+          expiresAt: "2026-07-13T00:00:00.000Z",
+        }),
+        finish: async () => testSession,
+      },
     },
     viewer: async () => ({
       account: testViewerAccount,
@@ -460,8 +548,8 @@ export function inputTypeName(
 ): string | undefined {
   const fields =
     operationType === "query"
-      ? introspection.data.__schema.queryType.fields
-      : introspection.data.__schema.mutationType.fields;
+      ? introspection.data["__schema"].queryType.fields
+      : introspection.data["__schema"].mutationType.fields;
   const argument = fields
     .find((field) => field.name === fieldName)
     ?.args.find((candidate) => candidate.name === argumentName);
@@ -473,8 +561,8 @@ export function inputFieldTypeName(
   inputType: string,
   fieldName: string,
 ): string | undefined {
-  if (introspection.data.__type?.name !== inputType) return undefined;
-  const field = introspection.data.__type.inputFields?.find(
+  if (introspection.data["__type"]?.name !== inputType) return undefined;
+  const field = introspection.data["__type"].inputFields?.find(
     (candidate) => candidate.name === fieldName,
   );
   return typeName(field?.type);
@@ -568,8 +656,8 @@ export function untrackedGraphQLOperations(introspection: {
     ),
   ]);
   return [
-    ...introspection.data.__schema.queryType.fields.map((field) => `query ${field.name}`),
-    ...introspection.data.__schema.mutationType.fields.map((field) => `mutation ${field.name}`),
+    ...introspection.data["__schema"].queryType.fields.map((field) => `query ${field.name}`),
+    ...introspection.data["__schema"].mutationType.fields.map((field) => `mutation ${field.name}`),
   ]
     .filter((label) => !tracked.has(label))
     .toSorted();

@@ -7,6 +7,7 @@ import {
   maxPageLimit,
   type ActivityPlugError as ActivityPlugErrorType,
   type OAuthClientRegistration,
+  type PasskeyAuthenticationResponse,
 } from "@activityplug/core";
 import { type Context, type Hono } from "hono";
 
@@ -18,6 +19,10 @@ import {
   type AuthParseCallbackRequest,
   type AuthStartRequest,
   type ImportTokenRequest,
+  type EmailChallengeStartRequest,
+  type EmailChallengeVerifyRequest,
+  type PasskeyFinishRequest,
+  type PasskeyStartRequest,
   type PublicAccountFieldInput,
 } from "../api/service.js";
 
@@ -95,6 +100,55 @@ export function optionalBearerSessionId(
   return { sessionId: bearerSessionId(authorization) };
 }
 
+export async function rejectLegacySessionCredentials(request: Request): Promise<void> {
+  rejectLegacySessionQueryCredential(request);
+
+  if (request.method === "GET" || request.method === "HEAD" || request.body === null) return;
+  const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
+  const clone = request.clone();
+  if (contentType.includes("application/json")) {
+    let body: unknown;
+    try {
+      body = await clone.json();
+    } catch {
+      // Route-specific parsing reports malformed JSON with its existing contract.
+      return;
+    }
+    if (typeof body === "object" && body !== null && !Array.isArray(body) && "sessionId" in body) {
+      throw new ActivityPlugError(
+        "VALIDATION_FAILED",
+        "ActivityPlug sessions must be sent with Authorization: Bearer.",
+      );
+    }
+    return;
+  }
+
+  if (contentType.includes("multipart/form-data")) {
+    try {
+      const body = await clone.formData();
+      if (body.has("sessionId")) {
+        throw new ActivityPlugError(
+          "VALIDATION_FAILED",
+          "ActivityPlug sessions must be sent with Authorization: Bearer.",
+        );
+      }
+    } catch (error) {
+      if (error instanceof ActivityPlugError) throw error;
+      // Route-specific parsing reports malformed multipart bodies.
+    }
+  }
+}
+
+export function rejectLegacySessionQueryCredential(request: Request): void {
+  const url = new URL(request.url);
+  if (url.searchParams.has("sessionId")) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "ActivityPlug sessions must be sent with Authorization: Bearer.",
+    );
+  }
+}
+
 export function requiredPathParam(context: Context, name: string): string {
   const value = context.req.param(name);
   if (value === undefined || value.length === 0) {
@@ -153,16 +207,8 @@ export function pageQuery(context: Context):
   return Object.keys(page).length === 0 ? undefined : page;
 }
 
-export function searchPageQuery(context: Context): { readonly limit?: number } | undefined {
-  if (context.req.query("after") !== undefined || context.req.query("before") !== undefined) {
-    throw new ActivityPlugError(
-      "VALIDATION_FAILED",
-      "Search pagination only accepts limit because public search cursors are not mapped yet.",
-      { operation: "search" },
-    );
-  }
-  const page = optionalLimit(context.req.query("limit"));
-  return Object.keys(page).length === 0 ? undefined : page;
+export function searchPageQuery(context: Context): ReturnType<typeof pageQuery> {
+  return pageQuery(context);
 }
 
 export function optionalPageCursor(
@@ -339,9 +385,9 @@ export function optionalBooleanBody(
 
 export function optionalPoll(body: Record<string, unknown>): {
   readonly poll?: {
-    readonly options: readonly string[];
+    readonly options: readonly [string, string, ...string[]];
+    readonly expiresInSeconds: number;
     readonly multiple?: boolean;
-    readonly expiresInSeconds?: number;
   };
 } {
   if (body.poll === undefined) return {};
@@ -355,11 +401,22 @@ export function optionalPoll(body: Record<string, unknown>): {
   }
   return {
     poll: {
-      options,
+      options: options as [string, string, ...string[]],
+      expiresInSeconds: requiredPositiveIntegerBody(poll, "expiresInSeconds"),
       ...optionalBooleanBody(poll, "multiple"),
-      ...optionalIntegerBody(poll, "expiresInSeconds"),
     },
   };
+}
+
+function requiredPositiveIntegerBody(body: Record<string, unknown>, field: string): number {
+  const value = body[field];
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `Request body field must be a positive integer: ${field}.`,
+    );
+  }
+  return value;
 }
 
 export function optionalIntegerBody(
@@ -464,7 +521,14 @@ export function assertValidDateTime(value: string, field: string): void {
 
 export function importTokenRequest(body: unknown): ImportTokenRequest {
   const request = requireObjectBody(body);
-  const token = request.token === undefined ? request : requireObjectBody(request.token);
+  const tokenValue = request["token"];
+  if (typeof tokenValue !== "object" || tokenValue === null || Array.isArray(tokenValue)) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "Request body field must be a JSON object: token.",
+    );
+  }
+  const token = tokenValue as Record<string, unknown>;
   const expiresAt = optionalString(token, "expiresAt").expiresAt;
   if (expiresAt !== undefined) assertValidDateTime(expiresAt, "expiresAt");
   return {
@@ -503,6 +567,163 @@ export function instanceSelectorRequest(body: unknown): {
     ...optionalString(request, "adapter"),
     origin: requiredString(request, "origin"),
   };
+}
+
+export function emailChallengeStartRequest(body: unknown): EmailChallengeStartRequest {
+  const request = requireObjectBody(body);
+  return {
+    ...instanceSelectorRequest(request),
+    identifier: requiredString(request, "identifier"),
+    ...optionalString(request, "locale"),
+    verificationUriTemplate: requiredString(request, "verificationUriTemplate"),
+  };
+}
+
+export function emailChallengeVerifyRequest(body: unknown): EmailChallengeVerifyRequest {
+  const request = requireObjectBody(body);
+  return {
+    ...instanceSelectorRequest(request),
+    challengeId: requiredString(request, "challengeId"),
+    code: requiredString(request, "code"),
+  };
+}
+
+export function passkeyStartRequest(body: unknown): PasskeyStartRequest {
+  const request = requireObjectBody(body);
+  return {
+    ...instanceSelectorRequest(request),
+    ...optionalString(request, "identifier"),
+  };
+}
+
+export function passkeyFinishRequest(body: unknown): PasskeyFinishRequest {
+  const request = requireObjectBody(body);
+  return {
+    ...instanceSelectorRequest(request),
+    challengeId: requiredString(request, "challengeId"),
+    credential: passkeyCredential(request["credential"]),
+  };
+}
+
+function passkeyCredential(value: unknown): PasskeyAuthenticationResponse {
+  const credential = requireObjectBody(value);
+  const response = requireObjectBody(credential["response"]);
+  const extensionValue = credential["clientExtensionResults"];
+  const clientExtensionResults =
+    extensionValue === undefined ? {} : passkeyExtensionResults(requireObjectBody(extensionValue));
+  const type = requiredString(credential, "type");
+  if (type !== "public-key") {
+    throw new ActivityPlugError("VALIDATION_FAILED", "Passkey credential type must be public-key.");
+  }
+  const attachment = optionalStringValue(credential, "authenticatorAttachment");
+  if (attachment !== undefined && attachment !== "cross-platform" && attachment !== "platform") {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      "Passkey authenticator attachment is invalid.",
+    );
+  }
+  return {
+    id: requiredString(credential, "id"),
+    rawId: requiredString(credential, "rawId"),
+    type,
+    ...(attachment === undefined ? {} : { authenticatorAttachment: attachment }),
+    response: {
+      clientDataJSON: requiredString(response, "clientDataJSON"),
+      authenticatorData: requiredString(response, "authenticatorData"),
+      signature: requiredString(response, "signature"),
+      ...optionalString(response, "userHandle"),
+    },
+    clientExtensionResults,
+  };
+}
+
+function passkeyExtensionResults(
+  extensions: Record<string, unknown>,
+): PasskeyAuthenticationResponse["clientExtensionResults"] {
+  const allowed = new Set(["appid", "credProps", "hmacCreateSecret", "largeBlob", "prf"]);
+  if (Object.keys(extensions).some((key) => !allowed.has(key))) {
+    throw new ActivityPlugError("VALIDATION_FAILED", "Passkey extension output is invalid.");
+  }
+  const appid = optionalBooleanValue(extensions, "appid");
+  const hmacCreateSecret = optionalBooleanValue(extensions, "hmacCreateSecret");
+  return {
+    ...(appid === undefined ? {} : { appid }),
+    ...(hmacCreateSecret === undefined ? {} : { hmacCreateSecret }),
+    ...optionalPasskeyCredProps(extensions["credProps"]),
+    ...optionalPasskeyLargeBlob(extensions["largeBlob"]),
+    ...optionalPasskeyPrf(extensions["prf"]),
+  };
+}
+
+function optionalPasskeyCredProps(value: unknown) {
+  if (value === undefined) return {};
+  const props = requireObjectBody(value);
+  assertObjectKeys(props, ["rk"], "Passkey credProps extension");
+  const rk = optionalBooleanValue(props, "rk");
+  return { credProps: rk === undefined ? {} : { rk } };
+}
+
+function optionalPasskeyLargeBlob(value: unknown) {
+  if (value === undefined) return {};
+  const largeBlob = requireObjectBody(value);
+  assertObjectKeys(largeBlob, ["supported", "blob", "written"], "Passkey largeBlob extension");
+  const supported = optionalBooleanValue(largeBlob, "supported");
+  const blob = optionalStringValue(largeBlob, "blob");
+  const written = optionalBooleanValue(largeBlob, "written");
+  return {
+    largeBlob: {
+      ...(supported === undefined ? {} : { supported }),
+      ...(blob === undefined ? {} : { blob }),
+      ...(written === undefined ? {} : { written }),
+    },
+  };
+}
+
+function optionalPasskeyPrf(value: unknown) {
+  if (value === undefined) return {};
+  const prf = requireObjectBody(value);
+  assertObjectKeys(prf, ["enabled", "results"], "Passkey prf extension");
+  const enabled = optionalBooleanValue(prf, "enabled");
+  const resultsValue = prf["results"];
+  let results: { readonly first: string; readonly second?: string } | undefined;
+  if (resultsValue !== undefined) {
+    const parsed = requireObjectBody(resultsValue);
+    assertObjectKeys(parsed, ["first", "second"], "Passkey prf results");
+    const second = optionalStringValue(parsed, "second");
+    results = {
+      first: requiredString(parsed, "first"),
+      ...(second === undefined ? {} : { second }),
+    };
+  }
+  return {
+    prf: {
+      ...(enabled === undefined ? {} : { enabled }),
+      ...(results === undefined ? {} : { results }),
+    },
+  };
+}
+
+function optionalBooleanValue(body: Record<string, unknown>, field: string): boolean | undefined {
+  const value = body[field];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "boolean") {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `Request body field must be a boolean: ${field}.`,
+    );
+  }
+  return value;
+}
+
+function assertObjectKeys(
+  body: Record<string, unknown>,
+  allowed: readonly string[],
+  label: string,
+): void {
+  const names = new Set(allowed);
+  if (Object.keys(body).some((key) => !names.has(key))) {
+    throw new ActivityPlugError("VALIDATION_FAILED", `${label} contains an unsupported field.`);
+  }
 }
 
 export function authParseCallbackRequest(body: unknown): AuthParseCallbackRequest {
@@ -551,14 +772,21 @@ export function authExchangeRequest(body: unknown): AuthExchangeRequest {
 
 export function oauthClientInput(value: unknown): AuthStartRequest["client"] {
   const request = requireObjectBody(value);
-  const redirectUris =
+  const redirectUris = canonicalUriArray(
     optionalStringArrayValue(request, "redirectUris") ??
-    optionalSingletonStringArray(request, "redirectUri");
+      optionalSingletonStringArray(request, "redirectUri"),
+    "client.redirectUris",
+  );
+  const clientName = optionalStringValue(request, "clientName");
+  const website = optionalStringValue(request, "website");
   return {
-    clientName: optionalStringValue(request, "clientName") ?? requiredString(request, "name"),
+    clientName:
+      clientName === undefined
+        ? requiredNonBlankString(request, "name")
+        : nonBlankValue(clientName, "clientName"),
     redirectUris,
     ...optionalStringArray(request, "scopes"),
-    ...optionalString(request, "website"),
+    ...(website === undefined ? {} : { website: nonBlankValue(website, "website") }),
   };
 }
 
@@ -719,6 +947,27 @@ export function requiredFirstString(client: AuthStartRequest["client"]): string 
   return first;
 }
 
+function canonicalUriArray(values: readonly string[], field: string): readonly string[] {
+  if (values.length === 0) {
+    throw new ActivityPlugError(
+      "VALIDATION_FAILED",
+      `Request body field must include at least one URI: ${field}.`,
+    );
+  }
+  return values.map((value, index) => {
+    try {
+      return new URL(value).href;
+    } catch (cause) {
+      throw new ActivityPlugError(
+        "VALIDATION_FAILED",
+        `Request body field must be an absolute URI: ${field}[${index}].`,
+        { raw: { field, index } },
+        { cause },
+      );
+    }
+  });
+}
+
 export function optionalStringArray(
   body: Record<string, unknown>,
   field: string,
@@ -794,7 +1043,7 @@ export function toActivityPlugError(error: unknown): ActivityPlugErrorType {
 
 export function statusForError(
   error: ActivityPlugErrorType,
-): 400 | 401 | 404 | 409 | 429 | 500 | 502 | 504 {
+): 400 | 401 | 403 | 404 | 409 | 413 | 429 | 500 | 502 | 504 {
   switch (error.code) {
     case "AUTH_REQUIRED":
     case "AUTH_EXPIRED":
@@ -807,10 +1056,15 @@ export function statusForError(
     case "ADAPTER_NOT_FOUND":
     case "NOT_FOUND":
       return 404;
+    case "ORIGIN_NOT_ALLOWED":
+      return 403;
+    case "REQUEST_LIMIT_EXCEEDED":
+      return 413;
     case "CONFLICT":
       return 409;
     case "RATE_LIMITED":
       return 429;
+    case "REMOTE_PROTOCOL_ERROR":
     case "REMOTE_ERROR":
     case "NETWORK_ERROR":
       return 502;

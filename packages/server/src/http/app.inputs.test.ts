@@ -18,10 +18,148 @@ import {
 import { createActivityPlugApp } from "./app.js";
 
 describe("ActivityPlug HTTP and GraphQL input contracts", () => {
+  it("keeps the synchronous OAuth callback parser input signal-free", async () => {
+    const base = createTestService();
+    let seen: unknown;
+    const app = createActivityPlugApp({
+      service: createTestService({
+        auth: {
+          ...base.auth,
+          parseCallback: (input) => {
+            seen = input;
+            if (typeof input !== "object" || input === null || Object.hasOwn(input, "signal")) {
+              throw new TypeError("OAuth callback input must remain exact.");
+            }
+            return base.auth.parseCallback(input);
+          },
+        },
+      }),
+    });
+
+    const response = await app.request("/api/v1/auth/parse-callback", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ params: { code: "code", state: "state" } }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(seen).toEqual({ params: { code: "code", state: "state" } });
+  });
+
+  it("rejects legacy session credentials and accepts bearer authentication", async () => {
+    const seen: unknown[] = [];
+    const app = createActivityPlugApp({
+      service: createTestService({
+        viewer: async (input) => {
+          seen.push(input);
+          return { account: testViewerAccount, session: testSession };
+        },
+      }),
+    });
+
+    for (const path of [
+      `/api/v1/posts/${encodeURIComponent(testPost.ref.id)}?sessionId=query-secret`,
+      "/api/v1/timelines/public?origin=https://example.test&sessionId=query-secret",
+      "/api/v1/streams?sessionId=query-secret",
+    ]) {
+      const response = await app.request(path);
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: "VALIDATION_FAILED" },
+      });
+    }
+
+    const bodyCredential = await app.request("/api/v1/posts", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${testSession.id}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        origin: "https://example.test",
+        content: "hello",
+        sessionId: "body-secret",
+      }),
+    });
+    expect(bodyCredential.status).toBe(400);
+    await expect(bodyCredential.json()).resolves.toMatchObject({
+      error: { code: "VALIDATION_FAILED" },
+    });
+
+    const bearerResponse = await app.request("/api/v1/viewer", {
+      headers: { authorization: `Bearer ${testSession.id}` },
+    });
+    expect(bearerResponse.status).toBe(200);
+    expect(withoutRequestSignals(seen)).toEqual([{ sessionId: testSession.id }]);
+  });
+
+  it("exposes no GraphQL sessionId argument or input field", async () => {
+    const app = createActivityPlugApp({ service: createTestService() });
+    const response = (await jsonRequest(
+      app.request("/graphql", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: `{ __schema {
+            queryType { fields { name args { name } } }
+            mutationType { fields { name args { name } } }
+            subscriptionType { fields { name args { name } } }
+            types { name inputFields { name } }
+          } }`,
+        }),
+      }),
+    )) as {
+      readonly data: {
+        readonly __schema: {
+          readonly queryType: {
+            readonly fields: readonly {
+              readonly name: string;
+              readonly args: readonly { readonly name: string }[];
+            }[];
+          };
+          readonly mutationType: {
+            readonly fields: readonly {
+              readonly name: string;
+              readonly args: readonly { readonly name: string }[];
+            }[];
+          };
+          readonly subscriptionType: {
+            readonly fields: readonly {
+              readonly name: string;
+              readonly args: readonly { readonly name: string }[];
+            }[];
+          };
+          readonly types: readonly {
+            readonly name: string;
+            readonly inputFields?: readonly { readonly name: string }[] | null;
+          }[];
+        };
+      };
+    };
+    const schema = response.data["__schema"];
+    const credentialFields = [
+      ...schema.queryType.fields.flatMap((field) =>
+        field.args.map((arg) => `${field.name}.${arg.name}`),
+      ),
+      ...schema.mutationType.fields.flatMap((field) =>
+        field.args.map((arg) => `${field.name}.${arg.name}`),
+      ),
+      ...schema.subscriptionType.fields.flatMap((field) =>
+        field.args.map((arg) => `${field.name}.${arg.name}`),
+      ),
+      ...schema.types.flatMap((type) =>
+        (type.inputFields ?? []).map((field) => `${type.name}.${field.name}`),
+      ),
+    ].filter((name) => name.endsWith(".sessionId"));
+
+    expect(credentialFields).toEqual([]);
+  });
+
   it("keeps operation inputs narrow at the HTTP and GraphQL boundaries", async () => {
     const seenMuteInputs: unknown[] = [];
     const seenCreateInputs: unknown[] = [];
     const seenMediaInputs: unknown[] = [];
+    const seenSearchInputs: unknown[] = [];
     const seenVoteInputs: unknown[] = [];
     const app = createActivityPlugApp({
       service: createTestService({
@@ -37,6 +175,18 @@ describe("ActivityPlug HTTP and GraphQL input contracts", () => {
           upload: async (input) => {
             seenMediaInputs.push(input);
             return testMedia;
+          },
+        },
+        search: {
+          search: async (input) => {
+            seenSearchInputs.push(input);
+            return {
+              accounts: [],
+              posts: [],
+              hashtags: [],
+              pageInfo: { hasNextPage: false, hasPreviousPage: false },
+              raw: {},
+            };
           },
         },
         polls: {
@@ -57,12 +207,16 @@ describe("ActivityPlug HTTP and GraphQL input contracts", () => {
     });
 
     const searchCursorResponse = await app.request(
-      "/api/v1/search?origin=https://example.test&q=alice&after=remote",
+      "/api/v1/search?origin=https://example.test&q=alice&after=opaque%3A%2B%2F%3D%3Fcursor&limit=999",
     );
-    expect(searchCursorResponse.status).toBe(400);
-    await expect(searchCursorResponse.json()).resolves.toMatchObject({
-      error: { code: "VALIDATION_FAILED" },
-    });
+    expect(searchCursorResponse.status).toBe(200);
+    expect(withoutRequestSignals(seenSearchInputs)).toEqual([
+      {
+        origin: "https://example.test",
+        query: "alice",
+        page: { after: "opaque:+/=?cursor", limit: 100 },
+      },
+    ]);
 
     const invalidSearchResolveResponse = await app.request(
       "/api/v1/search?origin=https://example.test&q=alice&resolve=yes",
@@ -188,18 +342,25 @@ describe("ActivityPlug HTTP and GraphQL input contracts", () => {
       }),
     });
     const postHistoryResponse = await postHistoryApp.request(
-      `/api/v1/posts/${encodeURIComponent(testPost.ref.id)}/history?sessionId=${testSession.id}`,
+      `/api/v1/posts/${encodeURIComponent(testPost.ref.id)}/history`,
     );
     expect(postHistoryResponse.status).toBe(200);
-    expect(seenPostHistoryInputs).toEqual([{ id: testPost.ref.id, sessionId: testSession.id }]);
-    const conflictingPostHistorySession = await postHistoryApp.request(
-      `/api/v1/posts/${encodeURIComponent(testPost.ref.id)}/history?sessionId=other-session`,
+    const authenticatedPostHistory = await postHistoryApp.request(
+      `/api/v1/posts/${encodeURIComponent(testPost.ref.id)}/history`,
       {
         headers: { authorization: `Bearer ${testSession.id}` },
       },
     );
-    expect(conflictingPostHistorySession.status).toBe(400);
-    await expect(conflictingPostHistorySession.json()).resolves.toMatchObject({
+    expect(authenticatedPostHistory.status).toBe(200);
+    expect(withoutRequestSignals(seenPostHistoryInputs)).toEqual([
+      { id: testPost.ref.id },
+      { id: testPost.ref.id, sessionId: testSession.id },
+    ]);
+    const legacyPostHistorySession = await postHistoryApp.request(
+      `/api/v1/posts/${encodeURIComponent(testPost.ref.id)}/history?sessionId=other-session`,
+    );
+    expect(legacyPostHistorySession.status).toBe(400);
+    await expect(legacyPostHistorySession.json()).resolves.toMatchObject({
       error: { code: "VALIDATION_FAILED" },
     });
 
@@ -225,7 +386,7 @@ describe("ActivityPlug HTTP and GraphQL input contracts", () => {
       { headers: { authorization: `Bearer ${testSession.id}` } },
     );
     expect(mixedNotificationTypes.status).toBe(200);
-    expect(seenNotificationInputs).toEqual([
+    expect(withoutRequestSignals(seenNotificationInputs)).toEqual([
       {
         origin: "https://example.test",
         sessionId: testSession.id,
@@ -273,7 +434,7 @@ describe("ActivityPlug HTTP and GraphQL input contracts", () => {
         }),
       ),
     ).resolves.toMatchObject({ data: { account: { rawId: "1" } } });
-    expect(seenMuteInputs).toEqual([
+    expect(withoutRequestSignals(seenMuteInputs)).toEqual([
       {
         accountId: testViewerAccount.ref.id,
         sessionId: testSession.id,
@@ -313,13 +474,15 @@ describe("ActivityPlug HTTP and GraphQL input contracts", () => {
 
     const invalidBase64 = await app.request("/graphql", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        authorization: `Bearer ${testSession.id}`,
+        "content-type": "application/json",
+      },
       body: JSON.stringify({
         query: `mutation($input: UploadMediaInput!) { uploadMedia(input: $input) { ref { rawId } } }`,
         variables: {
           input: {
             origin: "https://example.test",
-            sessionId: testSession.id,
             fileBase64: "not base64!",
           },
         },
@@ -339,7 +502,7 @@ describe("ActivityPlug HTTP and GraphQL input contracts", () => {
       body: JSON.stringify({
         origin: "https://example.test",
         content: "",
-        poll: { options: ["yes", " "] },
+        poll: { options: ["yes", " "], expiresInSeconds: 300 },
       }),
     });
     expect(invalidPollResponse.status).toBe(400);
@@ -381,15 +544,17 @@ describe("ActivityPlug HTTP and GraphQL input contracts", () => {
 
     const invalidGraphQLPoll = await app.request("/graphql", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        authorization: `Bearer ${testSession.id}`,
+        "content-type": "application/json",
+      },
       body: JSON.stringify({
         query: `mutation($input: CreatePostInput!) { createPost(input: $input) { ref { rawId } } }`,
         variables: {
           input: {
             origin: "https://example.test",
-            sessionId: testSession.id,
             content: "",
-            poll: { options: [] },
+            poll: { options: [], expiresInSeconds: 300 },
           },
         },
       }),
@@ -400,13 +565,15 @@ describe("ActivityPlug HTTP and GraphQL input contracts", () => {
 
     const blankGraphQLContent = await app.request("/graphql", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        authorization: `Bearer ${testSession.id}`,
+        "content-type": "application/json",
+      },
       body: JSON.stringify({
         query: `mutation($input: CreatePostInput!) { createPost(input: $input) { ref { rawId } } }`,
         variables: {
           input: {
             origin: "https://example.test",
-            sessionId: testSession.id,
             content: "   ",
           },
         },
@@ -429,8 +596,8 @@ describe("ActivityPlug HTTP and GraphQL input contracts", () => {
       ),
     );
     expect(inputTypeName(introspection, "query", "search", "input")).toBe("SearchInput");
-    expect(inputTypeName(introspection, "query", "accountPosts", "sessionId")).toBe("ID");
-    expect(inputFieldTypeName(introspection, "SearchInput", "sessionId")).toBe("ID");
+    expect(inputTypeName(introspection, "query", "accountPosts", "sessionId")).toBeUndefined();
+    expect(inputFieldTypeName(introspection, "SearchInput", "sessionId")).toBeUndefined();
     expect(inputTypeName(introspection, "mutation", "uploadMedia", "input")).toBe(
       "UploadMediaInput",
     );
@@ -463,9 +630,12 @@ describe("ActivityPlug HTTP and GraphQL input contracts", () => {
         }),
       }),
     );
-    expect(getFirstGraphQLError(searchCursorGraphQL).message).toContain(
-      'Field "after" is not defined by type "SearchPageInput".',
-    );
+    expect(searchCursorGraphQL).toMatchObject({ data: { search: { accounts: [] } } });
+    expect(withoutRequestSignals([seenSearchInputs.at(-1)])[0]).toEqual({
+      origin: "https://example.test",
+      query: "alice",
+      page: { after: "remote" },
+    });
 
     await expect(
       jsonRequest(
@@ -488,13 +658,15 @@ describe("ActivityPlug HTTP and GraphQL input contracts", () => {
       jsonRequest(
         app.request("/graphql", {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: {
+            authorization: `Bearer ${testSession.id}`,
+            "content-type": "application/json",
+          },
           body: JSON.stringify({
             query: `mutation($input: CreatePostInput!) { createPost(input: $input) { ref { rawId } } }`,
             variables: {
               input: {
                 origin: "https://example.test",
-                sessionId: testSession.id,
                 content: "Poll",
                 poll: {
                   options: ["Yes", "No"],
@@ -538,13 +710,15 @@ describe("ActivityPlug HTTP and GraphQL input contracts", () => {
       jsonRequest(
         app.request("/graphql", {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: {
+            authorization: `Bearer ${testSession.id}`,
+            "content-type": "application/json",
+          },
           body: JSON.stringify({
             query: `mutation($input: VotePollInput!) { votePoll(input: $input) { ref { rawId } } }`,
             variables: {
               input: {
                 id: testPoll.ref.id,
-                sessionId: testSession.id,
                 choices: [0],
               },
             },
@@ -556,13 +730,15 @@ describe("ActivityPlug HTTP and GraphQL input contracts", () => {
       jsonRequest(
         app.request("/graphql", {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: {
+            authorization: `Bearer ${testSession.id}`,
+            "content-type": "application/json",
+          },
           body: JSON.stringify({
             query: `mutation($input: VotePollInput!) { votePoll(input: $input) { ref { rawId } } }`,
             variables: {
               input: {
                 id: testPoll.ref.id,
-                sessionId: testSession.id,
                 choices: [],
               },
             },
@@ -582,13 +758,15 @@ describe("ActivityPlug HTTP and GraphQL input contracts", () => {
       jsonRequest(
         app.request("/graphql", {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: {
+            authorization: `Bearer ${testSession.id}`,
+            "content-type": "application/json",
+          },
           body: JSON.stringify({
             query: `mutation($input: VotePollInput!) { votePoll(input: $input) { ref { rawId } } }`,
             variables: {
               input: {
                 id: testPoll.ref.id,
-                sessionId: testSession.id,
                 choices: [-1],
               },
             },
@@ -604,11 +782,11 @@ describe("ActivityPlug HTTP and GraphQL input contracts", () => {
         },
       ],
     });
-    expect(seenVoteInputs).toEqual([
+    expect(withoutRequestSignals(seenVoteInputs)).toEqual([
       { id: testPoll.ref.id, sessionId: testSession.id, choices: [1] },
       { id: testPoll.ref.id, sessionId: testSession.id, choices: [0] },
     ]);
-    expect(seenCreateInputs).toEqual([
+    expect(withoutRequestSignals(seenCreateInputs)).toEqual([
       {
         origin: "https://example.test",
         sessionId: testSession.id,
@@ -627,4 +805,105 @@ describe("ActivityPlug HTTP and GraphQL input contracts", () => {
       },
     ]);
   });
+
+  it("accepts optional bearer auth for post reads without credential inputs", async () => {
+    const seen: unknown[] = [];
+    const app = createActivityPlugApp({
+      service: createTestService({
+        posts: {
+          ...createTestService().posts,
+          get: async (input) => {
+            seen.push(input);
+            return testPost;
+          },
+        },
+      }),
+    });
+    const path = `/api/v1/posts/${encodeURIComponent(testPost.ref.id)}`;
+    const query = `query($id: ID!) { post(id: $id) { ref { id } } }`;
+    const graphQLBody = JSON.stringify({ query, variables: { id: testPost.ref.id } });
+
+    await expect(jsonRequest(app.request(path))).resolves.toMatchObject({
+      data: { ref: { id: testPost.ref.id } },
+    });
+    await expect(
+      jsonRequest(
+        app.request(path, {
+          headers: { authorization: `Bearer ${testSession.id}` },
+        }),
+      ),
+    ).resolves.toMatchObject({ data: { ref: { id: testPost.ref.id } } });
+    await expect(jsonRequest(app.request(`${path}?sessionId=query-secret`))).resolves.toMatchObject(
+      {
+        error: { code: "VALIDATION_FAILED" },
+      },
+    );
+    for (const authorization of [undefined, `Bearer ${testSession.id}`]) {
+      await expect(
+        jsonRequest(
+          app.request("/graphql", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              ...(authorization === undefined ? {} : { authorization }),
+            },
+            body: graphQLBody,
+          }),
+        ),
+      ).resolves.toMatchObject({ data: { post: { ref: { id: testPost.ref.id } } } });
+    }
+    expect(withoutRequestSignals(seen)).toEqual([
+      { id: testPost.ref.id },
+      { id: testPost.ref.id, sessionId: testSession.id },
+      { id: testPost.ref.id },
+      { id: testPost.ref.id, sessionId: testSession.id },
+    ]);
+
+    await expect(
+      jsonRequest(app.request(path, { headers: { authorization: "Basic malformed" } })),
+    ).resolves.toMatchObject({ error: { code: "AUTH_REQUIRED" } });
+    await expect(
+      jsonRequest(
+        app.request("/graphql", {
+          method: "POST",
+          headers: {
+            authorization: "Basic malformed",
+            "content-type": "application/json",
+          },
+          body: graphQLBody,
+        }),
+      ),
+    ).resolves.toMatchObject({
+      errors: [{ extensions: { activityplug: { code: "AUTH_REQUIRED" } } }],
+    });
+    expect(seen).toHaveLength(4);
+
+    const graphQLCredentialArgument = await app.request("/graphql", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        query: `query($id: ID!, $sessionId: ID!) {
+          post(id: $id, sessionId: $sessionId) { ref { id } }
+        }`,
+        variables: { id: testPost.ref.id, sessionId: "body-secret" },
+      }),
+    });
+    expect(graphQLCredentialArgument.status).toBe(400);
+    const operation = createOpenApiDocument({ tokenImport: "open" }).paths["/api/v1/posts/{id}"]
+      .get;
+    expect(
+      (operation.parameters as readonly { readonly name?: string }[]).map(
+        (parameter) => parameter.name,
+      ),
+    ).not.toContain("sessionId");
+    expect(operation).not.toHaveProperty("requestBody");
+  });
 });
+
+function withoutRequestSignals(inputs: readonly unknown[]): unknown[] {
+  return inputs.map((input) => {
+    expect(input).toEqual(expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    const { signal: _signal, ...narrowInput } = input as Readonly<Record<string, unknown>>;
+    return narrowInput;
+  });
+}
