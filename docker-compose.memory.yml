@@ -1,0 +1,95 @@
+name: activityplug-memory
+
+services:
+  web:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: examples/web-client/Dockerfile
+      args:
+        NODE_IMAGE: ${ACTIVITYPLUG_NODE_IMAGE:?set a digest-pinned Node image}
+        CADDY_IMAGE: ${ACTIVITYPLUG_CADDY_IMAGE:?set a digest-pinned Caddy image}
+        PNPM_VERSION: ${ACTIVITYPLUG_PNPM_VERSION:?set the Task 1 pnpm patch}
+    environment:
+      CADDY_HOST: localhost
+    depends_on:
+      server:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8444:443"
+    volumes:
+      - ./examples/web-client/Caddyfile.local:/etc/caddy/Caddyfile:ro
+      - activityplug-memory-caddy:/data
+      - activityplug-memory-caddy-config:/config
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,noexec,nosuid,size=16m
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: "0.50"
+    networks:
+      product-backend:
+        ipv4_address: 172.31.0.2
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate --quiet --spider https://localhost/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  server:
+    restart: unless-stopped
+    build:
+      context: .
+      dockerfile: examples/web-client/server.Dockerfile
+      args:
+        NODE_IMAGE: ${ACTIVITYPLUG_NODE_IMAGE:?set a digest-pinned Node image}
+        PNPM_VERSION: ${ACTIVITYPLUG_PNPM_VERSION:?set the Task 1 pnpm patch}
+    environment:
+      ACTIVITYPLUG_STORAGE: memory
+      ACTIVITYPLUG_PUBLIC_ORIGIN: https://localhost:8444
+      ACTIVITYPLUG_COOKIE_SIGNING_KEY: ${ACTIVITYPLUG_COOKIE_SIGNING_KEY:?set a cookie-signing key}
+      ACTIVITYPLUG_ANONYMOUS_SESSION_MODE: stateless
+      ACTIVITYPLUG_ALLOWED_REMOTE_ORIGINS: ${ACTIVITYPLUG_ALLOWED_REMOTE_ORIGINS:?set explicit remote origins}
+      ACTIVITYPLUG_TRUSTED_PROXY_ADDRESSES: 172.31.0.2
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:4000/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,noexec,nosuid,size=16m
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: "1.00"
+    networks:
+      product-backend:
+        ipv4_address: 172.31.0.3
+
+volumes:
+  activityplug-memory-caddy:
+  activityplug-memory-caddy-config:
+
+networks:
+  product-backend:
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24

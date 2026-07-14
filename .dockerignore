@@ -1,0 +1,39 @@
+# The production Dockerfiles need only workspace manifests, compiler settings,
+# package sources, and the web-client source tree. Keep the build context
+# allowlisted so local output and credentials cannot enter image layers.
+*
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!rolldown.config.ts
+!tsconfig.base.json
+!packages/
+!packages/**
+!examples/
+!examples/web-client/
+!examples/web-client/**
+
+# Never send local dependencies, generated output, worktrees, artifacts, or
+# common credential material even when an allowlisted directory contains it.
+node_modules
+**/node_modules
+dist
+**/dist
+coverage
+**/coverage
+.worktrees
+**/.worktrees
+artifacts
+**/artifacts
+.dev
+**/.dev
+.env
+.env.*
+**/.env
+**/.env.*
+*.crt
+**/*.crt
+*.key
+**/*.key
+*.pem
+**/*.pem
