@@ -1,10 +1,31 @@
 {
   "name": "@activityplug/session-redis",
-  "version": "0.0.0",
-  "description": "Redis auth session storage for ActivityPlug server mode.",
+  "version": "0.1.0",
+  "description": "Redis auth session and lifecycle storage for ActivityPlug server mode.",
+  "keywords": [
+    "activitypub",
+    "fediverse",
+    "session-redis",
+    "typescript"
+  ],
+  "homepage": "https://github.com/Nebu1eto/activityplug",
+  "bugs": {
+    "url": "https://github.com/Nebu1eto/activityplug/issues"
+  },
   "license": "Apache-2.0 OR MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nebu1eto/activityplug.git",
+    "directory": "packages/session-redis"
+  },
   "files": [
-    "dist"
+    "dist/*.mjs",
+    "dist/*.d.mts",
+    "README.md",
+    "README.ko.md",
+    "README.ja.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
   ],
   "type": "module",
   "sideEffects": false,
@@ -17,7 +38,7 @@
     }
   },
   "scripts": {
-    "build": "tsdown",
+    "build": "rolldown -c ../../rolldown.config.ts --configLoader native",
     "pack:dry-run": "pnpm pack --dry-run",
     "prepack": "pnpm build",
     "test": "node --experimental-strip-types ../../scripts/run-package-tests.ts",
@@ -26,6 +47,10 @@
   "dependencies": {
     "@activityplug/core": "workspace:*",
     "@activityplug/server": "workspace:*",
-    "ioredis": "^5.8.2"
+    "ioredis": "^5.11.1",
+    "zod": "^4.4.3"
+  },
+  "engines": {
+    "node": ">=26"
   }
 }
