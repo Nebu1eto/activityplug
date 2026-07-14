@@ -4,6 +4,7 @@ import {
   decodePageCursor,
   encodePageCursor,
   type ActivityPlugAdapter,
+  type AccountList,
   type AdapterOperationContext,
   type Connection,
   type CreateFilterInput,
@@ -11,10 +12,12 @@ import {
   type Filter,
   type FilterContext,
   type GetFilterInput,
+  type ListAccountInput,
   type Post,
   type ReactPostInput,
   type SessionPageInput,
   type UpdateFilterInput,
+  type PartialCapabilitySet,
   capability,
   createCapabilitySet,
   isIsoDateTimeString,
@@ -27,9 +30,11 @@ import {
   requestResponse,
   requestVoid,
   tokenHeader,
+  type DetectedMastodonSoftware,
   type MastodonBaseAdapterOptions,
   type MastodonTransportOptions,
 } from "@activityplug/mastodon-base";
+import { z } from "zod";
 
 export type PleromaAdapterOptions = Omit<
   MastodonBaseAdapterOptions,
@@ -40,7 +45,46 @@ export type PleromaAdapterOptions = Omit<
   | "supportsRefreshToken"
   | "supportsLocalVisibility"
   | "quoteStatusParameter"
+  | "detectedCapabilities"
 >;
+
+export function pleromaDetectedCapabilities(
+  software: DetectedMastodonSoftware,
+): PartialCapabilitySet {
+  const family = software.name.toLowerCase();
+  if (family !== "pleroma" && family !== "akkoma") return {};
+  const isPleroma = family === "pleroma";
+  return {
+    "posts.context": capability("unsupported", "Post context is not mapped by this adapter."),
+    "posts.quotes": capability("unsupported", "Quote listing is not mapped by this adapter."),
+    "posts.quote": capability(
+      "supported",
+      "This family accepts the adapter's quote_id status parameter.",
+    ),
+    "posts.update": capability(
+      isPleroma ? "unsupported" : "unknown",
+      isPleroma
+        ? "Pleroma does not expose Mastodon-compatible status editing."
+        : "Akkoma status editing support is not assumed from Pleroma versions.",
+    ),
+    "posts.history": capability(
+      isPleroma ? "unsupported" : "unknown",
+      isPleroma
+        ? "Pleroma does not expose Mastodon-compatible status edit history."
+        : "Akkoma status history support is not assumed from Pleroma versions.",
+    ),
+    "media.get": capability("unsupported", "Media lookup is not mapped by this adapter."),
+    "media.upload": capability("supported", "This family exposes media upload endpoints."),
+    "media.delete": capability("unsupported", "This family does not expose media deletion."),
+    "notifications.unreadCount": capability(
+      "unsupported",
+      "This family does not expose the Mastodon unread-count endpoint.",
+    ),
+    "filters.read": capability("supported", "This family exposes filter v1 endpoints."),
+    "filters.create": capability("supported", "This family exposes filter v1 endpoints."),
+    "filters.delete": capability("supported", "This family exposes filter v1 endpoints."),
+  };
+}
 
 export function createPleromaAdapter(options: PleromaAdapterOptions = {}): ActivityPlugAdapter {
   const adapter = createMastodonBaseAdapter({
@@ -52,6 +96,8 @@ export function createPleromaAdapter(options: PleromaAdapterOptions = {}): Activ
     supportsRefreshToken: true,
     supportsLocalVisibility: true,
     quoteStatusParameter: "quote_id",
+    streamingAuthentication: options.streamingAuthentication ?? "legacy-query",
+    detectedCapabilities: pleromaDetectedCapabilities,
   });
   return {
     ...adapter,
@@ -60,6 +106,19 @@ export function createPleromaAdapter(options: PleromaAdapterOptions = {}): Activ
       staticCapabilities: createCapabilitySet({
         ...adapter.metadata.staticCapabilities,
         "social.reaction": capability("supported"),
+        "posts.quote": capability("supported", "This adapter maps the quote_id status parameter."),
+        "posts.update": capability(
+          "unknown",
+          "Status editing depends on whether the server is Pleroma or Akkoma.",
+        ),
+        "posts.history": capability(
+          "unknown",
+          "Status history depends on whether the server is Pleroma or Akkoma.",
+        ),
+        "media.upload": capability(
+          "supported",
+          "Pleroma-compatible servers expose media upload endpoints.",
+        ),
         "social.bookmarkFolders": capability(
           "unsupported",
           "Bookmark folders are not mapped by this adapter.",
@@ -136,6 +195,11 @@ export function createPleromaAdapter(options: PleromaAdapterOptions = {}): Activ
         );
       },
     },
+    lists: {
+      ...adapter.lists,
+      removeAccount: async (input, context) =>
+        removePleromaListAccount(input, context, options, adapter),
+    },
     filters: {
       list: async (input, context) => listPleromaFilters(input, context, options),
       get: async (input, context) => getPleromaFilter(input, context, options),
@@ -147,6 +211,36 @@ export function createPleromaAdapter(options: PleromaAdapterOptions = {}): Activ
 }
 
 export const pleromaAdapter = createPleromaAdapter();
+
+async function removePleromaListAccount(
+  input: ListAccountInput,
+  context: AdapterOperationContext,
+  options: MastodonTransportOptions,
+  adapter: ActivityPlugAdapter,
+): Promise<AccountList> {
+  const searchParams = new URLSearchParams();
+  searchParams.append("account_ids[]", input.accountId);
+  await requestVoid(
+    clientFor(context, options)
+      .delete(`api/v1/lists/${encodeURIComponent(input.listId)}/accounts`, {
+        headers: await tokenHeader(input.session, context, "list.account.remove"),
+        searchParams,
+      })
+      .then(() => undefined),
+    "list.account.remove",
+    context,
+  );
+  const getList = adapter.lists?.get;
+  if (getList === undefined) {
+    throw new ActivityPlugError("UNSUPPORTED_OPERATION", "Pleroma list lookup is not available.", {
+      adapter: context.adapterId,
+      origin: context.origin,
+      operation: "list.account.remove",
+      capability: "lists.read",
+    });
+  }
+  return getList({ session: input.session, id: input.listId }, context);
+}
 
 async function pleromaReaction(
   input: ReactPostInput,
@@ -186,6 +280,15 @@ interface PleromaFilterResponse {
   readonly irreversible?: boolean;
   readonly whole_word?: boolean;
 }
+
+const pleromaFilterSchema = z.looseObject({
+  id: z.string().min(1),
+  phrase: z.string().min(1),
+  context: z.array(z.string()),
+  expires_at: z.string().refine(isIsoDateTimeString).nullable().optional(),
+  irreversible: z.boolean().optional(),
+  whole_word: z.boolean().optional(),
+});
 
 async function listPleromaFilters(
   input: SessionPageInput,
@@ -333,52 +436,16 @@ function pleromaFilterFromResponse(
   context: AdapterOperationContext,
   operation: string,
 ): Filter {
-  if (typeof response !== "object" || response === null || Array.isArray(response)) {
+  const parsed = pleromaFilterSchema.safeParse(response);
+  if (!parsed.success) {
     throw pleromaFilterRemoteError(
-      "Pleroma filter response is malformed.",
+      pleromaFilterFailureMessage(parsed.error),
       context,
       response,
       operation,
     );
   }
-  const filter = response as PleromaFilterResponse;
-  if (
-    typeof filter.id !== "string" ||
-    filter.id.length === 0 ||
-    typeof filter.phrase !== "string" ||
-    filter.phrase.length === 0 ||
-    !Array.isArray(filter.context)
-  ) {
-    throw pleromaFilterRemoteError(
-      "Pleroma filter response is missing required fields.",
-      context,
-      response,
-      operation,
-    );
-  }
-  if (
-    !filter.context.every((value) => typeof value === "string") ||
-    (filter.expires_at !== undefined &&
-      filter.expires_at !== null &&
-      typeof filter.expires_at !== "string") ||
-    (filter.irreversible !== undefined && typeof filter.irreversible !== "boolean") ||
-    (filter.whole_word !== undefined && typeof filter.whole_word !== "boolean")
-  ) {
-    throw pleromaFilterRemoteError(
-      "Pleroma filter response includes malformed optional fields.",
-      context,
-      response,
-      operation,
-    );
-  }
-  if (typeof filter.expires_at === "string" && !isIsoDateTimeString(filter.expires_at)) {
-    throw pleromaFilterRemoteError(
-      "Pleroma filter response includes malformed expiration.",
-      context,
-      response,
-      operation,
-    );
-  }
+  const filter = parsed.data;
   return {
     ref: createEntityRef({
       adapter: context.adapterId,
@@ -399,6 +466,21 @@ function pleromaFilterFromResponse(
     ],
     raw: filter,
   };
+}
+
+function pleromaFilterFailureMessage(error: z.ZodError): string {
+  const issue = error.issues[0];
+  if (issue === undefined || issue.path.length === 0) {
+    return "Pleroma filter response is malformed.";
+  }
+  const field = issue.path[0];
+  if (field === "id" || field === "phrase" || (field === "context" && issue.path.length === 1)) {
+    return "Pleroma filter response is missing required fields.";
+  }
+  if (field === "expires_at" && issue.code === "custom") {
+    return "Pleroma filter response includes malformed expiration.";
+  }
+  return "Pleroma filter response includes malformed optional fields.";
 }
 
 function pleromaFilterInputContext(

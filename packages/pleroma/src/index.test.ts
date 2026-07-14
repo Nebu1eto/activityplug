@@ -4,67 +4,151 @@ import {
   InMemoryAuthSessionStore,
 } from "@activityplug/core";
 import { accountMappingFixtures } from "@activityplug/test-fixtures";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createPleromaAdapter } from "./index.js";
 
 describe("Pleroma adapter", () => {
+  it("declares every supported post creation input", () => {
+    const postCreate = createPleromaAdapter().metadata.staticCapabilities["posts.create"];
+
+    expect(postCreate.status).toBe("supported");
+    expect(postCreate.constraints?.acceptedInputs).toEqual([
+      "content",
+      "summary",
+      "sensitive",
+      "visibility.public",
+      "visibility.unlisted",
+      "visibility.followers",
+      "visibility.direct",
+      "visibility.local",
+    ]);
+  });
+
+  it("uses Pleroma's legacy query authentication for streaming", async () => {
+    const factoryCalls: unknown[][] = [];
+    const sockets: PleromaFakeWebSocket[] = [];
+    const client = createActivityPlugClient({
+      adapter: createPleromaAdapter({
+        webSocket: (...args) => {
+          factoryCalls.push(args);
+          const socket = new PleromaFakeWebSocket();
+          sockets.push(socket);
+          return socket as unknown as WebSocket;
+        },
+      }),
+      origin: "https://pleroma.example",
+      fetch: pleromaStreamingFetch(),
+    });
+    const session = await client.auth.injectToken({ accessToken: "pleroma-token" });
+    const stream = await client.streams.notifications({ session });
+    const pending = stream[Symbol.asyncIterator]().next();
+
+    await waitForPleromaSocket(sockets);
+    expect(factoryCalls[0]?.[0]).toBe(
+      "wss://pleroma.example/api/v1/streaming/?stream=user%3Anotification&access_token=pleroma-token",
+    );
+    expect(factoryCalls[0]?.[3]).toEqual({ operation: "stream.notifications" });
+    sockets[0]?.remoteClose();
+    await expect(pending).resolves.toEqual({ done: true, value: undefined });
+  });
+
+  it("removes list accounts with Pleroma query parameters", async () => {
+    const client = createActivityPlugClient({
+      adapter: createPleromaAdapter(),
+      origin: "https://pleroma.example",
+      fetch: mockFetch(async (request) => {
+        const url = new URL(request.url);
+        if (url.pathname === "/api/v1/lists/list-1/accounts") {
+          expect(request.method).toBe("DELETE");
+          expect(url.searchParams.getAll("account_ids[]")).toEqual(["account-1"]);
+          expect(request.headers.get("authorization")).toBe("Bearer token-1");
+          expect(request.headers.get("content-type")).toBeNull();
+          expect(await request.text()).toBe("");
+          return jsonResponse({});
+        }
+        if (url.pathname === "/api/v1/lists/list-1") {
+          return jsonResponse({ id: "list-1", title: "ActivityPlug" });
+        }
+        return jsonResponse({ error: "unexpected request" }, 404);
+      }),
+    });
+    const session = await client.auth.injectToken({ accessToken: "token-1" });
+
+    await expect(
+      client.lists.removeAccount({
+        session,
+        listId: createEntityRef({
+          adapter: "pleroma",
+          origin: "https://pleroma.example",
+          type: "list",
+          id: "list-1",
+        }).id,
+        accountId: createEntityRef({
+          adapter: "pleroma",
+          origin: "https://pleroma.example",
+          type: "account",
+          id: "account-1",
+        }).id,
+      }),
+    ).resolves.toMatchObject({ ref: { rawId: "list-1" }, title: "ActivityPlug" });
+  });
+
   it("reuses Mastodon-compatible account and post mapping with Pleroma metadata", async () => {
     const requests: string[] = [];
     const client = createActivityPlugClient({
-      adapter: createPleromaAdapter({
-        fetch: mockFetch(async (request) => {
-          const url = new URL(request.url);
-          requests.push(`${request.method} ${url.pathname}`);
-          if (url.pathname === "/api/v1/accounts/lookup") return pleromaAccount();
-          if (url.pathname === "/api/v1/accounts/pleroma-109") return pleromaAccount();
-          if (url.pathname === "/api/v1/accounts/pleroma-109/statuses") {
-            return jsonResponse([accountMappingFixtures.pleroma.post]);
-          }
-          if (url.pathname === "/api/v1/statuses") {
-            const body = (await request.json()) as Record<string, unknown>;
-            if (body["scheduled_at"] !== undefined) {
-              expect(body).toMatchObject({
-                status: "Scheduled quote",
-                quote_id: "pleroma-post-1",
-                scheduled_at: "2026-05-04T00:00:00.000Z",
-              });
-              return jsonResponse({
-                id: "scheduled-1",
-                scheduled_at: "2026-05-04T00:00:00.000Z",
-                params: {
-                  text: "Scheduled quote",
-                  quote_id: "pleroma-post-1",
-                },
-                media_attachments: [],
-              });
-            }
-            if (body["quote_id"] === "pleroma-post-1") {
-              return jsonResponse({
-                ...accountMappingFixtures.pleroma.post,
-                quote_id: "pleroma-post-1",
-              });
-            }
-            expect(body).toMatchObject({
-              status: "Local",
-              visibility: "local",
-              media_ids: ["media-1"],
-              in_reply_to_id: "reply-1",
-            });
-            return jsonResponse(accountMappingFixtures.pleroma.post);
-          }
-          if (url.pathname === "/api/v1/pleroma/statuses/pleroma-post-1/reactions/%F0%9F%91%8D") {
-            expect(request.method).toBe("PUT");
-            expect(request.headers.get("Authorization")).toBe("Bearer token-1");
-            return jsonResponse(accountMappingFixtures.pleroma.post);
-          }
-          if (url.pathname === "/api/v1/statuses/pleroma-post-1") {
-            return jsonResponse(accountMappingFixtures.pleroma.post);
-          }
-          return jsonResponse({ error: "unexpected request" }, 404);
-        }),
-      }),
+      adapter: createPleromaAdapter(),
       origin: "https://pleroma.example",
+      fetch: mockFetch(async (request) => {
+        const url = new URL(request.url);
+        requests.push(`${request.method} ${url.pathname}`);
+        if (url.pathname === "/api/v1/accounts/lookup") return pleromaAccount();
+        if (url.pathname === "/api/v1/accounts/pleroma-109") return pleromaAccount();
+        if (url.pathname === "/api/v1/accounts/pleroma-109/statuses") {
+          return jsonResponse([accountMappingFixtures.pleroma.post]);
+        }
+        if (url.pathname === "/api/v1/statuses") {
+          const body = (await request.json()) as Record<string, unknown>;
+          if (body["scheduled_at"] !== undefined) {
+            expect(body).toMatchObject({
+              status: "Scheduled quote",
+              quote_id: "pleroma-post-1",
+              scheduled_at: "2026-05-04T00:00:00.000Z",
+            });
+            return jsonResponse({
+              id: "scheduled-1",
+              scheduled_at: "2026-05-04T00:00:00.000Z",
+              params: {
+                text: "Scheduled quote",
+                quote_id: "pleroma-post-1",
+              },
+              media_attachments: [],
+            });
+          }
+          if (body["quote_id"] === "pleroma-post-1") {
+            return jsonResponse({
+              ...accountMappingFixtures.pleroma.post,
+              quote_id: "pleroma-post-1",
+            });
+          }
+          expect(body).toMatchObject({
+            status: "Local",
+            visibility: "local",
+            media_ids: ["media-1"],
+            in_reply_to_id: "reply-1",
+          });
+          return jsonResponse(accountMappingFixtures.pleroma.post);
+        }
+        if (url.pathname === "/api/v1/pleroma/statuses/pleroma-post-1/reactions/%F0%9F%91%8D") {
+          expect(request.method).toBe("PUT");
+          expect(request.headers.get("Authorization")).toBe("Bearer token-1");
+          return jsonResponse(accountMappingFixtures.pleroma.post);
+        }
+        if (url.pathname === "/api/v1/statuses/pleroma-post-1") {
+          return jsonResponse(accountMappingFixtures.pleroma.post);
+        }
+        return jsonResponse({ error: "unexpected request" }, 404);
+      }),
     });
 
     expect(client.capabilities["social.bookmarkFolders"]).toMatchObject({
@@ -196,26 +280,31 @@ describe("Pleroma adapter", () => {
   it("rejects malformed token expiration before sending Pleroma reactions", async () => {
     const sessionStore = new InMemoryAuthSessionStore();
     const client = createActivityPlugClient({
-      adapter: createPleromaAdapter({
-        fetch: mockFetch(async () => {
-          throw new Error("adapter should not call the remote server");
-        }),
-      }),
+      adapter: createPleromaAdapter(),
       origin: "https://pleroma.example",
+      fetch: mockFetch(async () => {
+        throw new Error("adapter should not call the remote server");
+      }),
       sessionStore,
     });
     const session = await client.auth.injectToken({
       accessToken: "token-1",
       expiresAt: "2026-04-26T00:00:00.000Z",
     });
-    await sessionStore.update(session.id, {
-      tokenSet: {
-        accessToken: "token-1",
-        tokenType: "Bearer",
+    const storedSession = await sessionStore.get(session.id);
+    if (storedSession === null) throw new TypeError("Expected injected auth session to be stored.");
+    expect(
+      await sessionStore.compareAndSet(session.id, storedSession.revision, {
+        ...storedSession,
+        revision: storedSession.revision + 1,
+        tokenSet: {
+          accessToken: "token-1",
+          tokenType: "Bearer",
+          expiresAt: "not-a-date",
+        },
         expiresAt: "not-a-date",
-      },
-      expiresAt: "not-a-date",
-    });
+      }),
+    ).toBe(true);
 
     await expect(
       client.social.react({
@@ -236,19 +325,18 @@ describe("Pleroma adapter", () => {
 
   it("rejects quote creation when the remote returns a different target", async () => {
     const client = createActivityPlugClient({
-      adapter: createPleromaAdapter({
-        fetch: mockFetch(async (request) => {
-          const url = new URL(request.url);
-          if (url.pathname === "/api/v1/statuses") {
-            return jsonResponse({
-              ...accountMappingFixtures.pleroma.post,
-              quote_id: "different-post",
-            });
-          }
-          return jsonResponse({ error: "unexpected request" }, 404);
-        }),
-      }),
+      adapter: createPleromaAdapter(),
       origin: "https://pleroma.example",
+      fetch: mockFetch(async (request) => {
+        const url = new URL(request.url);
+        if (url.pathname === "/api/v1/statuses") {
+          return jsonResponse({
+            ...accountMappingFixtures.pleroma.post,
+            quote_id: "different-post",
+          });
+        }
+        return jsonResponse({ error: "unexpected request" }, 404);
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
 
@@ -271,16 +359,15 @@ describe("Pleroma adapter", () => {
 
   it("wraps Pleroma reaction failures as typed remote errors", async () => {
     const client = createActivityPlugClient({
-      adapter: createPleromaAdapter({
-        fetch: mockFetch(async (request) => {
-          const url = new URL(request.url);
-          if (url.pathname === "/api/v1/pleroma/statuses/pleroma-post-1/reactions/%F0%9F%91%8D") {
-            return jsonResponse({ error: "upstream failed" }, 500);
-          }
-          return jsonResponse({ error: "unexpected request" }, 404);
-        }),
-      }),
+      adapter: createPleromaAdapter(),
       origin: "https://pleroma.example",
+      fetch: mockFetch(async (request) => {
+        const url = new URL(request.url);
+        if (url.pathname === "/api/v1/pleroma/statuses/pleroma-post-1/reactions/%F0%9F%91%8D") {
+          return jsonResponse({ error: "upstream failed" }, 500);
+        }
+        return jsonResponse({ error: "unexpected request" }, 404);
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
 
@@ -308,34 +395,33 @@ describe("Pleroma adapter", () => {
   it("maps Pleroma notification aliases in both directions", async () => {
     let notificationQuery = "";
     const client = createActivityPlugClient({
-      adapter: createPleromaAdapter({
-        fetch: mockFetch(async (request) => {
-          const url = new URL(request.url);
-          notificationQuery = url.search;
-          expect(url.pathname).toBe("/api/v1/notifications");
-          return jsonResponse([
-            {
-              id: "notification-1",
-              type: "pleroma:emoji_reaction",
-              created_at: "2026-04-27T00:00:00.000Z",
-              account: accountMappingFixtures.pleroma.account,
-            },
-            {
-              id: "notification-2",
-              type: "pleroma:chat_mention",
-              created_at: "2026-04-27T00:00:01.000Z",
-              account: accountMappingFixtures.pleroma.account,
-            },
-            {
-              id: "notification-3",
-              type: "pleroma:report",
-              created_at: "2026-04-27T00:00:02.000Z",
-              account: accountMappingFixtures.pleroma.account,
-            },
-          ]);
-        }),
-      }),
+      adapter: createPleromaAdapter(),
       origin: "https://pleroma.example",
+      fetch: mockFetch(async (request) => {
+        const url = new URL(request.url);
+        notificationQuery = url.search;
+        expect(url.pathname).toBe("/api/v1/notifications");
+        return jsonResponse([
+          {
+            id: "notification-1",
+            type: "pleroma:emoji_reaction",
+            created_at: "2026-04-27T00:00:00.000Z",
+            account: accountMappingFixtures.pleroma.account,
+          },
+          {
+            id: "notification-2",
+            type: "pleroma:chat_mention",
+            created_at: "2026-04-27T00:00:01.000Z",
+            account: accountMappingFixtures.pleroma.account,
+          },
+          {
+            id: "notification-3",
+            type: "pleroma:report",
+            created_at: "2026-04-27T00:00:02.000Z",
+            account: accountMappingFixtures.pleroma.account,
+          },
+        ]);
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
     const notifications = await client.notifications.list({
@@ -358,45 +444,44 @@ describe("Pleroma adapter", () => {
   it("uses Pleroma filter v1 endpoints", async () => {
     const requests: string[] = [];
     const client = createActivityPlugClient({
-      adapter: createPleromaAdapter({
-        fetch: mockFetch(async (request) => {
-          const url = new URL(request.url);
-          requests.push(`${request.method} ${url.pathname}`);
-          if (url.pathname === "/api/v1/filters" && request.method === "GET") {
-            return jsonResponse([
-              pleromaFilter("filter-1", "activityplug"),
-              pleromaFilter("filter-1b", "fediverse"),
-            ]);
-          }
-          if (url.pathname === "/api/v1/filters/filter-1" && request.method === "GET") {
-            return jsonResponse(pleromaFilter("filter-1", "activityplug"));
-          }
-          if (url.pathname === "/api/v1/filters" && request.method === "POST") {
-            expect(await request.json()).toMatchObject({
-              phrase: "activityplug",
-              context: ["home", "public"],
-              irreversible: true,
-              whole_word: true,
-            });
-            return jsonResponse(pleromaFilter("filter-2", "activityplug"));
-          }
-          if (url.pathname === "/api/v1/filters/filter-2" && request.method === "PUT") {
-            const body = (await request.json()) as Record<string, unknown>;
-            expect(body).toMatchObject({
-              phrase: "fediverse",
-              context: ["notifications"],
-              irreversible: false,
-            });
-            expect(body).not.toHaveProperty("whole_word");
-            return jsonResponse(pleromaFilter("filter-2", "fediverse"));
-          }
-          if (url.pathname === "/api/v1/filters/filter-2" && request.method === "DELETE") {
-            return jsonResponse({});
-          }
-          return jsonResponse({ error: "unexpected request" }, 404);
-        }),
-      }),
+      adapter: createPleromaAdapter(),
       origin: "https://pleroma.example",
+      fetch: mockFetch(async (request) => {
+        const url = new URL(request.url);
+        requests.push(`${request.method} ${url.pathname}`);
+        if (url.pathname === "/api/v1/filters" && request.method === "GET") {
+          return jsonResponse([
+            pleromaFilter("filter-1", "activityplug"),
+            pleromaFilter("filter-1b", "fediverse"),
+          ]);
+        }
+        if (url.pathname === "/api/v1/filters/filter-1" && request.method === "GET") {
+          return jsonResponse(pleromaFilter("filter-1", "activityplug"));
+        }
+        if (url.pathname === "/api/v1/filters" && request.method === "POST") {
+          expect(await request.json()).toMatchObject({
+            phrase: "activityplug",
+            context: ["home", "public"],
+            irreversible: true,
+            whole_word: true,
+          });
+          return jsonResponse(pleromaFilter("filter-2", "activityplug"));
+        }
+        if (url.pathname === "/api/v1/filters/filter-2" && request.method === "PUT") {
+          const body = (await request.json()) as Record<string, unknown>;
+          expect(body).toMatchObject({
+            phrase: "fediverse",
+            context: ["notifications"],
+            irreversible: false,
+          });
+          expect(body).not.toHaveProperty("whole_word");
+          return jsonResponse(pleromaFilter("filter-2", "fediverse"));
+        }
+        if (url.pathname === "/api/v1/filters/filter-2" && request.method === "DELETE") {
+          return jsonResponse({});
+        }
+        return jsonResponse({ error: "unexpected request" }, 404);
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
 
@@ -441,19 +526,18 @@ describe("Pleroma adapter", () => {
 
   it("rejects lossy and malformed Pleroma filter payloads", async () => {
     const client = createActivityPlugClient({
-      adapter: createPleromaAdapter({
-        fetch: mockFetch(async (request) => {
-          const url = new URL(request.url);
-          if (url.pathname === "/api/v1/filters" && request.method === "GET") {
-            return jsonResponse([{ ...pleromaFilter("filter-1", "activityplug"), expires_at: "" }]);
-          }
-          if (url.pathname === "/api/v1/filters/filter-1" && request.method === "GET") {
-            return jsonResponse({ error: "not found" }, 404);
-          }
-          return jsonResponse({ error: "unexpected request" }, 404);
-        }),
-      }),
+      adapter: createPleromaAdapter(),
       origin: "https://pleroma.example",
+      fetch: mockFetch(async (request) => {
+        const url = new URL(request.url);
+        if (url.pathname === "/api/v1/filters" && request.method === "GET") {
+          return jsonResponse([{ ...pleromaFilter("filter-1", "activityplug"), expires_at: "" }]);
+        }
+        if (url.pathname === "/api/v1/filters/filter-1" && request.method === "GET") {
+          return jsonResponse({ error: "not found" }, 404);
+        }
+        return jsonResponse({ error: "unexpected request" }, 404);
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
 
@@ -514,4 +598,47 @@ function pleromaFilter(id: string, phrase: string) {
     irreversible: phrase === "activityplug",
     whole_word: true,
   };
+}
+
+class PleromaFakeWebSocket extends EventTarget {
+  public send(_data: string): void {}
+
+  public close(): void {
+    this.dispatchEvent(new Event("close"));
+  }
+
+  public remoteClose(): void {
+    this.dispatchEvent(new Event("close"));
+  }
+}
+
+async function waitForPleromaSocket(sockets: readonly PleromaFakeWebSocket[]): Promise<void> {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if (sockets.length > 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error("Expected Pleroma streaming test to create a WebSocket.");
+}
+
+function pleromaStreamingFetch(): typeof globalThis.fetch {
+  return vi.fn<typeof globalThis.fetch>(async (input) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    if (url.pathname === "/.well-known/nodeinfo") {
+      return Response.json({
+        links: [
+          {
+            rel: "http://nodeinfo.diaspora.software/ns/schema/2.1",
+            href: "https://pleroma.example/nodeinfo/2.1",
+          },
+        ],
+      });
+    }
+    if (url.pathname === "/nodeinfo/2.1") {
+      return Response.json({ software: { name: "pleroma", version: "2.7.2" } });
+    }
+    if (url.pathname === "/api/v2/instance") {
+      return Response.json({ domain: "pleroma.example", version: "2.7.2" });
+    }
+    return Response.json({ error: "unexpected request" }, { status: 404 });
+  });
 }
