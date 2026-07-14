@@ -1,8 +1,7 @@
 pre-commit:
-  parallel: true
+  # Tarball tests run prepack builds against the same dist directories.
+  parallel: false
   commands:
-    build:
-      run: pnpm build
     typecheck:
       run: pnpm typecheck
     format:

@@ -23,8 +23,8 @@ const testFiles = (await findTestFiles(sourceDir))
 
 if (testFiles.length === 0) {
   const kind = integration ? "integration" : "unit";
-  console.log(`No ${kind} tests found for ${relativePackageRoot}.`);
-  process.exit(0);
+  console.error(`No ${kind} tests found for ${relativePackageRoot}.`);
+  process.exit(1);
 }
 
 const status = await runVitest(testFiles);
@@ -61,7 +61,7 @@ async function findTestFiles(directory: string): Promise<readonly string[]> {
 }
 
 async function runVitest(files: readonly string[]): Promise<number> {
-  const child = spawn("pnpm", ["exec", "vitest", "run", "--passWithNoTests", ...files], {
+  const child = spawn("pnpm", ["exec", "vitest", "run", ...files], {
     cwd: repoRoot,
     env: {
       ...process.env,

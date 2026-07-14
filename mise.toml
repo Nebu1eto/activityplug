@@ -1,6 +1,6 @@
 [tools]
-node = "24"
-pnpm = "10"
+node = "26"
+pnpm = "11.12.0"
 
 [tasks."format:md"]
 description = "Format Markdown files with Hongdown"

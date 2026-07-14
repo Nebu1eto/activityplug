@@ -1,7 +1,11 @@
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  ssr: {
+    noExternal: ["@pothos/core", "graphql"],
+  },
   resolve: {
+    dedupe: ["graphql"],
     alias: {
       "@activityplug/core": new URL("./packages/core/src/index.ts", import.meta.url).pathname,
       "@activityplug/e2e-fixtures": new URL("./packages/e2e-fixtures/src/index.ts", import.meta.url)
@@ -35,8 +39,13 @@ export default defineConfig({
   test: {
     include: [
       "packages/**/*.test.ts",
+      "packages/**/*.test.tsx",
       "packages/**/*.integration.test.ts",
+      "packages/**/*.integration.test.tsx",
       "examples/**/*.test.ts",
+      "examples/**/*.test.tsx",
+      "scripts/**/*.test.ts",
+      "scripts/**/*.test.tsx",
     ],
   },
 });

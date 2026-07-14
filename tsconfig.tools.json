@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+  "include": [
+    "scripts/**/*.ts",
+    "*.config.ts",
+    "packages/**/*.config.ts",
+    "examples/**/*.config.ts"
+  ],
+  "exclude": ["**/dist/**", "**/node_modules/**", "**/.worktrees/**"]
+}

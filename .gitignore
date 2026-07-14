@@ -2,5 +2,10 @@ node_modules/
 dist/
 coverage/
 .pnpm-store/
+.worktrees/
+.dev/
+artifacts/verification/
+playwright-report/
+test-results/
 *.log
 .DS_Store

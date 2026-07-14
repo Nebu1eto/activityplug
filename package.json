@@ -7,6 +7,18 @@
   "type": "module",
   "scripts": {
     "build": "pnpm -r --sort build",
+    "changeset": "changeset",
+    "compose:config": "node --experimental-strip-types scripts/run-production-compose.ts durable config --quiet",
+    "compose:down": "node --experimental-strip-types scripts/run-production-compose.ts durable down --remove-orphans",
+    "compose:dev": "docker compose -f docker-compose.dev.yml up -d --wait",
+    "compose:export-cert": "mkdir -p .dev && rm -f .dev/caddy-root.crt.tmp && node --experimental-strip-types scripts/run-production-compose.ts durable cp web:/data/caddy/pki/authorities/local/root.crt .dev/caddy-root.crt.tmp && chmod 0644 .dev/caddy-root.crt.tmp && mv -f .dev/caddy-root.crt.tmp .dev/caddy-root.crt",
+    "compose:health": "curl --fail --cacert .dev/caddy-root.crt https://localhost:8443/health",
+    "compose:memory:config": "node --experimental-strip-types scripts/run-production-compose.ts memory config --quiet",
+    "compose:memory:down": "node --experimental-strip-types scripts/run-production-compose.ts memory down --remove-orphans",
+    "compose:memory:export-cert": "mkdir -p .dev && rm -f .dev/caddy-memory-root.crt.tmp && node --experimental-strip-types scripts/run-production-compose.ts memory cp web:/data/caddy/pki/authorities/local/root.crt .dev/caddy-memory-root.crt.tmp && chmod 0644 .dev/caddy-memory-root.crt.tmp && mv -f .dev/caddy-memory-root.crt.tmp .dev/caddy-memory-root.crt",
+    "compose:memory:health": "curl --fail --cacert .dev/caddy-memory-root.crt https://localhost:8444/health",
+    "compose:memory:up": "node --experimental-strip-types scripts/run-production-compose.ts memory up --build --wait web server && pnpm compose:memory:export-cert",
+    "compose:up": "node --experimental-strip-types scripts/run-production-compose.ts durable up --build --wait web server postgres redis && pnpm compose:export-cert",
     "format": "oxfmt . && hongdown --write",
     "format:check": "oxfmt --check . && hongdown --check",
     "format:md": "hongdown --write",
@@ -14,27 +26,37 @@
     "hooks:install": "lefthook install",
     "lint": "oxlint --type-aware",
     "pack:dry-run": "pnpm -r --sort --filter './packages/*' --if-present pack:dry-run",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run",
+    "test:compose-pins": "vitest run scripts/verify-compose-pins.test.ts",
     "test:e2e": "node --experimental-strip-types scripts/run-fediverse-e2e-tests.ts",
     "test:packages": "pnpm -r --sort --if-present test",
-    "test:integration": "ACTIVITYPLUG_INTEGRATION=1 vitest run --passWithNoTests",
-    "typecheck": "pnpm -r --sort build && tsc -b"
+    "test:integration": "pnpm --filter @activityplug/session-postgres test:integration && pnpm --filter @activityplug/session-redis test:integration",
+    "start:memory": "ACTIVITYPLUG_STORAGE=memory ACTIVITYPLUG_TRUSTED_PROXY_ADDRESSES=${ACTIVITYPLUG_TRUSTED_PROXY_ADDRESSES:-127.0.0.1} pnpm --filter @activityplug/example-web-client start:server",
+    "typecheck": "pnpm -r --sort build && tsc -b && tsc -p tsconfig.tools.json --noEmit",
+    "verify:compose": "node --experimental-strip-types scripts/verify-compose-pins.ts",
+    "verify:final-evidence": "node --experimental-strip-types scripts/verify-final-evidence.ts",
+    "verify:tarballs": "node --experimental-strip-types scripts/verify-tarballs.ts",
+    "version-packages": "changeset version"
   },
   "devDependencies": {
     "@apidevtools/swagger-parser": "^12.1.0",
-    "@types/node": "^25.6.0",
-    "hongdown": "^0.3.10",
-    "lefthook": "^2.1.6",
-    "oxfmt": "^0.46.0",
-    "oxlint": "^1.61.0",
-    "oxlint-tsgolint": "^0.22.0",
-    "tsdown": "^0.21.10",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.5"
+    "@changesets/cli": "2.31.0",
+    "@types/node": "^26.1.1",
+    "graphql": "^17.0.2",
+    "hongdown": "^0.5.1",
+    "lefthook": "^2.1.10",
+    "oxfmt": "^0.58.0",
+    "oxlint": "^1.73.0",
+    "oxlint-tsgolint": "^0.24.0",
+    "rolldown": "^1.1.5",
+    "rolldown-plugin-dts": "^0.27.6",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10",
+    "yaml": "2.9.0"
   },
   "engines": {
-    "node": ">=24",
-    "pnpm": ">=10 <11"
+    "node": ">=26 <27",
+    "pnpm": ">=11 <12"
   },
-  "packageManager": "pnpm@10.33.2"
+  "packageManager": "pnpm@11.12.0"
 }
