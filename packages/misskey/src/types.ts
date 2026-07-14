@@ -1,9 +1,14 @@
-import { type KyInstance } from "ky";
+import { type WebSocketFactoryCallOptions } from "@activityplug/core";
+
+export type WebSocketFactory = (
+  url: string,
+  protocols?: string | string[],
+  signal?: AbortSignal,
+  options?: WebSocketFactoryCallOptions,
+) => WebSocket | Promise<WebSocket>;
 
 export interface MisskeyAdapterOptions {
-  readonly fetch?: typeof globalThis.fetch;
-  readonly httpClient?: KyInstance;
-  readonly webSocket?: (url: string, protocols?: string | string[]) => WebSocket;
+  readonly webSocket?: WebSocketFactory;
 }
 
 export interface MisskeyTokenResponse {
@@ -77,6 +82,8 @@ export interface MisskeyNoteResponse {
   readonly repliesCount?: number;
   readonly renoteCount?: number;
   readonly reactions?: Readonly<Record<string, number>>;
+  readonly isFavorited?: boolean;
+  readonly myReaction?: string | null;
 }
 
 export interface MisskeyRelationshipResponse {
@@ -101,6 +108,7 @@ export interface MisskeyFileResponse {
   readonly id?: string;
   readonly type?: string;
   readonly url?: string;
+  readonly isSensitive?: boolean;
   readonly thumbnailUrl?: string | null;
   readonly comment?: string | null;
   readonly blurhash?: string | null;

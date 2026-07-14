@@ -1,6 +1,11 @@
 import {
   ActivityPlugError,
+  closeWebSocketSafely,
   createEntityRef,
+  MAX_STREAMING_QUEUED_BYTES,
+  resolveSameOriginDiscoveryUrl,
+  resolveWebSocketFactoryResult,
+  webSocketFrameByteLength,
   type Account,
   type ActivityPlugAdapter,
   type AdapterOperationContext,
@@ -13,6 +18,7 @@ import {
   type DeleteMediaInput,
   type DeletedEntity,
   type InstanceProfile,
+  type InjectTokenInput,
   type MediaAttachment,
   type MuteAccountInput,
   type OAuthAuthorizationRequest,
@@ -59,7 +65,6 @@ import { listNotifications } from "./notifications.js";
 import { getPoll, votePoll } from "./polls.js";
 import { connectMisskeyNotificationStream, connectMisskeyTimelineStream } from "./streaming.js";
 import {
-  absoluteRemoteUrl,
   assertAccessTokenFresh,
   assertRecordResponse,
   authorizationHeader,
@@ -77,6 +82,7 @@ import {
   parseHandle,
   requestJson,
   requestVoid,
+  requireStoredTokenSet,
   slashOrigin,
   tokenHeader,
   tokenRequestBody,
@@ -109,13 +115,15 @@ export { accountFromResponse, noteFromResponse } from "./internals.js";
 export type * from "./types.js";
 
 export function createMisskeyAdapter(options: MisskeyAdapterOptions = {}): ActivityPlugAdapter {
+  const ingestUrl = (input: UploadMediaFromUrlInput, context: AdapterOperationContext) =>
+    uploadMediaFromUrl(input, context, options);
   return {
     metadata: {
       id: "misskey",
       displayName: "Misskey",
       kind: "misskey",
       supportedSoftware: ["misskey"],
-      staticCapabilities: createMisskeyStaticCapabilities(),
+      staticCapabilities: createMisskeyStaticCapabilities(typeof options.webSocket === "function"),
     },
     instances: {
       detect: async (_input, context) => getInstanceProfile(context, options),
@@ -149,7 +157,7 @@ export function createMisskeyAdapter(options: MisskeyAdapterOptions = {}): Activ
         listAccountPosts(input.accountId, input.page, context, options, input.session),
     },
     posts: {
-      get: async (input, context) => getNote(input.id, context, options),
+      get: async (input, context) => getNote(input.id, context, options, input.session),
       create: async (input, context) => createNote(input, context, options),
       delete: async (input, context) => deleteNote(input, context, options),
     },
@@ -183,7 +191,8 @@ export function createMisskeyAdapter(options: MisskeyAdapterOptions = {}): Activ
       upload: async (input, context) => uploadMedia(input, context, options),
       update: async (input, context) => updateMedia(input, context, options),
       delete: async (input, context) => deleteMedia(input, context, options),
-      uploadFromUrl: async (input, context) => uploadMediaFromUrl(input, context, options),
+      ingestUrl,
+      uploadFromUrl: ingestUrl,
     },
     polls: {
       get: async (input, context) => getPoll(input.id, input.session, context, options),
@@ -262,12 +271,22 @@ export function createMisskeyAdapter(options: MisskeyAdapterOptions = {}): Activ
       notifications: (input, context) => connectMisskeyNotificationStream(input, context, options),
     },
     auth: {
-      registerOAuthClient: async (input, context) => registerOAuthClient(input, context),
-      createAuthorizationUrl: async (input, context) => createAuthorizationUrl(input, context),
-      exchangeAuthorizationCode: async (input, context) =>
-        exchangeAuthorizationCode(input, context, options),
-      verifyCredentials: async (input, context) =>
-        verifyCredentials(input.session, context, options),
+      strategies: [
+        {
+          kind: "oauth",
+          registerClient: async (input, context) => registerOAuthClient(input, context),
+          start: async (input, context) => createAuthorizationUrl(input, context),
+          exchange: async (input, context) => exchangeAuthorizationCode(input, context, options),
+          verifySession: async (input, context) =>
+            verifyCredentials(input.session, context, options),
+        },
+        {
+          kind: "token",
+          importToken: async (input) => tokenSetFromInjectedToken(input),
+          verifySession: async (input, context) =>
+            verifyCredentials(input.session, context, options),
+        },
+      ],
     },
   };
 }
@@ -277,14 +296,13 @@ async function getInstanceProfile(
   options: MisskeyAdapterOptions,
 ): Promise<InstanceProfile> {
   const client = clientFor(context, options);
-  const [nodeInfo, meta] = await Promise.all([
-    getNodeInfo(client, context, options),
-    requestJson<MisskeyMetaResponse>(
-      client.post("api/meta", { json: { detail: false } }).json(),
-      "instance.get",
-      context,
-    ),
-  ]);
+  // Validate discovery links before issuing any additional remote request.
+  const nodeInfo = await getNodeInfo(client, context, options);
+  const meta = await requestJson<MisskeyMetaResponse>(
+    client.post("api/meta", { json: { detail: false } }).json(),
+    "instance.get",
+    context,
+  );
   assertRecordResponse(meta, "Misskey meta response is malformed.", context, "instance.get");
   const software = optionalObject(
     nodeInfo?.software,
@@ -345,7 +363,7 @@ async function getInstanceProfile(
 async function getNodeInfo(
   client: KyInstance,
   context: AdapterOperationContext,
-  options: MisskeyAdapterOptions,
+  _options: MisskeyAdapterOptions,
 ): Promise<NodeInfoResponse | undefined> {
   try {
     const links = await requestJson<NodeInfoLinksResponse>(
@@ -380,9 +398,11 @@ async function getNodeInfo(
           misskeyNodeInfoRelPriority(right.rel) - misskeyNodeInfoRelPriority(left.rel),
       )[0]?.href;
     if (href === undefined) return undefined;
-    const nodeInfoUrl = absoluteRemoteUrl(href, context, "instance.nodeInfo");
+    // Discovery hrefs are untrusted remote input; reject cross-origin links
+    // before the schema request can cross the vetted transport boundary.
+    const nodeInfoUrl = resolveSameOriginDiscoveryUrl(href, context.origin, "instance.nodeInfo");
     const nodeInfo = await requestJson<NodeInfoResponse>(
-      ky.get(nodeInfoUrl, { fetch: options.fetch, redirect: "manual" }).json(),
+      ky.get(nodeInfoUrl, { fetch: context.fetch, redirect: "manual" }).json(),
       "instance.nodeInfo",
       context,
     );
@@ -563,10 +583,16 @@ async function getNote(
   id: string,
   context: AdapterOperationContext,
   options: MisskeyAdapterOptions,
+  session?: AuthSession,
 ): Promise<Post> {
   const response = await requestJson<MisskeyNoteResponse>(
     clientFor(context, options)
-      .post("api/notes/show", { json: { noteId: id } })
+      .post("api/notes/show", {
+        ...(session === undefined
+          ? {}
+          : { headers: await tokenHeader(session, context, "post.get") }),
+        json: { noteId: id },
+      })
       .json(),
     "post.get",
     context,
@@ -681,6 +707,21 @@ async function search(
   context: AdapterOperationContext,
   options: MisskeyAdapterOptions,
 ): Promise<SearchResult> {
+  if (input.page?.after !== undefined || input.page?.before !== undefined) {
+    const capability = misskeySearchCapability(input.type);
+    throw new ActivityPlugError(
+      "UNSUPPORTED_OPERATION",
+      "Misskey search does not expose a reliable cursor.",
+      {
+        adapter: context.adapterId,
+        origin: context.origin,
+        operation: "search",
+        ...(input.type === undefined
+          ? { raw: { capabilities: searchCapabilities } }
+          : { capability }),
+      },
+    );
+  }
   if (input.resolve === true) {
     throw new ActivityPlugError(
       "UNSUPPORTED_OPERATION",
@@ -714,6 +755,7 @@ async function search(
       accounts: [],
       posts: [],
       hashtags: hashtags.map((tag) => ({ name: tag, raw: tag })),
+      pageInfo: { hasNextPage: false, hasPreviousPage: false },
       raw: { hashtags },
     };
   }
@@ -772,9 +814,12 @@ async function search(
     accounts: accounts.map((account) => accountFromResponse(account, context, "search")),
     posts: posts.map((post) => noteFromResponse(post, context)),
     hashtags: hashtags.map((tag) => ({ name: tag, raw: tag })),
+    pageInfo: { hasNextPage: false, hasPreviousPage: false },
     raw: { accounts, posts, hashtags },
   };
 }
+
+const searchCapabilities = ["search.accounts", "search.posts", "search.hashtags"] as const;
 
 async function uploadMedia(
   input: UploadMediaInput,
@@ -867,107 +912,107 @@ async function uploadMediaFromUrl(
   context: AdapterOperationContext,
   options: MisskeyAdapterOptions,
 ): Promise<MediaAttachment> {
-  const tokenSet = await requireStoredToken(input.session, context, "media.uploadFromUrl");
+  const tokenSet = await requireStoredTokenSet(input.session, context, "media.ingestUrl");
   const marker = globalThis.crypto.randomUUID();
-  const file = await waitForUrlUpload(marker, tokenSet.accessToken, context, options, async () => {
-    await requestVoid(
-      clientFor(context, options)
-        .post("api/drive/files/upload-from-url", {
-          headers: await tokenHeader(input.session, context, "media.uploadFromUrl"),
-          json: {
-            url: input.url,
-            marker,
-            ...(input.description === undefined ? {} : { comment: input.description }),
-            ...(input.sensitive === undefined ? {} : { isSensitive: input.sensitive }),
-          },
-        })
-        .then(() => undefined),
-      "media.uploadFromUrl",
-      context,
-    );
-  });
-  const [attachment] = mediaAttachmentFromResponse(file, context, "media.uploadFromUrl");
+  const file = await waitForUrlUpload(
+    marker,
+    tokenSet.accessToken,
+    input.signal,
+    context,
+    options,
+    async () => {
+      await requestVoid(
+        clientFor(context, options)
+          .post("api/drive/files/upload-from-url", {
+            headers: await tokenHeader(input.session, context, "media.ingestUrl"),
+            ...(input.signal === undefined ? {} : { signal: input.signal }),
+            json: {
+              url: input.url,
+              marker,
+              ...(input.description === undefined ? {} : { comment: input.description }),
+              ...(input.sensitive === undefined ? {} : { isSensitive: input.sensitive }),
+            },
+          })
+          .then(() => undefined),
+        "media.ingestUrl",
+        context,
+      );
+    },
+  );
+  const [attachment] = mediaAttachmentFromResponse(file, context, "media.ingestUrl");
   if (attachment === undefined) {
     throw invalidRemoteResponse("Misskey URL media upload response is malformed.", {
       context,
-      operation: "media.uploadFromUrl",
+      operation: "media.ingestUrl",
       raw: file,
     });
   }
   return attachment;
 }
 
-async function requireStoredToken(
-  session: AuthSession,
-  context: AdapterOperationContext,
-  operation: string,
-): Promise<{ readonly accessToken: string }> {
-  const stored = await context.sessionStore?.get(session.id);
-  if (stored === undefined || stored === null) {
-    throw new ActivityPlugError("AUTH_REQUIRED", "Auth session is not available.", {
-      adapter: context.adapterId,
-      origin: context.origin,
-      operation,
-    });
-  }
-  if (stored.adapter !== context.adapterId || stored.origin !== context.origin) {
-    throw new ActivityPlugError("AUTH_REQUIRED", "Auth session does not belong to this adapter.", {
-      adapter: context.adapterId,
-      origin: context.origin,
-      operation,
-    });
-  }
-  return { accessToken: stored.tokenSet.accessToken };
-}
-
 async function waitForUrlUpload(
   marker: string,
   accessToken: string,
+  signal: AbortSignal | undefined,
   context: AdapterOperationContext,
   options: MisskeyAdapterOptions,
   startUpload: () => Promise<void>,
 ): Promise<MisskeyFileResponse> {
-  const WebSocketClient = globalThis.WebSocket;
-  if (WebSocketClient === undefined) {
+  const webSocket = options.webSocket;
+  if (typeof webSocket !== "function") {
     throw new ActivityPlugError(
       "UNSUPPORTED_OPERATION",
       "Misskey URL media upload requires WebSocket support to receive the uploaded file id.",
       {
         adapter: context.adapterId,
         origin: context.origin,
-        operation: "media.uploadFromUrl",
-        capability: "media.remoteUrlUpload",
+        operation: "media.ingestUrl",
+        capability: "media.urlIngestion",
       },
     );
   }
   const streamingUrl = new URL("streaming", context.origin);
   streamingUrl.protocol = streamingUrl.protocol === "https:" ? "wss:" : "ws:";
+  assertEncryptedWebSocket(streamingUrl, context, "media.ingestUrl");
   streamingUrl.searchParams.set("i", accessToken);
   streamingUrl.searchParams.set("_t", String(Date.now()));
 
+  let socket: WebSocket;
+  try {
+    const candidate = resolveWebSocketFactoryResult(
+      webSocket(streamingUrl.toString(), undefined, signal, { operation: "media.ingestUrl" }),
+      signal,
+    );
+    socket = isWebSocketPromise(candidate) ? await candidate : candidate;
+  } catch (error) {
+    if (signal?.aborted === true) {
+      throw signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
+    }
+    if (error instanceof ActivityPlugError) throw error;
+    throw new ActivityPlugError("NETWORK_ERROR", "Misskey streaming connection failed.", {
+      adapter: context.adapterId,
+      origin: context.origin,
+      operation: "media.ingestUrl",
+    });
+  }
   return new Promise((resolve, reject) => {
-    const socket = new WebSocketClient(streamingUrl);
     const channelId = "activityplug-url-upload";
     let settled = false;
     let uploadStarted = false;
-    const timeout = setTimeout(() => {
-      settle(
-        "reject",
-        new ActivityPlugError("TIMEOUT", "Timed out waiting for Misskey URL media upload.", {
-          adapter: context.adapterId,
-          origin: context.origin,
-          operation: "media.uploadFromUrl",
-        }),
-      );
-    }, 60_000);
+    let timeout: ReturnType<typeof setTimeout> | undefined;
 
     function settle(kind: "resolve", file: MisskeyFileResponse): void;
     function settle(kind: "reject", error: unknown): void;
     function settle(kind: "resolve" | "reject", value: MisskeyFileResponse | unknown): void {
       if (settled) return;
       settled = true;
-      clearTimeout(timeout);
-      socket.close();
+      if (timeout !== undefined) clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
+      socket.removeEventListener("open", onOpen);
+      socket.removeEventListener("error", onError);
+      socket.removeEventListener("close", onClose);
+      socket.removeEventListener("message", onMessage);
+      closeWebSocketSafely(socket);
       if (kind === "resolve") {
         resolve(value as MisskeyFileResponse);
       } else {
@@ -975,22 +1020,48 @@ async function waitForUrlUpload(
       }
     }
 
-    socket.addEventListener("open", () => {
+    const onAbort = () =>
+      settle(
+        "reject",
+        signal?.reason ?? new DOMException("The operation was aborted.", "AbortError"),
+      );
+
+    const onOpen = () => {
       socket.send(
         JSON.stringify({ type: "connect", body: { channel: "main", id: channelId, pong: true } }),
       );
-    });
-    socket.addEventListener("error", () => {
+    };
+    const onError = (event: Event) => {
       settle(
         "reject",
-        new ActivityPlugError("NETWORK_ERROR", "Misskey streaming connection failed.", {
-          adapter: context.adapterId,
-          origin: context.origin,
-          operation: "media.uploadFromUrl",
-        }),
+        isWebSocketResourceLimitError(event)
+          ? urlUploadFrameLimitError(context)
+          : new ActivityPlugError("NETWORK_ERROR", "Misskey streaming connection failed.", {
+              adapter: context.adapterId,
+              origin: context.origin,
+              operation: "media.ingestUrl",
+            }),
       );
-    });
-    socket.addEventListener("message", (event: MessageEvent<string>) => {
+    };
+    const onClose = () => {
+      settle(
+        "reject",
+        new ActivityPlugError(
+          "NETWORK_ERROR",
+          "Misskey streaming connection closed before URL media upload completed.",
+          {
+            adapter: context.adapterId,
+            origin: context.origin,
+            operation: "media.ingestUrl",
+          },
+        ),
+      );
+    };
+    const onMessage = (event: MessageEvent<string>) => {
+      if (webSocketFrameByteLength(event.data) > MAX_STREAMING_QUEUED_BYTES) {
+        settle("reject", urlUploadFrameLimitError(context));
+        return;
+      }
       const message = parseStreamingMessage(event.data);
       if (
         message?.type === "connected" &&
@@ -1007,9 +1078,74 @@ async function waitForUrlUpload(
       if (message.body.id !== channelId || message.body.type !== "urlUploadFinished") return;
       const payload = message.body.body;
       if (!isRecord(payload) || payload.marker !== marker || !isRecord(payload.file)) return;
-      settle("resolve", payload.file as MisskeyFileResponse);
-    });
+      settle("resolve", payload.file);
+    };
+    timeout = setTimeout(() => {
+      settle(
+        "reject",
+        new ActivityPlugError("TIMEOUT", "Timed out waiting for Misskey URL media upload.", {
+          adapter: context.adapterId,
+          origin: context.origin,
+          operation: "media.ingestUrl",
+        }),
+      );
+    }, 60_000);
+    socket.addEventListener("open", onOpen);
+    socket.addEventListener("error", onError);
+    socket.addEventListener("close", onClose);
+    socket.addEventListener("message", onMessage);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted === true) {
+      onAbort();
+      return;
+    }
+    if (socket.readyState === 1) onOpen();
+    else if (socket.readyState === 3) onClose();
   });
+}
+
+function assertEncryptedWebSocket(
+  url: URL,
+  context: AdapterOperationContext,
+  operation: string,
+): void {
+  if (url.protocol === "wss:") return;
+  throw new ActivityPlugError(
+    "ORIGIN_NOT_ALLOWED",
+    "Authenticated WebSocket connections require HTTPS.",
+    { adapter: context.adapterId, origin: context.origin, operation },
+  );
+}
+
+function isWebSocketPromise(
+  candidate: WebSocket | Promise<WebSocket>,
+): candidate is Promise<WebSocket> {
+  return typeof (candidate as { readonly then?: unknown }).then === "function";
+}
+
+function urlUploadFrameLimitError(context: AdapterOperationContext): ActivityPlugError {
+  return new ActivityPlugError(
+    "REQUEST_LIMIT_EXCEEDED",
+    "Misskey URL media upload frame exceeded the byte limit.",
+    {
+      adapter: context.adapterId,
+      origin: context.origin,
+      operation: "media.ingestUrl",
+      raw: { maxFrameBytes: MAX_STREAMING_QUEUED_BYTES },
+    },
+  );
+}
+
+function isWebSocketResourceLimitError(event: Event): boolean {
+  if (!("error" in event)) return false;
+  const error = event.error;
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error.code === "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH" ||
+      error.code === "WS_ERR_TOO_MANY_BUFFERED_PARTS")
+  );
 }
 
 function parseStreamingMessage(
@@ -1231,7 +1367,7 @@ async function noteAction(
     operation,
     context,
   );
-  return getNote(input.postId, context, options);
+  return getNote(input.postId, context, options, input.session);
 }
 
 async function boostNote(
@@ -1268,7 +1404,7 @@ async function unboostNote(
     "social.unboost",
     context,
   );
-  return getNote(input.postId, context, options);
+  return getNote(input.postId, context, options, input.session);
 }
 
 async function noteReaction(
@@ -1288,7 +1424,7 @@ async function noteReaction(
     operation,
     context,
   );
-  return getNote(input.postId, context, options);
+  return getNote(input.postId, context, options, input.session);
 }
 
 export const misskeyAdapter = createMisskeyAdapter();
@@ -1381,6 +1517,17 @@ async function exchangeAuthorizationCode(
     context,
   );
   return tokenSetFromResponse(response, context, "auth.oauth.exchangeCode");
+}
+
+function tokenSetFromInjectedToken(input: InjectTokenInput): TokenSet {
+  // Token import copies only credential fields into the adapter-private token set.
+  return {
+    accessToken: input.accessToken,
+    ...(input.tokenType === undefined ? {} : { tokenType: input.tokenType }),
+    ...(input.refreshToken === undefined ? {} : { refreshToken: input.refreshToken }),
+    ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
+    ...(input.scopes === undefined ? {} : { scopes: input.scopes }),
+  };
 }
 
 async function verifyCredentials(

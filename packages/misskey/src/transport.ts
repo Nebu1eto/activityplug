@@ -1,6 +1,8 @@
 import {
   ActivityPlugError,
+  isAuthStrategyKind,
   isIsoDateTimeString,
+  readBoundedResponseText,
   remoteHttpErrorCodeForStatus,
   type AdapterOperationContext,
   type AuthAdapterContext,
@@ -9,16 +11,29 @@ import {
   type TokenSet,
 } from "@activityplug/core";
 import ky, { HTTPError, TimeoutError, type KyInstance } from "ky";
+import { z } from "zod";
 
 import { type MisskeyAdapterOptions, type MisskeyTokenResponse } from "./types.js";
+
+const remoteErrorDiagnosticBytes = 8 * 1024;
+
+const jsonRecord = z.looseObject({});
 
 export async function tokenHeader(
   session: AuthSession,
   context: AdapterOperationContext,
   operation: string,
 ): Promise<Record<string, string>> {
+  return authorizationHeader(await requireStoredTokenSet(session, context, operation));
+}
+
+export async function requireStoredTokenSet(
+  session: AuthSession,
+  context: AdapterOperationContext,
+  operation: string,
+): Promise<TokenSet> {
   const stored = await context.sessionStore?.get(session.id);
-  if (stored === undefined || stored === null) {
+  if (stored === undefined || stored === null || !isAuthStrategyKind(stored.strategy)) {
     throw new ActivityPlugError("AUTH_REQUIRED", "Auth session is not available.", {
       ...errorContext(context, operation),
     });
@@ -29,7 +44,7 @@ export async function tokenHeader(
     });
   }
   assertAccessTokenFresh(stored.tokenSet, context, operation);
-  return authorizationHeader(stored.tokenSet);
+  return stored.tokenSet;
 }
 
 export function assertAccessTokenFresh(
@@ -72,11 +87,24 @@ export function parseHandle(
 
 export function clientFor(
   context: AuthAdapterContext | AdapterOperationContext,
-  options: MisskeyAdapterOptions,
+  _options: MisskeyAdapterOptions,
 ): KyInstance {
-  return (
-    options.httpClient ??
-    ky.create({ prefix: context.origin, fetch: options.fetch, redirect: "manual" })
+  // All adapter traffic must cross the client-owned vetted transport boundary.
+  return ky.create({
+    prefix: context.origin,
+    fetch: requireContextFetch(context),
+    redirect: "manual",
+  });
+}
+
+function requireContextFetch(
+  context: AuthAdapterContext | AdapterOperationContext,
+): typeof globalThis.fetch {
+  if (typeof (context as { readonly fetch?: unknown }).fetch === "function") return context.fetch;
+  throw new ActivityPlugError(
+    "INTERNAL_ERROR",
+    "Adapter context did not provide the required vetted fetch transport.",
+    { adapter: context.adapterId, origin: context.origin, operation: "adapter.transport" },
   );
 }
 
@@ -109,7 +137,7 @@ export function tokenSetFromResponse(
 export function tokenType(value: string | undefined): AuthTokenType {
   if (value === undefined || value.length === 0) return "Bearer";
   if (value.toLowerCase() === "bearer") return "Bearer";
-  return value as AuthTokenType;
+  return value;
 }
 
 export function joinScopes(scopes: readonly string[] | undefined): string {
@@ -171,6 +199,9 @@ export async function remoteError(
   operation: string,
   context: AuthAdapterContext | AdapterOperationContext,
 ): Promise<ActivityPlugError> {
+  // Preserve vetted-fetch policy, timeout, and byte-limit classifications so
+  // the public server can return their exact typed status.
+  if (cause instanceof ActivityPlugError) return cause;
   if (cause instanceof TimeoutError) {
     return new ActivityPlugError(
       "TIMEOUT",
@@ -220,7 +251,7 @@ export function errorContext(
 
 export async function safeResponseText(response: Response): Promise<string | undefined> {
   try {
-    return await response.text();
+    return await readBoundedResponseText(response, remoteErrorDiagnosticBytes);
   } catch {
     return undefined;
   }
@@ -241,7 +272,7 @@ export function invalidRemoteResponse(
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return jsonRecord.safeParse(value).success;
 }
 
 export function assertRecordResponse(

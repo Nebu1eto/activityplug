@@ -5,10 +5,13 @@ import {
   type DeletedEntity,
   type PageInput,
 } from "@activityplug/core";
+import { z } from "zod";
 
 import { decodeOperationCursor, encodeOperationCursor } from "./internals.js";
 import { invalidRemoteResponse, isRecord } from "./transport.js";
 import { type MisskeyNotificationResponse } from "./types.js";
+
+const userListIdsSchema = z.array(z.string().refine((id) => id.trim().length > 0));
 
 export function localPage<T>(
   values: readonly T[],
@@ -75,11 +78,8 @@ export function userListIdsFromResponse(
   context: AdapterOperationContext,
   operation: string,
 ): readonly string[] {
-  if (
-    Array.isArray(userIds) &&
-    userIds.every((id) => typeof id === "string" && id.trim().length > 0)
-  ) {
-    return userIds;
+  if (userListIdsSchema.safeParse(userIds).success) {
+    return userIds as readonly string[];
   }
   throw invalidRemoteResponse("Misskey user list member IDs are malformed.", {
     context,
@@ -93,7 +93,7 @@ export function notificationRecord(
   context: AdapterOperationContext,
   operation: string,
 ): MisskeyNotificationResponse {
-  if (isRecord(notification)) return notification as unknown as MisskeyNotificationResponse;
+  if (isRecord(notification)) return notification;
   throw invalidRemoteResponse("Misskey notification response is malformed.", {
     context,
     operation,

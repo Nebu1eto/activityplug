@@ -191,12 +191,33 @@ export function noteFromResponse(
     readonly user: MisskeyMeResponse;
     readonly createdAt: string;
   };
-  if (note.files !== undefined && !Array.isArray(note.files)) {
-    throw invalidRemoteResponse("Misskey note files response must be an array.", {
-      context,
-      operation,
-      raw: note.files,
-    });
+  if (note.files !== undefined) {
+    if (!Array.isArray(note.files)) {
+      throw invalidRemoteResponse("Misskey note files response must be an array.", {
+        context,
+        operation,
+        raw: note.files,
+      });
+    }
+    for (const [index, file] of note.files.entries()) {
+      if (!isRecord(file)) {
+        throw invalidRemoteResponse("Misskey note file response must be an object.", {
+          context,
+          operation,
+          raw: file,
+        });
+      }
+      if (file.isSensitive !== undefined && typeof file.isSensitive !== "boolean") {
+        throw invalidRemoteResponse(
+          `Misskey note file sensitivity must be a boolean: files[${index}].isSensitive.`,
+          {
+            context,
+            operation,
+            raw: file,
+          },
+        );
+      }
+    }
   }
   assertOptionalString(note.replyId, "replyId", note, context, operation);
   assertOptionalString(note.renoteId, "renoteId", note, context, operation);
@@ -204,6 +225,15 @@ export function noteFromResponse(
   const noteUri = optionalString(note.uri, "uri", note, context, operation);
   const text = optionalString(note.text, "text", note, context, operation);
   const cw = optionalString(note.cw, "cw", note, context, operation);
+  const bookmarked = optionalBoolean(note.isFavorited, "isFavorited", note, context, operation);
+  const myReaction = optionalNonEmptyString(
+    note.myReaction,
+    "myReaction",
+    note,
+    context,
+    operation,
+  );
+  if (note.reactions !== undefined) reactionCount(note.reactions, note, context, operation);
   return {
     ref: createEntityRef({
       adapter: context.adapterId,
@@ -221,7 +251,9 @@ export function noteFromResponse(
       optionalString(note.visibility, "visibility", note, context, operation),
       optionalBoolean(note.localOnly, "localOnly", note, context, operation),
     ),
-    sensitive: false,
+    sensitive:
+      (note.cw !== null && note.cw !== undefined) ||
+      (note.files?.some((file) => file.isSensitive === true) ?? false),
     ...(cw === undefined ? {} : { summary: cw }),
     media:
       note.files?.flatMap((file) => mediaAttachmentFromResponse(file, context, operation)) ?? [],
@@ -258,6 +290,26 @@ export function noteFromResponse(
         ? {}
         : { favourites: reactionCount(note.reactions, note, context, operation) }),
     },
+    ...(bookmarked === undefined && myReaction === undefined
+      ? {}
+      : {
+          viewerState: {
+            ...(bookmarked === undefined ? {} : { bookmarked }),
+            ...(myReaction === undefined
+              ? {}
+              : {
+                  reactions: [
+                    {
+                      emoji: myReaction,
+                      ...(note.reactions?.[myReaction] === undefined
+                        ? {}
+                        : { count: note.reactions[myReaction] }),
+                      me: true,
+                    },
+                  ],
+                }),
+          },
+        }),
     raw: note,
   };
 }
@@ -289,10 +341,6 @@ export function misskeyPageInfoForOperation(
     ...(lastId === undefined
       ? {}
       : { endCursor: encodeOperationCursor(lastId, context, operation) }),
-    raw: {
-      returned: response.length,
-      hasExtraItem,
-    },
   };
 }
 

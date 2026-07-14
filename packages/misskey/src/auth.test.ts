@@ -1,62 +1,109 @@
 import {
   createActivityPlugClient,
+  createCapabilitySet,
   createEntityRef,
   decodePageCursor,
   encodePageCursor,
+  InMemoryAuthSessionStore,
+  MAX_STREAMING_QUEUED_BYTES,
+  type AdapterOperationContext,
+  type AuthSession,
 } from "@activityplug/core";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createMisskeyAdapter } from "./index.js";
 
 describe("Misskey auth adapter", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("exposes only the implemented OAuth and token strategies", async () => {
+    const strategies = createMisskeyAdapter().auth?.strategies;
+
+    expect(strategies?.map((strategy) => strategy.kind)).toEqual(["oauth", "token"]);
+    expect(strategies?.map((strategy) => Object.keys(strategy).sort())).toEqual([
+      ["exchange", "kind", "registerClient", "start", "verifySession"],
+      ["importToken", "kind", "verifySession"],
+    ]);
+
+    const tokenStrategy = strategies?.find((strategy) => strategy.kind === "token");
+    if (tokenStrategy?.kind !== "token") throw new Error("Expected Misskey token strategy.");
+    await expect(
+      tokenStrategy.importToken(
+        {
+          accessToken: "access-secret",
+          tokenType: "Bearer",
+          refreshToken: "refresh-secret",
+          expiresAt: "2027-01-01T00:00:00.000Z",
+          scopes: ["read:account"],
+          account: createEntityRef({
+            adapter: "misskey",
+            origin: "https://misskey.example",
+            type: "account",
+            id: "account-1",
+          }),
+          metadata: { privateApiKey: "metadata-secret" },
+        },
+        { adapterId: "misskey", origin: "https://misskey.example", fetch: globalThis.fetch },
+      ),
+    ).resolves.toEqual({
+      accessToken: "access-secret",
+      tokenType: "Bearer",
+      refreshToken: "refresh-secret",
+      expiresAt: "2027-01-01T00:00:00.000Z",
+      scopes: ["read:account"],
+    });
+  });
+
   it("uses the OAuth authorization-code flow and verifies credentials", async () => {
     const requests: Request[] = [];
     const client = createActivityPlugClient({
-      adapter: createMisskeyAdapter({
-        fetch: mockFetch(async (request) => {
-          requests.push(request);
-          const url = new URL(request.url);
-          if (request.method === "POST" && url.pathname === "/oauth/token") {
-            expect(await request.text()).toBe(
-              "grant_type=authorization_code&client_id=https%3A%2F%2Fclient.example&code=code-1&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&code_verifier=verifier-1",
-            );
-            return jsonResponse({
-              access_token: "misskey-oauth-token",
-              token_type: "Bearer",
-              scope: "read:account write:notes",
-            });
-          }
-          if (request.method === "POST" && url.pathname === "/api/i") {
-            expect(request.headers.get("Authorization")).toBe("Bearer misskey-oauth-token");
-            expect(await request.json()).toEqual({});
-            return jsonResponse({
-              id: "9s4u",
-              username: "alice",
-              host: null,
-              name: "Alice",
-              url: "https://misskey.example/@alice",
-              avatarUrl: "https://misskey.example/avatar.webp",
-              bannerUrl: "https://misskey.example/banner.webp",
-              isBot: false,
-              isLocked: false,
-              followersCount: 12,
-              followingCount: 7,
-              notesCount: 42,
-            });
-          }
-          return jsonResponse({ error: "unexpected request" }, 404);
-        }),
-      }),
+      adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
+      fetch: mockFetch(async (request) => {
+        requests.push(request);
+        const url = new URL(request.url);
+        if (request.method === "POST" && url.pathname === "/oauth/token") {
+          expect(await request.text()).toBe(
+            "grant_type=authorization_code&client_id=https%3A%2F%2Fclient.example&code=code-1&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&code_verifier=verifier-1",
+          );
+          return jsonResponse({
+            access_token: "misskey-oauth-token",
+            token_type: "Bearer",
+            scope: "read:account write:notes",
+          });
+        }
+        if (request.method === "POST" && url.pathname === "/api/i") {
+          expect(request.headers.get("Authorization")).toBe("Bearer misskey-oauth-token");
+          expect(await request.json()).toEqual({});
+          return jsonResponse({
+            id: "9s4u",
+            username: "alice",
+            host: null,
+            name: "Alice",
+            url: "https://misskey.example/@alice",
+            avatarUrl: "https://misskey.example/avatar.webp",
+            bannerUrl: "https://misskey.example/banner.webp",
+            isBot: false,
+            isLocked: false,
+            followersCount: 12,
+            followingCount: 7,
+            notesCount: 42,
+          });
+        }
+        return jsonResponse({ error: "unexpected request" }, 404);
+      }),
     });
 
-    const registeredClient = await client.auth.registerOAuthClient({
+    expect(client.auth.availableStrategies).toEqual(["oauth", "token"]);
+    const registeredClient = await client.auth.oauth.registerClient({
       clientName: "ActivityPlug Test",
       redirectUris: ["https://client.example/callback"],
       scopes: ["read:account", "write:notes"],
       website: "https://client.example",
     });
-    const authorization = await client.auth.createAuthorizationUrl({
+    const authorization = await client.auth.oauth.start({
       client: registeredClient,
       redirectUri: "https://client.example/callback",
       scopes: ["read:account", "write:notes"],
@@ -64,7 +111,7 @@ describe("Misskey auth adapter", () => {
       codeChallenge: "challenge-1",
       codeChallengeMethod: "S256",
     });
-    const session = await client.auth.exchangeAuthorizationCode({
+    const session = await client.auth.oauth.exchange({
       client: registeredClient,
       code: "code-1",
       redirectUri: "https://client.example/callback",
@@ -78,9 +125,11 @@ describe("Misskey auth adapter", () => {
     expect(session).toMatchObject({
       adapter: "misskey",
       origin: "https://misskey.example",
+      strategy: "oauth",
       scopes: ["read:account", "write:notes"],
     });
     expect("tokenSet" in session).toBe(false);
+    expect(JSON.stringify(session)).not.toContain("misskey-oauth-token");
     expect(verified.account).toMatchObject({
       username: "alice",
       acct: "alice",
@@ -104,29 +153,34 @@ describe("Misskey auth adapter", () => {
 
   it("verifies a library-mode bot with an injected token", async () => {
     const client = createActivityPlugClient({
-      adapter: createMisskeyAdapter({
-        fetch: mockFetch(async (request) => {
-          expect(new URL(request.url).pathname).toBe("/api/i");
-          expect(request.headers.get("Authorization")).toBe("Bearer bot-token");
-          return jsonResponse({
-            id: "bot-1",
-            username: "buildbot",
-            host: null,
-            name: "Build Bot",
-            isBot: true,
-            isLocked: false,
-          });
-        }),
-      }),
+      adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
+      fetch: mockFetch(async (request) => {
+        expect(new URL(request.url).pathname).toBe("/api/i");
+        expect(request.headers.get("Authorization")).toBe("Bearer bot-token");
+        return jsonResponse({
+          id: "bot-1",
+          username: "buildbot",
+          host: null,
+          name: "Build Bot",
+          isBot: true,
+          isLocked: false,
+        });
+      }),
     });
 
-    const session = await client.auth.injectToken({
+    const session = await client.auth.token.importToken({
       accessToken: "bot-token",
+      refreshToken: "bot-refresh-token",
       scopes: ["read:account"],
+      metadata: { privateApiKey: "metadata-secret" },
     });
     const verified = await client.auth.verifyCredentials(session);
 
+    expect(session).toMatchObject({ strategy: "token", scopes: ["read:account"] });
+    expect(JSON.stringify(session)).not.toContain("bot-token");
+    expect(JSON.stringify(session)).not.toContain("bot-refresh-token");
+    expect(JSON.stringify(session)).not.toContain("metadata-secret");
     expect(verified.account).toMatchObject({
       username: "buildbot",
       bot: true,
@@ -135,19 +189,18 @@ describe("Misskey auth adapter", () => {
 
   it("rejects expired injected tokens before viewer verification", async () => {
     const client = createActivityPlugClient({
-      adapter: createMisskeyAdapter({
-        fetch: mockFetch(async () => {
-          throw new Error("expired token must be rejected before a remote request");
-        }),
-      }),
+      adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
+      fetch: mockFetch(async () => {
+        throw new Error("expired token must be rejected before a remote request");
+      }),
     });
-    const session = await client.auth.injectToken({
+    const session = await client.auth.token.importToken({
       accessToken: "expired-token",
       expiresAt: "2000-01-01T00:00:00.000Z",
     });
 
-    await expect(client.auth.verifyCredentials(session)).rejects.toMatchObject({
+    await expect(client.auth.verifySession(session)).rejects.toMatchObject({
       code: "AUTH_EXPIRED",
       context: { operation: "auth.verifyCredentials" },
     });
@@ -158,14 +211,14 @@ describe("Misskey auth adapter", () => {
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
     });
-    const registeredClient = await client.auth.registerOAuthClient({
+    const registeredClient = await client.auth.oauth.registerClient({
       clientName: "ActivityPlug Test",
       redirectUris: ["https://client.example/callback"],
       website: "https://client.example",
     });
 
     await expect(
-      client.auth.createAuthorizationUrl({
+      client.auth.oauth.start({
         client: registeredClient,
         redirectUri: "https://client.example/callback",
         state: "state-1",
@@ -181,64 +234,63 @@ describe("Misskey auth adapter", () => {
   it("reads instance, account, handle lookup, and account notes", async () => {
     const requests: string[] = [];
     const client = createActivityPlugClient({
-      adapter: createMisskeyAdapter({
-        fetch: mockFetch(async (request) => {
-          const url = new URL(request.url);
-          requests.push(`${request.method} ${url.pathname}`);
-          if (url.pathname === "/.well-known/nodeinfo") {
-            return jsonResponse({
-              links: [
-                {
-                  rel: "http://nodeinfo.diaspora.software/ns/schema/2.0",
-                  href: "https://misskey.example/nodeinfo/2.0",
-                },
-                {
-                  rel: "http://nodeinfo.diaspora.software/ns/schema/2.1",
-                  href: "https://misskey.example/nodeinfo/2.1",
-                },
-              ],
-            });
-          }
-          if (url.pathname === "/nodeinfo/2.1") {
-            return jsonResponse({ software: { name: "misskey", version: "2025.10.0" } });
-          }
-          if (url.pathname === "/api/meta") {
-            expect(await request.json()).toEqual({ detail: false });
-            return jsonResponse({
-              name: "Misskey Example",
-              version: "2025.10.0",
-              langs: ["en"],
-              disableRegistration: true,
-            });
-          }
-          if (url.pathname === "/api/users/show") {
-            const body = (await request.json()) as {
-              readonly userId?: string;
-              readonly username?: string;
-            };
-            expect(body.userId ?? body.username).toBeTruthy();
-            return misskeyAccount();
-          }
-          if (url.pathname === "/api/users/notes") {
-            expect(await request.json()).toMatchObject({ userId: "9s4u", limit: 2 });
-            return jsonResponse([
-              {
-                id: "note-1",
-                user: {
-                  id: "9s4u",
-                  username: "alice",
-                  host: null,
-                },
-                text: "<b>Hello</b>",
-                createdAt: "2026-04-27T00:00:00.000Z",
-                visibility: "home",
-              },
-            ]);
-          }
-          return jsonResponse({ error: "unexpected request" }, 404);
-        }),
-      }),
+      adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
+      fetch: mockFetch(async (request) => {
+        const url = new URL(request.url);
+        requests.push(`${request.method} ${url.pathname}`);
+        if (url.pathname === "/.well-known/nodeinfo") {
+          return jsonResponse({
+            links: [
+              {
+                rel: "http://nodeinfo.diaspora.software/ns/schema/2.0",
+                href: "https://misskey.example/nodeinfo/2.0",
+              },
+              {
+                rel: "http://nodeinfo.diaspora.software/ns/schema/2.1",
+                href: "https://misskey.example/nodeinfo/2.1",
+              },
+            ],
+          });
+        }
+        if (url.pathname === "/nodeinfo/2.1") {
+          return jsonResponse({ software: { name: "misskey", version: "2025.10.0" } });
+        }
+        if (url.pathname === "/api/meta") {
+          expect(await request.json()).toEqual({ detail: false });
+          return jsonResponse({
+            name: "Misskey Example",
+            version: "2025.10.0",
+            langs: ["en"],
+            disableRegistration: true,
+          });
+        }
+        if (url.pathname === "/api/users/show") {
+          const body = (await request.json()) as {
+            readonly userId?: string;
+            readonly username?: string;
+          };
+          expect(body.userId ?? body.username).toBeTruthy();
+          return misskeyAccount();
+        }
+        if (url.pathname === "/api/users/notes") {
+          expect(await request.json()).toMatchObject({ userId: "9s4u", limit: 2 });
+          return jsonResponse([
+            {
+              id: "note-1",
+              user: {
+                id: "9s4u",
+                username: "alice",
+                host: null,
+              },
+              text: "<b>Hello</b>",
+              createdAt: "2026-04-27T00:00:00.000Z",
+              visibility: "home",
+            },
+          ]);
+        }
+        return jsonResponse({ error: "unexpected request" }, 404);
+      }),
     });
     const accountRef = (await client.accounts.getByHandle({ handle: "@alice@misskey.example" }))
       ?.ref;
@@ -268,106 +320,106 @@ describe("Misskey auth adapter", () => {
       visibility: "unlisted",
     });
     expect(posts.pageInfo.startCursor).not.toBe("note-1");
-    expect(JSON.stringify(posts.pageInfo.raw)).not.toContain("note-1");
+    expect(posts.pageInfo).not.toHaveProperty("raw");
     expect(requests).toContain("POST /api/users/notes");
   });
 
   it("rejects cross-origin NodeInfo links", async () => {
-    const client = createActivityPlugClient({
-      adapter: createMisskeyAdapter({
-        fetch: mockFetch(async (request) => {
-          const url = new URL(request.url);
-          if (url.pathname === "/.well-known/nodeinfo") {
-            return jsonResponse({
-              links: [{ href: "http://127.0.0.1/nodeinfo/2.1" }],
-            });
-          }
-          return jsonResponse({ error: "unexpected request" }, 404);
-        }),
+    const fetch = vi.fn(
+      mockFetch(async (request) => {
+        const url = new URL(request.url);
+        if (url.pathname === "/.well-known/nodeinfo") {
+          return jsonResponse({ links: [{ href: "http://127.0.0.1/nodeinfo/2.1" }] });
+        }
+        return jsonResponse({ error: "unexpected request" }, 404);
       }),
+    );
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
+      fetch,
     });
 
-    await expect(client.instances.getProfile()).rejects.toThrowError(
-      expect.objectContaining({ code: "REMOTE_ERROR" }),
-    );
+    await expect(client.instances.getProfile()).rejects.toMatchObject({
+      code: "ORIGIN_NOT_ALLOWED",
+    });
+    expect(fetch).toHaveBeenCalledOnce();
   });
 
   it("translates timelines, search, posting, media, and social actions", async () => {
     const requests: string[] = [];
     const client = createActivityPlugClient({
-      adapter: createMisskeyAdapter({
-        fetch: mockFetch(async (request) => {
-          const url = new URL(request.url);
-          requests.push(`${request.method} ${url.pathname}`);
-          if (url.pathname === "/api/notes/timeline") {
-            expect(request.headers.get("Authorization")).toBe("Bearer token-1");
-            return jsonResponse([misskeyNote()]);
-          }
-          if (url.pathname === "/api/notes/local-timeline") {
-            return jsonResponse([misskeyNote()]);
-          }
-          if (url.pathname === "/api/notes/search-by-tag") {
-            expect(await request.json()).toMatchObject({ tag: "activitypub" });
-            return jsonResponse([misskeyNote()]);
-          }
-          if (url.pathname === "/api/users/search-by-username-and-host") {
-            const body = (await request.clone().json()) as Record<string, unknown>;
-            expect(body["limit"]).toBe(body["username"] === "activitypub" ? 20 : 100);
-            return jsonResponse([misskeyAccountBody()]);
-          }
-          if (url.pathname === "/api/notes/search") {
-            const body = (await request.json()) as Record<string, unknown>;
-            expect(body["limit"]).toBe(body["query"] === "activitypub" ? 20 : 100);
-            return jsonResponse([misskeyNote()]);
-          }
-          if (url.pathname === "/api/hashtags/search") {
-            expect(await request.json()).toMatchObject({ query: "activitypub", limit: 20 });
-            return jsonResponse(["activitypub"]);
-          }
-          if (url.pathname === "/api/notes/create") {
-            expect(request.headers.get("Authorization")).toBe("Bearer token-1");
-            const body = (await request.json()) as Record<string, unknown>;
-            if (body["renoteId"] === "note-1") {
-              expect(body).not.toHaveProperty("text");
-            } else {
-              expect(body).toMatchObject({ text: "Hello" });
-            }
-            return jsonResponse({ createdNote: misskeyNote("created-1") });
-          }
-          if (url.pathname === "/api/notes/favorites/create") {
-            return jsonResponse({});
-          }
-          if (url.pathname === "/api/notes/favorites/delete") {
-            return jsonResponse({});
-          }
-          if (url.pathname === "/api/notes/show") {
-            return jsonResponse(misskeyNote());
-          }
-          if (url.pathname === "/api/following/create") {
-            return jsonResponse({});
-          }
-          if (url.pathname === "/api/users/relation") {
-            return jsonResponse({
-              id: "9s4u",
-              isFollowing: true,
-              isFollowed: false,
-              hasPendingFollowRequestFromYou: false,
-              isBlocking: false,
-              isMuted: false,
-            });
-          }
-          if (url.pathname === "/api/drive/files/create") {
-            return jsonResponse({
-              id: "file-1",
-              type: "image/png",
-              url: "https://misskey.example/file.png",
-            });
-          }
-          return jsonResponse({ error: "unexpected request" }, 404);
-        }),
-      }),
+      adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
+      fetch: mockFetch(async (request) => {
+        const url = new URL(request.url);
+        requests.push(`${request.method} ${url.pathname}`);
+        if (url.pathname === "/api/notes/timeline") {
+          expect(request.headers.get("Authorization")).toBe("Bearer token-1");
+          return jsonResponse([misskeyNote()]);
+        }
+        if (url.pathname === "/api/notes/local-timeline") {
+          return jsonResponse([misskeyNote()]);
+        }
+        if (url.pathname === "/api/notes/search-by-tag") {
+          expect(await request.json()).toMatchObject({ tag: "activitypub" });
+          return jsonResponse([misskeyNote()]);
+        }
+        if (url.pathname === "/api/users/search-by-username-and-host") {
+          const body = (await request.clone().json()) as Record<string, unknown>;
+          expect(body["limit"]).toBe(body["username"] === "activitypub" ? 20 : 100);
+          return jsonResponse([misskeyAccountBody()]);
+        }
+        if (url.pathname === "/api/notes/search") {
+          const body = (await request.json()) as Record<string, unknown>;
+          expect(body["limit"]).toBe(body["query"] === "activitypub" ? 20 : 100);
+          return jsonResponse([misskeyNote()]);
+        }
+        if (url.pathname === "/api/hashtags/search") {
+          expect(await request.json()).toMatchObject({ query: "activitypub", limit: 20 });
+          return jsonResponse(["activitypub"]);
+        }
+        if (url.pathname === "/api/notes/create") {
+          expect(request.headers.get("Authorization")).toBe("Bearer token-1");
+          const body = (await request.json()) as Record<string, unknown>;
+          if (body["renoteId"] === "note-1") {
+            expect(body).not.toHaveProperty("text");
+          } else {
+            expect(body).toMatchObject({ text: "Hello" });
+          }
+          return jsonResponse({ createdNote: misskeyNote("created-1") });
+        }
+        if (url.pathname === "/api/notes/favorites/create") {
+          return jsonResponse({});
+        }
+        if (url.pathname === "/api/notes/favorites/delete") {
+          return jsonResponse({});
+        }
+        if (url.pathname === "/api/notes/show") {
+          return jsonResponse(misskeyNote());
+        }
+        if (url.pathname === "/api/following/create") {
+          return jsonResponse({});
+        }
+        if (url.pathname === "/api/users/relation") {
+          return jsonResponse({
+            id: "9s4u",
+            isFollowing: true,
+            isFollowed: false,
+            hasPendingFollowRequestFromYou: false,
+            isBlocking: false,
+            isMuted: false,
+          });
+        }
+        if (url.pathname === "/api/drive/files/create") {
+          return jsonResponse({
+            id: "file-1",
+            type: "image/png",
+            url: "https://misskey.example/file.png",
+          });
+        }
+        return jsonResponse({ error: "unexpected request" }, 404);
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
     const postId = misskeyPostRef("note-1").id;
@@ -408,6 +460,9 @@ describe("Misskey auth adapter", () => {
     expect(postSearch.posts[0]?.ref.rawId).toBe("note-1");
     expect(hashtagSearch.hashtags[0]).toMatchObject({ name: "activitypub" });
     expect(broadSearch.hashtags[0]).toMatchObject({ name: "activitypub" });
+    for (const result of [accountSearch, postSearch, hashtagSearch, broadSearch]) {
+      expect(result.pageInfo).toEqual({ hasNextPage: false, hasPreviousPage: false });
+    }
     expect(created.ref.rawId).toBe("created-1");
     expect(favourite.ref.rawId).toBe("note-1");
     expect(boost.ref.rawId).toBe("created-1");
@@ -431,16 +486,447 @@ describe("Misskey auth adapter", () => {
     });
   });
 
+  it("rejects unsupported search cursors before Misskey remote I/O", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const adapter = createMisskeyAdapter();
+    const client = createActivityPlugClient({
+      adapter,
+      origin: "https://misskey.example",
+      fetch,
+    });
+
+    for (const page of [{ after: "opaque-after" }, { before: "opaque-before" }]) {
+      await expect(
+        client.search.search({ query: "activityplug", type: "posts", page }),
+      ).rejects.toMatchObject({
+        code: "UNSUPPORTED_OPERATION",
+        context: { operation: "search", capability: "search.posts" },
+      });
+    }
+    await expect(
+      adapter.search?.search?.(
+        { query: "activityplug", page: { before: "opaque-broad" } },
+        searchContext("misskey", "https://misskey.example", fetch),
+      ),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: {
+        operation: "search",
+        raw: { capabilities: ["search.accounts", "search.posts", "search.hashtags"] },
+      },
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("routes both URL-ingestion client names through one Misskey path", async () => {
+    const sockets: UrlUploadWebSocket[] = [];
+    const globalWebSocket = rejectingGlobalWebSocket();
+    vi.stubGlobal("WebSocket", globalWebSocket);
+    const webSocket = vi.fn((url: string) => {
+      const socket = new UrlUploadWebSocket(url);
+      sockets.push(socket);
+      return socket as unknown as WebSocket;
+    });
+    const uploadBodies: Record<string, unknown>[] = [];
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({ webSocket }),
+      origin: "https://misskey.example",
+      fetch: mockFetch(async (request) => {
+        expect(request.url).toBe("https://misskey.example/api/drive/files/upload-from-url");
+        expect(request.method).toBe("POST");
+        expect(request.headers.get("Authorization")).toBe("Bearer token");
+        const body = (await request.json()) as Record<string, unknown> & {
+          readonly marker: string;
+        };
+        uploadBodies.push(body);
+        queueMicrotask(() =>
+          sockets.at(-1)?.finish(body.marker, {
+            id: `file-${uploadBodies.length}`,
+            type: "image/png",
+            url: `https://misskey.example/file-${uploadBodies.length}.png`,
+          }),
+        );
+        return new Response(null, { status: 204 });
+      }),
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    const canonicalPromise = client.media.ingestUrl({
+      session,
+      url: "https://cdn.example/canonical.png",
+      description: "Canonical image",
+      sensitive: true,
+    });
+    const canonical = await canonicalPromise;
+    const deprecatedPromise = client.media.uploadFromUrl({
+      session,
+      url: "https://cdn.example/deprecated.png",
+    });
+    const deprecated = await deprecatedPromise;
+
+    expect(canonical.ref.rawId).toBe("file-1");
+    expect(deprecated.ref.rawId).toBe("file-2");
+    expect(uploadBodies).toEqual([
+      {
+        url: "https://cdn.example/canonical.png",
+        marker: expect.any(String),
+        comment: "Canonical image",
+        isSensitive: true,
+      },
+      {
+        url: "https://cdn.example/deprecated.png",
+        marker: expect.any(String),
+      },
+    ]);
+    expect(webSocket).toHaveBeenCalledTimes(2);
+    expect(globalWebSocket).not.toHaveBeenCalled();
+    for (const [rawUrl] of webSocket.mock.calls) {
+      const url = new URL(rawUrl);
+      expect(url.origin).toBe("wss://misskey.example");
+      expect(url.pathname).toBe("/streaming");
+      expect(url.searchParams.get("i")).toBe("token");
+      expect(url.searchParams.get("_t")).toMatch(/^\d+$/u);
+      expect([...url.searchParams.keys()].toSorted()).toEqual(["_t", "i"]);
+    }
+    const connectFrame = JSON.stringify({
+      type: "connect",
+      body: { channel: "main", id: "activityplug-url-upload", pong: true },
+    });
+    expect(sockets.map((socket) => socket.sent)).toEqual([[connectFrame], [connectFrame]]);
+    expect(sockets.map((socket) => socket.closeCount)).toEqual([1, 1]);
+  });
+
+  it("rejects URL ingestion when the injected socket errors and cleans it up", async () => {
+    vi.stubGlobal("WebSocket", rejectingGlobalWebSocket());
+    const socket = new UrlUploadWebSocket("wss://misskey.example/streaming", false);
+    const webSocket = vi.fn(() => socket as unknown as WebSocket);
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({ webSocket }),
+      origin: "https://misskey.example",
+      fetch: vi.fn<typeof globalThis.fetch>(),
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    const upload = client.media.ingestUrl({
+      session,
+      url: "https://cdn.example/error.png",
+    });
+    await vi.waitFor(() => expect(webSocket).toHaveBeenCalledOnce());
+    socket.fail();
+
+    await expect(upload).rejects.toMatchObject({
+      code: "NETWORK_ERROR",
+      context: { operation: "media.ingestUrl" },
+    });
+    expect(socket.closeCount).toBe(1);
+  });
+
+  it("redacts credential-bearing URL-ingestion factory failures", async () => {
+    let requestedUrl = "";
+    const webSocket = vi.fn(async (url: string) => {
+      requestedUrl = url;
+      throw new Error(`Unable to connect to ${url}`);
+    });
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({ webSocket }),
+      origin: "https://misskey.example",
+      fetch: vi.fn<typeof globalThis.fetch>(),
+    });
+    const session = await client.auth.injectToken({ accessToken: "viewer-secret" });
+
+    const error = await client.media
+      .ingestUrl({ session, url: "https://cdn.example/private.png" })
+      .catch((cause: unknown) => cause);
+
+    expect(requestedUrl).toContain("i=viewer-secret");
+    expect(error).toMatchObject({
+      code: "NETWORK_ERROR",
+      context: { operation: "media.ingestUrl", origin: "https://misskey.example" },
+    });
+    expect(String(error)).not.toContain("viewer-secret");
+    expect(JSON.stringify(error)).not.toContain("viewer-secret");
+    expect((error as Error).cause).toBeUndefined();
+  });
+
+  it("classifies the injected socket payload limit as a request limit", async () => {
+    const socket = new UrlUploadWebSocket("wss://misskey.example/streaming", false);
+    const webSocket = vi.fn(() => socket as unknown as WebSocket);
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({ webSocket }),
+      origin: "https://misskey.example",
+      fetch: vi.fn<typeof globalThis.fetch>(),
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    const upload = client.media.ingestUrl({
+      session,
+      url: "https://cdn.example/oversized.png",
+    });
+    await vi.waitFor(() => expect(webSocket).toHaveBeenCalledOnce());
+    socket.fail({ code: "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH" });
+
+    await expect(upload).rejects.toMatchObject({
+      code: "REQUEST_LIMIT_EXCEEDED",
+      context: { operation: "media.ingestUrl" },
+    });
+    expect(socket.closeCount).toBe(1);
+  });
+
+  it("rejects an oversized URL-ingestion frame before parsing or upload I/O", async () => {
+    const socket = new UrlUploadWebSocket("wss://misskey.example/streaming", false);
+    const webSocket = vi.fn(() => socket as unknown as WebSocket);
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({ webSocket }),
+      origin: "https://misskey.example",
+      fetch,
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    const upload = client.media.ingestUrl({
+      session,
+      url: "https://cdn.example/oversized.png",
+    });
+    await vi.waitFor(() => expect(webSocket).toHaveBeenCalledOnce());
+    socket.emitRaw("x".repeat(MAX_STREAMING_QUEUED_BYTES + 1));
+
+    await expect(upload).rejects.toMatchObject({
+      code: "REQUEST_LIMIT_EXCEEDED",
+      context: {
+        operation: "media.ingestUrl",
+        raw: { maxFrameBytes: MAX_STREAMING_QUEUED_BYTES },
+      },
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(socket.closeCount).toBe(1);
+  });
+
+  it("aborts an in-flight URL upload and closes its injected socket once", async () => {
+    const controller = new AbortController();
+    const reason = new DOMException("Stop upload.", "AbortError");
+    const socket = new UrlUploadWebSocket("wss://misskey.example/streaming", false);
+    const webSocket = vi.fn(
+      (
+        _url: string,
+        _protocols?: string | string[],
+        signal?: AbortSignal,
+        callOptions?: { readonly operation: string },
+      ) => {
+        expect(signal).toBe(controller.signal);
+        expect(callOptions).toEqual({ operation: "media.ingestUrl" });
+        return socket as unknown as WebSocket;
+      },
+    );
+    let uploadRequest: Request | undefined;
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({ webSocket }),
+      origin: "https://misskey.example",
+      fetch: mockFetch(async (request) => {
+        uploadRequest = request;
+        return new Promise<Response>((_resolve, reject) => {
+          const rejectAbort = () => reject(request.signal.reason);
+          request.signal.addEventListener("abort", rejectAbort, { once: true });
+          if (request.signal.aborted) rejectAbort();
+        });
+      }),
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    const upload = client.media.ingestUrl({
+      session,
+      signal: controller.signal,
+      url: "https://cdn.example/pending.png",
+    });
+    await vi.waitFor(() => expect(webSocket).toHaveBeenCalledOnce());
+    socket.openAndConnect();
+    await vi.waitFor(() => expect(uploadRequest).toBeDefined());
+    controller.abort(reason);
+
+    await expect(upload).rejects.toBe(reason);
+    expect(uploadRequest?.signal.aborted).toBe(true);
+    expect(webSocket).toHaveBeenCalledOnce();
+    expect(socket.closeCount).toBe(1);
+  });
+
+  it("rejects URL-ingestion credentials over an unencrypted socket", async () => {
+    const webSocket = vi.fn();
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({ webSocket }),
+      origin: "http://misskey.example",
+      fetch,
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    await expect(
+      client.media.ingestUrl({ session, url: "https://cdn.example/private.png" }),
+    ).rejects.toMatchObject({
+      code: "ORIGIN_NOT_ALLOWED",
+      context: { operation: "media.ingestUrl", origin: "http://misskey.example" },
+    });
+    expect(webSocket).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects URL ingestion when the socket closes without a result", async () => {
+    vi.stubGlobal("WebSocket", rejectingGlobalWebSocket());
+    const socket = new UrlUploadWebSocket("wss://misskey.example/streaming", false);
+    const webSocket = vi.fn(() => socket as unknown as WebSocket);
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({ webSocket }),
+      origin: "https://misskey.example",
+      fetch: vi.fn<typeof globalThis.fetch>(),
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    const upload = client.media.ingestUrl({
+      session,
+      url: "https://cdn.example/closed.png",
+    });
+    await vi.waitFor(() => expect(webSocket).toHaveBeenCalledOnce());
+    socket.disconnect();
+
+    await expect(upload).rejects.toMatchObject({
+      code: "NETWORK_ERROR",
+      context: { operation: "media.ingestUrl" },
+    });
+    expect(socket.closeCount).toBe(1);
+  });
+
+  it("rejects an already-closed URL-ingestion socket without waiting", async () => {
+    const socket = new UrlUploadWebSocket("wss://misskey.example/streaming", false);
+    socket.readyState = 3;
+    const webSocket = vi.fn(() => socket as unknown as WebSocket);
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({ webSocket }),
+      origin: "https://misskey.example",
+      fetch: vi.fn<typeof globalThis.fetch>(),
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    await expect(
+      client.media.ingestUrl({ session, url: "https://cdn.example/closed.png" }),
+    ).rejects.toMatchObject({
+      code: "NETWORK_ERROR",
+      context: { operation: "media.ingestUrl" },
+    });
+    expect(webSocket).toHaveBeenCalledOnce();
+    expect(socket.closeCount).toBe(1);
+  });
+
+  it("rejects legacy stored sessions before URL-ingestion socket or remote I/O", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const WebSocketClient = vi.fn();
+    vi.stubGlobal("WebSocket", WebSocketClient);
+
+    for (const [id, strategy] of [
+      ["legacy-ingest", undefined],
+      ["unknown-ingest", "unknown"],
+    ] as const) {
+      const sessions = new InMemoryAuthSessionStore();
+      await sessions.create(
+        JSON.parse(
+          JSON.stringify({
+            id,
+            revision: 0,
+            adapter: "misskey",
+            origin: "https://misskey.example",
+            ...(strategy === undefined ? {} : { strategy }),
+            scopes: [],
+            capabilities: {},
+            tokenSet: { accessToken: "must-not-be-used" },
+            createdAt: "2026-07-12T00:00:00.000Z",
+            updatedAt: "2026-07-12T00:00:00.000Z",
+          }),
+        ),
+      );
+      const client = createActivityPlugClient({
+        adapter: createMisskeyAdapter({
+          webSocket: () => {
+            throw new Error("legacy session must be rejected before socket construction");
+          },
+        }),
+        fetch,
+        origin: "https://misskey.example",
+        sessionStore: sessions,
+      });
+      const session: AuthSession = {
+        id,
+        adapter: "misskey",
+        origin: "https://misskey.example",
+        strategy: "token",
+        scopes: [],
+        capabilities: {},
+      };
+
+      await expect(
+        client.media.ingestUrl({ session, url: "https://cdn.example/private.png" }),
+      ).rejects.toMatchObject({
+        code: "AUTH_REQUIRED",
+        context: { operation: "media.ingestUrl" },
+      });
+    }
+
+    expect(WebSocketClient).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects expired URL-ingestion sessions before socket or remote I/O", async () => {
+    const sessions = new InMemoryAuthSessionStore();
+    await sessions.create({
+      id: "expired-ingest",
+      adapter: "misskey",
+      origin: "https://misskey.example",
+      strategy: "token",
+      revision: 0,
+      scopes: [],
+      capabilities: {},
+      tokenSet: {
+        accessToken: "must-not-be-used",
+        expiresAt: "2000-01-01T00:00:00.000Z",
+      },
+      createdAt: "2026-07-12T00:00:00.000Z",
+      updatedAt: "2026-07-12T00:00:00.000Z",
+    });
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const webSocket = vi.fn();
+    const globalWebSocket = rejectingGlobalWebSocket();
+    vi.stubGlobal("WebSocket", globalWebSocket);
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({ webSocket }),
+      fetch,
+      origin: "https://misskey.example",
+      sessionStore: sessions,
+    });
+    const session: AuthSession = {
+      id: "expired-ingest",
+      adapter: "misskey",
+      origin: "https://misskey.example",
+      strategy: "token",
+      scopes: [],
+      capabilities: {},
+    };
+
+    await expect(
+      client.media.ingestUrl({ session, url: "https://cdn.example/private.png" }),
+    ).rejects.toMatchObject({
+      code: "AUTH_EXPIRED",
+      context: { operation: "media.ingestUrl" },
+    });
+    expect(webSocket).not.toHaveBeenCalled();
+    expect(globalWebSocket).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("maps hashtag search through Misskey hashtags/search", async () => {
     const client = createActivityPlugClient({
-      adapter: createMisskeyAdapter({
-        fetch: mockFetch(async (request) => {
-          expect(new URL(request.url).pathname).toBe("/api/hashtags/search");
-          expect(await request.json()).toMatchObject({ query: "activitypub", limit: 20 });
-          return jsonResponse(["activitypub", "activityplug"]);
-        }),
-      }),
+      adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
+      fetch: mockFetch(async (request) => {
+        expect(new URL(request.url).pathname).toBe("/api/hashtags/search");
+        expect(await request.json()).toMatchObject({ query: "activitypub", limit: 20 });
+        return jsonResponse(["activitypub", "activityplug"]);
+      }),
     });
 
     await expect(
@@ -459,22 +945,21 @@ describe("Misskey auth adapter", () => {
   it("maps media sensitivity to Misskey drive upload", async () => {
     const fields: Record<string, FormDataEntryValue> = {};
     const client = createActivityPlugClient({
-      adapter: createMisskeyAdapter({
-        fetch: mockFetch(async (request) => {
-          expect(new URL(request.url).pathname).toBe("/api/drive/files/create");
-          const form = await request.formData();
-          for (const [key, value] of form) fields[key] = value;
-          return jsonResponse({
-            id: "file-1",
-            name: "x.txt",
-            type: "text/plain",
-            size: 1,
-            url: "https://misskey.example/files/x.txt",
-            isSensitive: true,
-          });
-        }),
-      }),
+      adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
+      fetch: mockFetch(async (request) => {
+        expect(new URL(request.url).pathname).toBe("/api/drive/files/create");
+        const form = await request.formData();
+        for (const [key, value] of form) fields[key] = value;
+        return jsonResponse({
+          id: "file-1",
+          name: "x.txt",
+          type: "text/plain",
+          size: 1,
+          url: "https://misskey.example/files/x.txt",
+          isSensitive: true,
+        });
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
 
@@ -490,22 +975,21 @@ describe("Misskey auth adapter", () => {
 
   it("maps create-note variants without changing request intent", async () => {
     const client = createActivityPlugClient({
-      adapter: createMisskeyAdapter({
-        fetch: mockFetch(async (request) => {
-          expect(new URL(request.url).pathname).toBe("/api/notes/create");
-          expect(await request.json()).toMatchObject({
-            text: "Reply with media",
-            visibility: "public",
-            cw: "Summary",
-            replyId: "reply-1",
-            renoteId: "quote-1",
-            fileIds: ["file-1"],
-            poll: { choices: ["Yes", "No"], multiple: true, expiredAfter: 3_600_000 },
-          });
-          return jsonResponse({ createdNote: misskeyNote("created-1") });
-        }),
-      }),
+      adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
+      fetch: mockFetch(async (request) => {
+        expect(new URL(request.url).pathname).toBe("/api/notes/create");
+        expect(await request.json()).toMatchObject({
+          text: "Reply with media",
+          visibility: "public",
+          cw: "Summary",
+          replyId: "reply-1",
+          renoteId: "quote-1",
+          fileIds: ["file-1"],
+          poll: { choices: ["Yes", "No"], multiple: true, expiredAfter: 3_600_000 },
+        });
+        return jsonResponse({ createdNote: misskeyNote("created-1") });
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
 
@@ -532,18 +1016,17 @@ describe("Misskey auth adapter", () => {
 
   it("maps quote notes separately from boosts", async () => {
     const client = createActivityPlugClient({
-      adapter: createMisskeyAdapter({
-        fetch: mockFetch(async (request) => {
-          expect(new URL(request.url).pathname).toBe("/api/notes/show");
-          return jsonResponse({
-            ...misskeyNote("quote-note"),
-            text: "Quoted locally",
-            renoteId: "quoted-note",
-            renote: misskeyNote("quoted-note"),
-          });
-        }),
-      }),
+      adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
+      fetch: mockFetch(async (request) => {
+        expect(new URL(request.url).pathname).toBe("/api/notes/show");
+        return jsonResponse({
+          ...misskeyNote("quote-note"),
+          text: "Quoted locally",
+          renoteId: "quoted-note",
+          renote: misskeyNote("quoted-note"),
+        });
+      }),
     });
 
     const post = await client.posts.get({ id: misskeyPostRef("quote-note").id });
@@ -554,19 +1037,18 @@ describe("Misskey auth adapter", () => {
 
   it("maps Misskey reply quotes as replies and quotes", async () => {
     const client = createActivityPlugClient({
-      adapter: createMisskeyAdapter({
-        fetch: mockFetch(async (request) => {
-          expect(new URL(request.url).pathname).toBe("/api/notes/show");
-          return jsonResponse({
-            ...misskeyNote("reply-quote"),
-            text: null,
-            replyId: "reply-target",
-            renoteId: "quoted-note",
-            renote: misskeyNote("quoted-note"),
-          });
-        }),
-      }),
+      adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
+      fetch: mockFetch(async (request) => {
+        expect(new URL(request.url).pathname).toBe("/api/notes/show");
+        return jsonResponse({
+          ...misskeyNote("reply-quote"),
+          text: null,
+          replyId: "reply-target",
+          renoteId: "quoted-note",
+          renote: misskeyNote("quoted-note"),
+        });
+      }),
     });
 
     const post = await client.posts.get({ id: misskeyPostRef("reply-quote").id });
@@ -574,6 +1056,111 @@ describe("Misskey auth adapter", () => {
     expect(post.replyTo?.rawId).toBe("reply-target");
     expect(post.quoteOf?.rawId).toBe("quoted-note");
     expect(post.boostOf).toBeUndefined();
+  });
+
+  it("forwards the exact post-read session and authenticates notes/show", async () => {
+    let receivedSession: AuthSession | undefined;
+    const fetch = mockFetch(async (request) => {
+      expect(new URL(request.url).pathname).toBe("/api/notes/show");
+      expect(request.headers.get("Authorization")).toBe("Bearer viewer-token");
+      expect(await request.json()).toEqual({ noteId: "authenticated-note" });
+      return jsonResponse(misskeyNote("authenticated-note"));
+    });
+    const adapter = createMisskeyAdapter();
+    const getPost = adapter.posts?.get;
+    if (getPost === undefined) throw new Error("Expected Misskey post get operation.");
+    const client = createActivityPlugClient({
+      adapter: {
+        ...adapter,
+        posts: {
+          ...adapter.posts,
+          get: async (input, context) => {
+            receivedSession = input.session;
+            return getPost(input, context);
+          },
+        },
+      },
+      origin: "https://misskey.example",
+      fetch,
+    });
+    const session = await client.auth.token.importToken({ accessToken: "viewer-token" });
+
+    await client.posts.get({ id: misskeyPostRef("authenticated-note").id, session });
+
+    expect(receivedSession).toBe(session);
+  });
+
+  it("keeps post reads anonymous when no session is supplied", async () => {
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter(),
+      origin: "https://misskey.example",
+      fetch: mockFetch(async (request) => {
+        expect(new URL(request.url).pathname).toBe("/api/notes/show");
+        expect(request.headers.get("Authorization")).toBeNull();
+        expect(await request.json()).toEqual({ noteId: "anonymous-note" });
+        return jsonResponse(misskeyNote("anonymous-note"));
+      }),
+    });
+
+    await client.posts.get({ id: misskeyPostRef("anonymous-note").id });
+  });
+
+  it("rejects unusable post-read sessions before notes/show I/O", async () => {
+    for (const fixture of [
+      { id: "legacy-post-read", strategy: undefined, adapter: "misskey" },
+      { id: "unknown-post-read", strategy: "unknown", adapter: "misskey" },
+      { id: "foreign-post-read", strategy: "token", adapter: "mastodon" },
+      {
+        id: "expired-post-read",
+        strategy: "token",
+        adapter: "misskey",
+        expiresAt: "2000-01-01T00:00:00.000Z",
+      },
+    ] as const) {
+      const fetch = vi.fn<typeof globalThis.fetch>();
+      const sessions = new InMemoryAuthSessionStore();
+      await sessions.create(
+        JSON.parse(
+          JSON.stringify({
+            id: fixture.id,
+            revision: 0,
+            adapter: fixture.adapter,
+            origin: "https://misskey.example",
+            ...(fixture.strategy === undefined ? {} : { strategy: fixture.strategy }),
+            scopes: [],
+            capabilities: {},
+            tokenSet: {
+              accessToken: "must-not-be-used",
+              ...(fixture.expiresAt === undefined ? {} : { expiresAt: fixture.expiresAt }),
+            },
+            createdAt: "2026-07-12T00:00:00.000Z",
+            updatedAt: "2026-07-12T00:00:00.000Z",
+          }),
+        ),
+      );
+      const client = createActivityPlugClient({
+        adapter: createMisskeyAdapter(),
+        fetch,
+        origin: "https://misskey.example",
+        sessionStore: sessions,
+      });
+      const session: AuthSession = {
+        id: fixture.id,
+        adapter: "misskey",
+        origin: "https://misskey.example",
+        strategy: "token",
+        scopes: [],
+        capabilities: {},
+      };
+
+      await expect(
+        client.posts.get({ id: misskeyPostRef("protected-note").id, session }),
+      ).rejects.toMatchObject({
+        code: fixture.id === "expired-post-read" ? "AUTH_EXPIRED" : "AUTH_REQUIRED",
+        context: { operation: "post.get" },
+      });
+      expect(fetch).not.toHaveBeenCalled();
+    }
   });
 
   it("keeps hashtag before pages in oldest-to-newest order", async () => {
@@ -584,17 +1171,16 @@ describe("Misskey auth adapter", () => {
       cursor: "note-before",
     });
     const client = createActivityPlugClient({
-      adapter: createMisskeyAdapter({
-        fetch: mockFetch(async (request) => {
-          expect(new URL(request.url).pathname).toBe("/api/notes/search-by-tag");
-          expect(await request.json()).toMatchObject({
-            tag: "activitypub",
-            sinceId: "note-before",
-          });
-          return jsonResponse([misskeyNote("newer"), misskeyNote("older")]);
-        }),
-      }),
+      adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
+      fetch: mockFetch(async (request) => {
+        expect(new URL(request.url).pathname).toBe("/api/notes/search-by-tag");
+        expect(await request.json()).toMatchObject({
+          tag: "activitypub",
+          sinceId: "note-before",
+        });
+        return jsonResponse([misskeyNote("newer"), misskeyNote("older")]);
+      }),
     });
 
     const posts = await client.timelines.hashtag({
@@ -646,21 +1232,20 @@ describe("Misskey auth adapter", () => {
     vi.setSystemTime(new Date("2026-04-27T00:00:00.000Z"));
     try {
       const client = createActivityPlugClient({
-        adapter: createMisskeyAdapter({
-          fetch: mockFetch(async (request) => {
-            const pathname = new URL(request.url).pathname;
-            if (pathname === "/api/mute/create") {
-              expect(await request.json()).toMatchObject({
-                userId: "9s4u",
-                expiresAt: Date.parse("2026-04-27T01:00:00.000Z"),
-              });
-              return jsonResponse({});
-            }
-            expect(pathname).toBe("/api/users/relation");
-            return jsonResponse({ id: "9s4u", isMuted: true });
-          }),
-        }),
+        adapter: createMisskeyAdapter(),
         origin: "https://misskey.example",
+        fetch: mockFetch(async (request) => {
+          const pathname = new URL(request.url).pathname;
+          if (pathname === "/api/mute/create") {
+            expect(await request.json()).toMatchObject({
+              userId: "9s4u",
+              expiresAt: Date.parse("2026-04-27T01:00:00.000Z"),
+            });
+            return jsonResponse({});
+          }
+          expect(pathname).toBe("/api/users/relation");
+          return jsonResponse({ id: "9s4u", isMuted: true });
+        }),
       });
       const session = await client.auth.injectToken({ accessToken: "token-1" });
 
@@ -677,24 +1262,23 @@ describe("Misskey auth adapter", () => {
   it("keeps Misskey notification filters and skipped rows narrow", async () => {
     const requests: unknown[] = [];
     const client = createActivityPlugClient({
-      adapter: createMisskeyAdapter({
-        fetch: mockFetch(async (request) => {
-          const url = new URL(request.url);
-          expect(url.pathname).toBe("/api/i/notifications");
-          const body = await request.json();
-          requests.push(body);
-          return jsonResponse([
-            { id: "notification-1", createdAt: "2026-04-27T00:00:00.000Z", type: "reaction" },
-            {
-              id: "notification-2",
-              createdAt: "2026-04-27T00:00:01.000Z",
-              type: "reaction",
-              user: misskeyAccountBody(),
-            },
-          ]);
-        }),
-      }),
+      adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
+      fetch: mockFetch(async (request) => {
+        const url = new URL(request.url);
+        expect(url.pathname).toBe("/api/i/notifications");
+        const body = await request.json();
+        requests.push(body);
+        return jsonResponse([
+          { id: "notification-1", createdAt: "2026-04-27T00:00:00.000Z", type: "reaction" },
+          {
+            id: "notification-2",
+            createdAt: "2026-04-27T00:00:01.000Z",
+            type: "reaction",
+            user: misskeyAccountBody(),
+          },
+        ]);
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
 
@@ -732,10 +1316,9 @@ describe("Misskey auth adapter", () => {
 
   it("rejects Misskey notification clearing", async () => {
     const client = createActivityPlugClient({
-      adapter: createMisskeyAdapter({
-        fetch: mockFetch(async () => jsonResponse({ error: "unexpected request" }, 500)),
-      }),
+      adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
+      fetch: mockFetch(async () => jsonResponse({ error: "unexpected request" }, 500)),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
 
@@ -747,14 +1330,13 @@ describe("Misskey auth adapter", () => {
 
   it("rejects malformed Misskey notification rows", async () => {
     const client = createActivityPlugClient({
-      adapter: createMisskeyAdapter({
-        fetch: mockFetch(async () =>
-          jsonResponse([
-            { id: "", createdAt: "2026-04-27T00:00:00.000Z", type: "reaction", user: null },
-          ]),
-        ),
-      }),
+      adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
+      fetch: mockFetch(async () =>
+        jsonResponse([
+          { id: "", createdAt: "2026-04-27T00:00:00.000Z", type: "reaction", user: null },
+        ]),
+      ),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
 
@@ -766,19 +1348,18 @@ describe("Misskey auth adapter", () => {
 
   it("rejects loose Misskey notification timestamps", async () => {
     const client = createActivityPlugClient({
-      adapter: createMisskeyAdapter({
-        fetch: mockFetch(async () =>
-          jsonResponse([
-            {
-              id: "notification-1",
-              createdAt: "2026-04-31T00:00:00Z",
-              type: "reaction",
-              user: misskeyAccountBody(),
-            },
-          ]),
-        ),
-      }),
+      adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
+      fetch: mockFetch(async () =>
+        jsonResponse([
+          {
+            id: "notification-1",
+            createdAt: "2026-04-31T00:00:00Z",
+            type: "reaction",
+            user: misskeyAccountBody(),
+          },
+        ]),
+      ),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
 
@@ -790,12 +1371,11 @@ describe("Misskey auth adapter", () => {
 
   it("reports the right Misskey list option capability", async () => {
     const client = createActivityPlugClient({
-      adapter: createMisskeyAdapter({
-        fetch: mockFetch(async () => {
-          throw new Error("adapter should not be called");
-        }),
-      }),
+      adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
+      fetch: mockFetch(async () => {
+        throw new Error("adapter should not be called");
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
     const listId = createEntityRef({
@@ -822,22 +1402,21 @@ describe("Misskey auth adapter", () => {
   it("rejects out-of-range Misskey poll choices before remote voting", async () => {
     let voteCalled = false;
     const client = createActivityPlugClient({
-      adapter: createMisskeyAdapter({
-        fetch: mockFetch(async (request) => {
-          const url = new URL(request.url);
-          if (url.pathname === "/api/notes/show") {
-            return jsonResponse({
-              ...misskeyNote("note-1"),
-              poll: { multiple: true, choices: [{ text: "Yes" }, { text: "No" }] },
-            });
-          }
-          if (url.pathname === "/api/notes/polls/vote") {
-            voteCalled = true;
-          }
-          return jsonResponse({});
-        }),
-      }),
+      adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
+      fetch: mockFetch(async (request) => {
+        const url = new URL(request.url);
+        if (url.pathname === "/api/notes/show") {
+          return jsonResponse({
+            ...misskeyNote("note-1"),
+            poll: { multiple: true, choices: [{ text: "Yes" }, { text: "No" }] },
+          });
+        }
+        if (url.pathname === "/api/notes/polls/vote") {
+          voteCalled = true;
+        }
+        return jsonResponse({});
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
 
@@ -898,5 +1477,85 @@ function misskeyAccountRef(id: string) {
     origin: "https://misskey.example",
     type: "account",
     id,
+  });
+}
+
+function searchContext(
+  adapterId: string,
+  origin: string,
+  fetch: typeof globalThis.fetch = vi.fn<typeof globalThis.fetch>(),
+): AdapterOperationContext {
+  return { adapterId, origin, capabilities: createCapabilitySet(), fetch };
+}
+
+class UrlUploadWebSocket extends EventTarget {
+  public readonly sent: string[] = [];
+  public closeCount = 0;
+  public readyState = 0;
+
+  public constructor(
+    public readonly url: string,
+    autoOpen = true,
+  ) {
+    super();
+    if (autoOpen) queueMicrotask(() => this.openAndConnect());
+  }
+
+  public send(data: string): void {
+    this.sent.push(data);
+  }
+
+  public close(): void {
+    this.closeCount += 1;
+    this.readyState = 3;
+  }
+
+  public openAndConnect(): void {
+    this.readyState = 1;
+    this.dispatchEvent(new Event("open"));
+    this.dispatchEvent(
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "connected",
+          body: { id: "activityplug-url-upload" },
+        }),
+      }),
+    );
+  }
+
+  public finish(marker: string, file: unknown): void {
+    this.dispatchEvent(
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "channel",
+          body: {
+            id: "activityplug-url-upload",
+            type: "urlUploadFinished",
+            body: { marker, file },
+          },
+        }),
+      }),
+    );
+  }
+
+  public emitRaw(data: string): void {
+    this.dispatchEvent(new MessageEvent("message", { data }));
+  }
+
+  public fail(error?: unknown): void {
+    const event = new Event("error");
+    if (error !== undefined) Object.defineProperty(event, "error", { value: error });
+    this.dispatchEvent(event);
+  }
+
+  public disconnect(): void {
+    this.readyState = 3;
+    this.dispatchEvent(new Event("close"));
+  }
+}
+
+function rejectingGlobalWebSocket() {
+  return vi.fn(function GlobalWebSocket(): never {
+    throw new Error("URL ingestion must not construct the global WebSocket");
   });
 }

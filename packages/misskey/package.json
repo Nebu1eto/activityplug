@@ -1,10 +1,31 @@
 {
   "name": "@activityplug/misskey",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Misskey adapter for ActivityPlug.",
+  "keywords": [
+    "activitypub",
+    "fediverse",
+    "misskey",
+    "typescript"
+  ],
+  "homepage": "https://github.com/Nebu1eto/activityplug",
+  "bugs": {
+    "url": "https://github.com/Nebu1eto/activityplug/issues"
+  },
   "license": "Apache-2.0 OR MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nebu1eto/activityplug.git",
+    "directory": "packages/misskey"
+  },
   "files": [
-    "dist"
+    "dist/*.mjs",
+    "dist/*.d.mts",
+    "README.md",
+    "README.ko.md",
+    "README.ja.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
   ],
   "type": "module",
   "sideEffects": false,
@@ -17,17 +38,21 @@
     }
   },
   "scripts": {
-    "build": "tsdown",
+    "build": "rolldown -c ../../rolldown.config.ts --configLoader native",
     "pack:dry-run": "pnpm pack --dry-run",
     "prepack": "pnpm build",
     "test": "node --experimental-strip-types ../../scripts/run-package-tests.ts"
   },
   "dependencies": {
     "@activityplug/core": "workspace:*",
-    "ky": "^2.0.2"
+    "ky": "^2.0.2",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@activityplug/e2e-fixtures": "workspace:*",
     "@activityplug/test-fixtures": "workspace:*"
+  },
+  "engines": {
+    "node": ">=26"
   }
 }

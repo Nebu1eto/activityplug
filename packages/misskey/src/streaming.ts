@@ -1,6 +1,8 @@
 import {
   ActivityPlugError,
   createEntityRef,
+  resolveWebSocketFactoryResult,
+  streamWebSocketMessages,
   type AdapterOperationContext,
   type DeletedEntity,
   type NotificationStreamInput,
@@ -9,13 +11,12 @@ import {
   type StreamEvent,
   type TimelineStreamInput,
 } from "@activityplug/core";
+import { z } from "zod";
 
 import { noteFromResponse } from "./internals.js";
 import { notificationFromResponse } from "./notifications.js";
 import { tokenHeader } from "./transport.js";
-import { type MisskeyAdapterOptions } from "./types.js";
-
-type WebSocketFactory = (url: string, protocols?: string | string[]) => WebSocket;
+import { type MisskeyAdapterOptions, type WebSocketFactory } from "./types.js";
 
 export function connectMisskeyTimelineStream(
   input: TimelineStreamInput,
@@ -58,26 +59,47 @@ function connectMisskeyStream(
   return {
     async *[Symbol.asyncIterator]() {
       if (inputSignalAborted(signal)) return;
-      const token = session === undefined ? undefined : await requireStoredToken(session, context);
-      const socket = createSocket(context.origin, token, options.webSocket);
-      socket.addEventListener(
-        "open",
-        () => {
-          socket.send(
-            JSON.stringify({
-              type: "connect",
-              body: {
-                channel: channel.channel,
-                id: channel.id,
-                ...(channel.params === undefined ? {} : { params: channel.params }),
-              },
-            }),
-          );
-        },
-        { once: true },
-      );
-      for await (const message of websocketMessages(socket, signal)) {
-        const event = misskeyStreamEvent(message, context, channel.mode);
+      const operation = channel.mode === "timeline" ? "stream.timeline" : "stream.notifications";
+      const token =
+        session === undefined ? undefined : await requireStoredToken(session, context, operation);
+      let socket: WebSocket;
+      try {
+        const candidate = resolveWebSocketFactoryResult(
+          createSocket(
+            context,
+            token,
+            signal,
+            options.webSocket,
+            channel.mode === "timeline" ? "streaming.timeline" : "streaming.notifications",
+          ),
+          signal,
+        );
+        socket = isWebSocketPromise(candidate) ? await candidate : candidate;
+      } catch (error) {
+        if (signal?.aborted === true) return;
+        if (error instanceof ActivityPlugError) throw error;
+        throw new ActivityPlugError("NETWORK_ERROR", "Misskey streaming connection failed.", {
+          adapter: context.adapterId,
+          origin: context.origin,
+          operation: "stream.connect",
+        });
+      }
+      const connect = () => {
+        socket.send(
+          JSON.stringify({
+            type: "connect",
+            body: {
+              channel: channel.channel,
+              id: channel.id,
+              ...(channel.params === undefined ? {} : { params: channel.params }),
+            },
+          }),
+        );
+      };
+      socket.addEventListener("open", connect, { once: true });
+      if (socket.readyState === 1) connect();
+      for await (const message of websocketMessages(socket, signal, context)) {
+        const event = misskeyStreamEvent(message, context, channel.mode, channel.id);
         if (event !== undefined) yield event;
       }
     },
@@ -87,8 +109,9 @@ function connectMisskeyStream(
 async function requireStoredToken(
   session: AuthSession,
   context: AdapterOperationContext,
+  operation: "stream.timeline" | "stream.notifications",
 ): Promise<string> {
-  const header = await tokenHeader(session, context, "stream");
+  const header = await tokenHeader(session, context, operation);
   return header.Authorization.replace(/^Bearer\s+/u, "");
 }
 
@@ -104,15 +127,41 @@ function misskeyTimelineChannel(input: TimelineStreamInput): {
 }
 
 function createSocket(
-  origin: string,
+  context: AdapterOperationContext,
   token: string | undefined,
+  signal: AbortSignal | undefined,
   factory: WebSocketFactory | undefined,
-): WebSocket {
-  const url = new URL("streaming", origin);
+  capability: "streaming.timeline" | "streaming.notifications",
+): WebSocket | Promise<WebSocket> {
+  const url = new URL("streaming", context.origin);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  if (token !== undefined) url.searchParams.set("i", token);
-  const WebSocketCtor = factory ?? ((value: string) => new WebSocket(value));
-  return WebSocketCtor(url.toString());
+  if (token !== undefined) {
+    assertEncryptedWebSocket(url, context);
+    url.searchParams.set("i", token);
+  }
+  if (typeof factory !== "function") {
+    throw new ActivityPlugError(
+      "UNSUPPORTED_OPERATION",
+      "Misskey streaming requires an injected WebSocket factory.",
+      { operation: "stream.connect", capability },
+    );
+  }
+  return factory(url.toString(), undefined, signal, { operation: "stream.connect" });
+}
+
+function assertEncryptedWebSocket(url: URL, context: AdapterOperationContext): void {
+  if (url.protocol === "wss:") return;
+  throw new ActivityPlugError(
+    "ORIGIN_NOT_ALLOWED",
+    "Authenticated WebSocket connections require HTTPS.",
+    { adapter: context.adapterId, origin: context.origin, operation: "stream.connect" },
+  );
+}
+
+function isWebSocketPromise(
+  candidate: WebSocket | Promise<WebSocket>,
+): candidate is Promise<WebSocket> {
+  return typeof (candidate as { readonly then?: unknown }).then === "function";
 }
 
 function inputSignalAborted(signal: AbortSignal | undefined): boolean {
@@ -122,79 +171,37 @@ function inputSignalAborted(signal: AbortSignal | undefined): boolean {
 async function* websocketMessages(
   socket: WebSocket,
   signal: AbortSignal | undefined,
+  context: AdapterOperationContext,
 ): AsyncGenerator<unknown> {
-  if (signal?.aborted === true) {
-    socket.close();
-    return;
-  }
-  const queue: StreamingFrame[] = [];
-  const waiters: ((value: IteratorResult<StreamingFrame>) => void)[] = [];
-  let closed = false;
-  const close = () => {
-    closed = true;
-    for (const waiter of waiters.splice(0)) waiter({ done: true, value: undefined });
-  };
-  const push = (value: StreamingFrame) => {
-    const waiter = waiters.shift();
-    if (waiter === undefined) queue.push(value);
-    else waiter({ done: false, value });
-  };
-  const abort = () => socket.close();
-  signal?.addEventListener("abort", abort, { once: true });
-  socket.addEventListener("message", (event) => push(parseFrame(event.data)));
-  socket.addEventListener("close", close, { once: true });
-  socket.addEventListener(
-    "error",
-    () => {
-      push({
-        error: new ActivityPlugError("NETWORK_ERROR", "Misskey streaming connection failed."),
-      });
-      close();
+  yield* streamWebSocketMessages({
+    socket,
+    signal,
+    networkErrorMessage: "Misskey streaming connection failed.",
+    invalidJsonMessage: "Misskey streaming sent invalid JSON.",
+    errorContext: {
+      adapter: context.adapterId,
+      origin: context.origin,
+      operation: "stream.connect",
     },
-    { once: true },
-  );
-  try {
-    for (;;) {
-      if (closed && queue.length === 0) break;
-      const value =
-        queue.shift() ??
-        (await new Promise<IteratorResult<StreamingFrame>>((resolve) => waiters.push(resolve)))
-          .value;
-      if (value !== undefined) {
-        if ("error" in value) throw value.error;
-        yield value.value;
-      }
-    }
-  } finally {
-    signal?.removeEventListener("abort", abort);
-    socket.close();
-  }
-}
-
-type StreamingFrame = { readonly value: unknown } | { readonly error: ActivityPlugError };
-
-function parseFrame(data: unknown): StreamingFrame {
-  try {
-    return { value: JSON.parse(String(data)) as unknown };
-  } catch (error) {
-    return {
-      error: new ActivityPlugError("REMOTE_ERROR", "Misskey streaming sent invalid JSON.", {
-        raw: { data: String(data), cause: error },
-      }),
-    };
-  }
+  });
 }
 
 function misskeyStreamEvent(
   value: unknown,
   context: AdapterOperationContext,
   mode: "timeline" | "notifications",
+  channelId: string,
 ): StreamEvent | undefined {
-  if (!isRecord(value) || value["type"] !== "channel" || !isRecord(value["body"])) {
-    return undefined;
-  }
+  if (!isRecord(value) || value["type"] !== "channel") return undefined;
+  if (!isRecord(value["body"])) throw malformedStreamEvent(value, context, mode);
   const body = value["body"];
-  if (body["type"] === "note" && isRecord(body["body"]) && mode === "timeline") {
+  if (typeof body["id"] !== "string" || typeof body["type"] !== "string") {
+    throw malformedStreamEvent(value, context, mode);
+  }
+  if (body["id"] !== channelId) return undefined;
+  if (!["note", "notification", "deleted", "updated"].includes(body["type"])) return undefined;
+  if (body["type"] === "note" && mode === "timeline") {
+    if (!isRecord(body["body"])) throw malformedStreamEvent(value, context, mode);
     return {
       type: "timeline.update",
       stream: "timeline",
@@ -202,7 +209,10 @@ function misskeyStreamEvent(
       raw: value,
     };
   }
-  if (body["type"] === "notification" && isRecord(body["body"]) && mode === "notifications") {
+  if (body["type"] === "notification" && mode === "notifications") {
+    if (!isRecord(body["body"])) throw malformedStreamEvent(value, context, mode);
+    // Actor-less notifications (for example pollEnded) are expected but have
+    // no portable mapping; skip them like the notifications.list path does.
     if (!isRecord(body["body"]["user"])) return undefined;
     return {
       type: "notification",
@@ -213,6 +223,7 @@ function misskeyStreamEvent(
   }
   if (
     body["type"] === "deleted" &&
+    mode === "timeline" &&
     isRecord(body["body"]) &&
     typeof body["body"]["id"] === "string"
   ) {
@@ -223,7 +234,11 @@ function misskeyStreamEvent(
       raw: value,
     };
   }
-  if (body["type"] === "updated" && isRecord(body["body"]) && mode === "timeline") {
+  if (body["type"] === "deleted" && mode === "timeline") {
+    throw malformedStreamEvent(value, context, mode);
+  }
+  if (body["type"] === "updated" && mode === "timeline") {
+    if (!isRecord(body["body"])) throw malformedStreamEvent(value, context, mode);
     return {
       type: "edit",
       stream: "timeline",
@@ -232,6 +247,23 @@ function misskeyStreamEvent(
     };
   }
   return undefined;
+}
+
+function malformedStreamEvent(
+  raw: unknown,
+  context: AdapterOperationContext,
+  mode: "timeline" | "notifications",
+): never {
+  throw new ActivityPlugError(
+    "REMOTE_PROTOCOL_ERROR",
+    "Misskey streaming sent a malformed recognized event.",
+    {
+      adapter: context.adapterId,
+      origin: context.origin,
+      operation: mode === "timeline" ? "stream.timeline" : "stream.notifications",
+      raw,
+    },
+  );
 }
 
 function deletedNote(id: string, context: AdapterOperationContext): DeletedEntity {
@@ -246,6 +278,8 @@ function deletedNote(id: string, context: AdapterOperationContext): DeletedEntit
   };
 }
 
+const jsonRecord = z.looseObject({});
+
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return jsonRecord.safeParse(value).success;
 }

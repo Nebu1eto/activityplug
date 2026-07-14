@@ -1,16 +1,13 @@
 import { capability, createCapabilitySet } from "@activityplug/core";
 
-export function createMisskeyStaticCapabilities() {
+export function createMisskeyStaticCapabilities(hasWebSocket: boolean) {
   return createCapabilitySet({
     "auth.oauth.authorizationCode": capability("supported"),
     "auth.oauth.refreshToken": capability(
       "unsupported",
       "Misskey OAuth access tokens do not use refresh tokens.",
     ),
-    "auth.oauth.clientCredentials": capability(
-      "unsupported",
-      "Client-credentials OAuth is not mapped by this adapter.",
-    ),
+    "auth.oauth.clientCredentials": capability("supported"),
     "auth.passkey": capability("unsupported", "Passkey auth is not mapped by this adapter."),
     "auth.tokenInjection": capability("supported"),
     "instance.nodeInfo": capability("supported"),
@@ -22,7 +19,17 @@ export function createMisskeyStaticCapabilities() {
     "accounts.followers": capability("supported"),
     "accounts.following": capability("supported"),
     "posts.read": capability("supported"),
-    "posts.create": capability("supported"),
+    "posts.create": capability("supported", undefined, undefined, {
+      acceptedInputs: [
+        "content",
+        "summary",
+        "visibility.public",
+        "visibility.unlisted",
+        "visibility.followers",
+        "visibility.direct",
+        "visibility.local",
+      ],
+    }),
     "posts.delete": capability("supported"),
     "posts.update": capability("unsupported", "Misskey does not expose stable note editing."),
     "posts.reply": capability("supported"),
@@ -36,11 +43,9 @@ export function createMisskeyStaticCapabilities() {
     "media.upload": capability("supported"),
     "media.update": capability("supported"),
     "media.delete": capability("supported"),
-    "media.remoteUrlUpload": capability("supported"),
-    "media.urlIngestion": capability(
-      "unsupported",
-      "URL media ingestion is not mapped by this adapter.",
-    ),
+    "media.urlIngestion": hasWebSocket
+      ? capability("supported")
+      : capability("unsupported", "URL media ingestion requires an injected WebSocket factory."),
     "polls.create": capability("supported"),
     "polls.read": capability("supported"),
     "polls.vote": capability("supported"),
@@ -119,8 +124,12 @@ export function createMisskeyStaticCapabilities() {
     ),
     "social.boost": capability("supported"),
     "social.reaction": capability("supported"),
-    "streaming.timeline": capability("supported"),
-    "streaming.notifications": capability("supported"),
+    "streaming.timeline": hasWebSocket
+      ? capability("supported")
+      : capability("unsupported", "Streaming requires an injected WebSocket factory."),
+    "streaming.notifications": hasWebSocket
+      ? capability("supported")
+      : capability("unsupported", "Streaming requires an injected WebSocket factory."),
     "streaming.conversations": capability(
       "unsupported",
       "Streaming is not implemented by this adapter yet.",
