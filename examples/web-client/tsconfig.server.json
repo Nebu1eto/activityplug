@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "lib": ["ESNext"],
+    "outDir": "dist/server",
+    "rootDir": "src",
+    "tsBuildInfoFile": "dist/server/tsconfig.tsbuildinfo",
+    "types": ["node"]
+  },
+  "include": ["src/server.ts"]
+}
