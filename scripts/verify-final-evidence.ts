@@ -47,9 +47,14 @@ export type FinalEvidence = {
   productionAudit: { readonly advisories: 0 };
 };
 
+export type DocumentationPathChange = {
+  path: string;
+  status: string;
+};
+
 export type FinalEvidenceOptions = {
   environment?: NodeJS.ProcessEnv;
-  getChangedPaths?: (repositoryRoot: string) => Promise<string[]>;
+  getChangedPaths?: (repositoryRoot: string) => Promise<DocumentationPathChange[]>;
   getGitStatus?: (repositoryRoot: string) => Promise<string[]>;
   getHeadSha?: (repositoryRoot: string) => Promise<string>;
   output?: string;
@@ -64,9 +69,14 @@ export async function resolveEvidenceBase(
   repositoryRoot: string,
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<string | undefined> {
+  const head = await resolveGitCommit(repositoryRoot, "HEAD");
+  if (head === undefined) return undefined;
+  const configuredBase = environment["ACTIVITYPLUG_EVIDENCE_BASE"];
+  if (configuredBase !== undefined && configuredBase !== "") {
+    return resolveUsableEvidenceBase(repositoryRoot, configuredBase, head);
+  }
   const githubBase = environment["GITHUB_BASE_REF"];
   const candidates = [
-    environment["ACTIVITYPLUG_EVIDENCE_BASE"],
     githubBase === undefined || githubBase === "" ? undefined : `origin/${githubBase}`,
     githubBase,
     "main",
@@ -74,34 +84,65 @@ export async function resolveEvidenceBase(
   ];
   for (const candidate of candidates) {
     if (candidate === undefined || candidate === "") continue;
-    const resolved = await resolveGitCommit(repositoryRoot, candidate);
+    const resolved = await resolveUsableEvidenceBase(repositoryRoot, candidate, head);
     if (resolved !== undefined) return resolved;
   }
   return undefined;
 }
 
-/** Returns changed English Markdown paths when a base commit is available. */
+/**
+ * Returns Markdown path changes with their Git statuses.
+ *
+ * Final evidence fails closed when no base commit is available because it cannot
+ * otherwise prove that translations changed with their English source.
+ */
 export async function getChangedDocumentationPaths(
   repositoryRoot: string,
   environment: NodeJS.ProcessEnv = process.env,
-): Promise<string[]> {
+): Promise<DocumentationPathChange[]> {
   const base = await resolveEvidenceBase(repositoryRoot, environment);
-  if (base === undefined) return [];
+  if (base === undefined) {
+    throw new Error("Unable to resolve evidence base for documentation verification");
+  }
   const { stdout } = await execFileAsync(
     "git",
-    ["diff", "--name-status", "-z", "--find-renames", `${base}...HEAD`, "--"],
+    [
+      "diff",
+      "--name-status",
+      "-z",
+      "--find-renames",
+      "--find-copies",
+      "--find-copies-harder",
+      `${base}...HEAD`,
+      "--",
+    ],
     { cwd: repositoryRoot, encoding: "utf8", env: repositoryGitEnvironment() },
   );
   const entries = stdout.split("\0");
-  const paths: string[] = [];
+  const paths: DocumentationPathChange[] = [];
   for (let index = 0; index < entries.length - 1;) {
     const status = entries[index++];
     if (status === undefined || status === "") break;
-    if (status.startsWith("R") || status.startsWith("C")) index += 1;
+    if (status.startsWith("R") || status.startsWith("C")) {
+      const source = entries[index++];
+      const target = entries[index++];
+      if (
+        status.startsWith("R") &&
+        source !== undefined &&
+        source.endsWith(".md") &&
+        (target === undefined || !target.endsWith(".md"))
+      ) {
+        paths.push({ path: source, status: "D" });
+      }
+      if (target !== undefined && target.endsWith(".md")) paths.push({ path: target, status });
+      continue;
+    }
     const path = entries[index++];
-    if (path !== undefined && isPublishableEnglishMarkdown(path)) paths.push(path);
+    if (path !== undefined && path.endsWith(".md")) paths.push({ path, status });
   }
-  return paths.toSorted();
+  return paths.toSorted(
+    (left, right) => left.path.localeCompare(right.path) || left.status.localeCompare(right.status),
+  );
 }
 
 /** Lists published Markdown that must retain translation parity on every ref. */
@@ -115,11 +156,25 @@ export function getPublishedDocumentationPaths(): string[] {
 /** Rejects documentation without complete Korean and Japanese siblings. */
 export async function collectDocumentationSiblings(
   repositoryRoot: string,
-  changedPaths: readonly string[],
+  documentationPaths: readonly string[],
+  changedPaths: readonly DocumentationPathChange[] = [],
 ): Promise<string[]> {
+  const changedStatuses = new Map(changedPaths.map(({ path, status }) => [path, status]));
   const siblings: string[] = [];
-  for (const path of changedPaths) {
+  for (const path of documentationPaths) {
     if (!isPublishableEnglishMarkdown(path)) continue;
+    if (isDeletion(changedStatuses.get(path))) {
+      throw new Error("Published English documentation must not be deleted");
+    }
+    let sourceContents: string;
+    try {
+      sourceContents = await readFile(resolve(repositoryRoot, path), "utf8");
+    } catch {
+      throw new Error("Published documentation requires a nonempty English source");
+    }
+    if (sourceContents.trim() === "") {
+      throw new Error("Published documentation requires a nonempty English source");
+    }
     const stem = path.slice(0, -".md".length);
     for (const language of ["ko", "ja"] as const) {
       const sibling = `${stem}.${language}.md`;
@@ -131,6 +186,12 @@ export async function collectDocumentationSiblings(
       }
       if (contents.trim() === "") {
         throw new Error(`Published documentation requires a nonempty ${language} sibling`);
+      }
+      if (requiresTranslationFreshness(changedStatuses.get(path))) {
+        const siblingStatus = changedStatuses.get(sibling);
+        if (!requiresTranslationFreshness(siblingStatus)) {
+          throw new Error(`Published documentation requires a changed ${language} sibling`);
+        }
       }
       siblings.push(sibling);
     }
@@ -213,15 +274,28 @@ export async function verifyFinalEvidence(
   const checkDependencyFreshness = options.verifyDependencyFreshness ?? verifyDependencyFreshness;
   const checkProductionAudit = options.verifyProductionAudit ?? verifyProductionAudit;
   const checkTarballs = options.verifyPublishedTarballs ?? verifyTarballs;
-  const changedPaths = await (options.getChangedPaths ?? getChangedDocumentationPaths)(
-    repositoryRoot,
-  );
+  const changedPaths =
+    options.getChangedPaths === undefined
+      ? await getChangedDocumentationPaths(repositoryRoot, environment)
+      : await options.getChangedPaths(repositoryRoot);
+  if (changedPaths.some(({ status }) => isDeletion(status))) {
+    throw new Error("Published documentation must not be deleted or renamed outside Markdown");
+  }
   const documentationPaths = [
-    ...new Set([...changedPaths, ...getPublishedDocumentationPaths()]),
+    ...new Set([
+      ...changedPaths
+        .filter(
+          ({ path, status }) =>
+            isPublishableEnglishMarkdown(path) && isEnglishDocumentationChange(status),
+        )
+        .map(({ path }) => path),
+      ...getPublishedDocumentationPaths(),
+    ]),
   ].toSorted();
   const documentationSiblings = await collectDocumentationSiblings(
     repositoryRoot,
     documentationPaths,
+    changedPaths,
   );
   const composeViolations = await checkCompose(pathToFileURL(`${repositoryRoot}/`));
   if (composeViolations.length > 0) throw new Error("Production Compose verification failed");
@@ -318,12 +392,19 @@ export async function writeEvidenceAtomically(
 }
 
 function isPublishableEnglishMarkdown(path: string): boolean {
-  return (
-    path.endsWith(".md") &&
-    !path.endsWith(".ko.md") &&
-    !path.endsWith(".ja.md") &&
-    !path.startsWith("docs/superpowers/")
-  );
+  return path.endsWith(".md") && !path.endsWith(".ko.md") && !path.endsWith(".ja.md");
+}
+
+function requiresTranslationFreshness(status: string | undefined): boolean {
+  return status !== undefined && /^(?:A|M|C|R)/u.test(status);
+}
+
+function isDeletion(status: string | undefined): boolean {
+  return status !== undefined && status.startsWith("D");
+}
+
+function isEnglishDocumentationChange(status: string): boolean {
+  return requiresTranslationFreshness(status) || isDeletion(status);
 }
 
 function isWithin(directory: string, path: string): boolean {
@@ -376,6 +457,29 @@ async function resolveGitCommit(
   } catch {
     return undefined;
   }
+}
+
+async function resolveGitMergeBase(
+  repositoryRoot: string,
+  left: string,
+  right: string,
+): Promise<string | undefined> {
+  try {
+    return await git(repositoryRoot, ["merge-base", left, right]);
+  } catch {
+    return undefined;
+  }
+}
+
+async function resolveUsableEvidenceBase(
+  repositoryRoot: string,
+  reference: string,
+  head: string,
+): Promise<string | undefined> {
+  const resolved = await resolveGitCommit(repositoryRoot, reference);
+  if (resolved === undefined) return undefined;
+  const mergeBase = await resolveGitMergeBase(repositoryRoot, resolved, head);
+  return mergeBase === undefined || mergeBase === head ? undefined : resolved;
 }
 
 function isEntrypoint(): boolean {

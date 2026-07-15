@@ -34,94 +34,99 @@ export function postFromResponse(
   context: AdapterOperationContext,
   operation: string,
 ): Post {
-  if (
-    !isRecord(response) ||
-    validatedRemoteId(response.id, response.uuid, response, context, operation) === undefined ||
-    typeof response.actor !== "object" ||
-    response.actor === null ||
-    !nonEmptyString(response.published)
-  ) {
-    throw activityPlugError(
-      "REMOTE_ERROR",
-      "HackersPub post response is missing required fields.",
-      context,
-      operation,
-      response,
-    );
+  const depth = beginMapping(context);
+  try {
+    if (
+      !isRecord(response) ||
+      validatedRemoteId(response.id, response.uuid, response, context, operation) === undefined ||
+      typeof response.actor !== "object" ||
+      response.actor === null ||
+      !nonEmptyString(response.published)
+    ) {
+      throw activityPlugError(
+        "REMOTE_ERROR",
+        "HackersPub post response is missing required fields.",
+        context,
+        operation,
+        response,
+      );
+    }
+    const post = response as unknown as HackersPubPost & {
+      readonly actor: HackersPubActor;
+      readonly published: string;
+    };
+    const rawId = validatedRemoteId(post.id, post.uuid, post, context, operation);
+    if (rawId === undefined) {
+      throw activityPlugError(
+        "REMOTE_ERROR",
+        "HackersPub post response is missing required fields.",
+        context,
+        operation,
+        response,
+      );
+    }
+    if (post.content !== null && post.content !== undefined && typeof post.content !== "string") {
+      throw activityPlugError(
+        "REMOTE_ERROR",
+        "HackersPub post response includes malformed content.",
+        context,
+        operation,
+        post,
+      );
+    }
+    const iri = optionalString(post.iri, "iri", post, context, operation);
+    const postUrl = optionalString(post.url, "url", post, context, operation);
+    if (!Array.isArray(post.media)) {
+      throw activityPlugError(
+        "REMOTE_ERROR",
+        "HackersPub post response includes malformed media.",
+        context,
+        operation,
+        post,
+      );
+    }
+    return {
+      ref: createEntityRef({
+        adapter: context.adapterId,
+        origin: context.origin,
+        type: "post",
+        id: rawId,
+        rawUrl: iri ?? postUrl,
+      }),
+      author: actorFromResponse(post.actor, context, operation),
+      ...(postUrl === undefined ? {} : { url: postUrl }),
+      contentHtml: optionalHtmlContent(post.content, post, context, operation),
+      createdAt: post.published,
+      visibility: hackersPubVisibility(
+        optionalString(post.visibility, "visibility", post, context, operation),
+      ),
+      sensitive: optionalBoolean(post.sensitive, "sensitive", post, context, operation) ?? false,
+      ...optionalStringAsField(post.summary, "summary", "summary", post, context, operation),
+      media: post.media.map((medium) => mediaFromResponse(medium, context, operation)),
+      ...(post.poll === null || post.poll === undefined
+        ? {}
+        : {
+            poll: pollFromResponse(
+              post.poll,
+              nonEmptyString(post.uuid) ? post.uuid : rawId,
+              context,
+              operation,
+            ),
+          }),
+      ...(post.replyTarget === null || post.replyTarget === undefined
+        ? {}
+        : { replyTo: postRelationshipRef(post.replyTarget, context, operation, "replyTarget") }),
+      ...(post.quotedPost === null || post.quotedPost === undefined
+        ? {}
+        : { quoteOf: postRelationshipRef(post.quotedPost, context, operation, "quotedPost") }),
+      ...(post.sharedPost === null || post.sharedPost === undefined
+        ? {}
+        : { boostOf: postRelationshipRef(post.sharedPost, context, operation, "sharedPost") }),
+      raw: post,
+    };
+  } finally {
+    depth?.release();
   }
-  const post = response as unknown as HackersPubPost & {
-    readonly actor: HackersPubActor;
-    readonly published: string;
-  };
-  const rawId = validatedRemoteId(post.id, post.uuid, post, context, operation);
-  if (rawId === undefined) {
-    throw activityPlugError(
-      "REMOTE_ERROR",
-      "HackersPub post response is missing required fields.",
-      context,
-      operation,
-      response,
-    );
-  }
-  if (post.content !== null && post.content !== undefined && typeof post.content !== "string") {
-    throw activityPlugError(
-      "REMOTE_ERROR",
-      "HackersPub post response includes malformed content.",
-      context,
-      operation,
-      post,
-    );
-  }
-  const iri = optionalString(post.iri, "iri", post, context, operation);
-  const postUrl = optionalString(post.url, "url", post, context, operation);
-  if (!Array.isArray(post.media)) {
-    throw activityPlugError(
-      "REMOTE_ERROR",
-      "HackersPub post response includes malformed media.",
-      context,
-      operation,
-      post,
-    );
-  }
-  return {
-    ref: createEntityRef({
-      adapter: context.adapterId,
-      origin: context.origin,
-      type: "post",
-      id: rawId,
-      rawUrl: iri ?? postUrl,
-    }),
-    author: actorFromResponse(post.actor, context, operation),
-    ...(postUrl === undefined ? {} : { url: postUrl }),
-    contentHtml: optionalHtmlContent(post.content, post, context, operation),
-    createdAt: post.published,
-    visibility: hackersPubVisibility(
-      optionalString(post.visibility, "visibility", post, context, operation),
-    ),
-    sensitive: optionalBoolean(post.sensitive, "sensitive", post, context, operation) ?? false,
-    ...optionalStringAsField(post.summary, "summary", "summary", post, context, operation),
-    media: post.media.map((medium) => mediaFromResponse(medium, context, operation)),
-    ...(post.poll === null || post.poll === undefined
-      ? {}
-      : {
-          poll: pollFromResponse(
-            post.poll,
-            nonEmptyString(post.uuid) ? post.uuid : rawId,
-            context,
-            operation,
-          ),
-        }),
-    ...(post.replyTarget === null || post.replyTarget === undefined
-      ? {}
-      : { replyTo: postRelationshipRef(post.replyTarget, context, operation, "replyTarget") }),
-    ...(post.quotedPost === null || post.quotedPost === undefined
-      ? {}
-      : { quoteOf: postRelationshipRef(post.quotedPost, context, operation, "quotedPost") }),
-    ...(post.sharedPost === null || post.sharedPost === undefined
-      ? {}
-      : { boostOf: postRelationshipRef(post.sharedPost, context, operation, "sharedPost") }),
-    raw: post,
-  };
 }
 
 function mediaFromResponse(
@@ -129,51 +134,56 @@ function mediaFromResponse(
   context: AdapterOperationContext,
   operation: string,
 ): MediaAttachment {
-  if (
-    !isRecord(response) ||
-    !nonEmptyString(response.id) ||
-    !nonEmptyString(response.type) ||
-    !nonEmptyString(response.url) ||
-    typeof response.sensitive !== "boolean"
-  ) {
-    throw activityPlugError(
-      "REMOTE_ERROR",
-      "HackersPub post media response is missing required fields.",
+  const depth = beginMapping(context);
+  try {
+    if (
+      !isRecord(response) ||
+      !nonEmptyString(response.id) ||
+      !nonEmptyString(response.type) ||
+      !nonEmptyString(response.url) ||
+      typeof response.sensitive !== "boolean"
+    ) {
+      throw activityPlugError(
+        "REMOTE_ERROR",
+        "HackersPub post media response is missing required fields.",
+        context,
+        operation,
+        response,
+      );
+    }
+    const width = optionalPositiveInteger(response.width, "width", response, context, operation);
+    const height = optionalPositiveInteger(response.height, "height", response, context, operation);
+    const previewUrl = optionalString(
+      response.thumbnailUrl,
+      "thumbnailUrl",
+      response,
       context,
       operation,
-      response,
     );
+    const description = optionalString(response.alt, "alt", response, context, operation);
+    return {
+      ref: createEntityRef({
+        adapter: context.adapterId,
+        origin: context.origin,
+        type: "media",
+        id: response.id,
+        rawUrl: response.url,
+      }),
+      type: response.type.startsWith("image/")
+        ? "image"
+        : response.type.startsWith("video/")
+          ? "video"
+          : "unknown",
+      url: response.url,
+      ...(previewUrl === undefined ? {} : { previewUrl }),
+      ...(description === undefined ? {} : { description }),
+      ...(width === undefined ? {} : { width }),
+      ...(height === undefined ? {} : { height }),
+      raw: response,
+    };
+  } finally {
+    depth?.release();
   }
-  const width = optionalPositiveInteger(response.width, "width", response, context, operation);
-  const height = optionalPositiveInteger(response.height, "height", response, context, operation);
-  const previewUrl = optionalString(
-    response.thumbnailUrl,
-    "thumbnailUrl",
-    response,
-    context,
-    operation,
-  );
-  const description = optionalString(response.alt, "alt", response, context, operation);
-  return {
-    ref: createEntityRef({
-      adapter: context.adapterId,
-      origin: context.origin,
-      type: "media",
-      id: response.id,
-      rawUrl: response.url,
-    }),
-    type: response.type.startsWith("image/")
-      ? "image"
-      : response.type.startsWith("video/")
-        ? "video"
-        : "unknown",
-    url: response.url,
-    ...(previewUrl === undefined ? {} : { previewUrl }),
-    ...(description === undefined ? {} : { description }),
-    ...(width === undefined ? {} : { width }),
-    ...(height === undefined ? {} : { height }),
-    raw: response,
-  };
 }
 
 function optionalPositiveInteger(
@@ -200,34 +210,44 @@ function postRelationshipRef(
   operation: string,
   field: string,
 ): Post["ref"] {
-  if (!isRecord(response)) {
-    throw activityPlugError(
-      "REMOTE_ERROR",
-      `HackersPub post relationship field is malformed: ${field}.`,
-      context,
-      operation,
-      response,
-    );
+  const depth = beginMapping(context);
+  try {
+    if (!isRecord(response)) {
+      throw activityPlugError(
+        "REMOTE_ERROR",
+        `HackersPub post relationship field is malformed: ${field}.`,
+        context,
+        operation,
+        response,
+      );
+    }
+    const rawId = validatedRemoteId(response.id, response.uuid, response, context, operation);
+    if (rawId === undefined) {
+      throw activityPlugError(
+        "REMOTE_ERROR",
+        `HackersPub post relationship field is missing an ID: ${field}.`,
+        context,
+        operation,
+        response,
+      );
+    }
+    const iri = optionalString(response.iri, "iri", response, context, operation);
+    const url = optionalString(response.url, "url", response, context, operation);
+    return createEntityRef({
+      adapter: context.adapterId,
+      origin: context.origin,
+      type: "post",
+      id: rawId,
+      rawUrl: iri ?? url,
+    });
+  } finally {
+    depth?.release();
   }
-  const rawId = validatedRemoteId(response.id, response.uuid, response, context, operation);
-  if (rawId === undefined) {
-    throw activityPlugError(
-      "REMOTE_ERROR",
-      `HackersPub post relationship field is missing an ID: ${field}.`,
-      context,
-      operation,
-      response,
-    );
-  }
-  const iri = optionalString(response.iri, "iri", response, context, operation);
-  const url = optionalString(response.url, "url", response, context, operation);
-  return createEntityRef({
-    adapter: context.adapterId,
-    origin: context.origin,
-    type: "post",
-    id: rawId,
-    rawUrl: iri ?? url,
-  });
+}
+
+function beginMapping(context: AdapterOperationContext) {
+  context.budget?.charge("nodes");
+  return context.budget?.reserve("depth");
 }
 
 export function hackersPubGlobalId(

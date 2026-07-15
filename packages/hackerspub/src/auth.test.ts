@@ -1,4 +1,4 @@
-import { createActivityPlugClient } from "@activityplug/core";
+import { createActivityPlugClient, createRemoteAuthority } from "@activityplug/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createHackersPubAdapter } from "./index.js";
@@ -64,7 +64,7 @@ describe("HackersPub challenge auth strategies", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch,
+      remoteAuthority: createRemoteAuthority({ transport: fetch }),
     });
 
     const emailStart = await client.auth.emailChallenge.start({
@@ -134,18 +134,20 @@ describe("HackersPub challenge auth strategies", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async () =>
-        Response.json({
-          data: {
-            getPasskeyAuthenticationOptions: {
-              challenge: "challenge",
-              allowCredentials: [
-                { id: "credential-id", type: "public-key", transports: ["serial"] },
-              ],
-              secret: "must-not-leak",
+      remoteAuthority: createRemoteAuthority({
+        transport: async () =>
+          Response.json({
+            data: {
+              getPasskeyAuthenticationOptions: {
+                challenge: "challenge",
+                allowCredentials: [
+                  { id: "credential-id", type: "public-key", transports: ["serial"] },
+                ],
+                secret: "must-not-leak",
+              },
             },
-          },
-        }),
+          }),
+      }),
     });
 
     await expect(client.auth.passkey.start({})).rejects.toMatchObject({
@@ -163,16 +165,18 @@ describe("HackersPub challenge auth strategies", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async () =>
-        Response.json({
-          data: {
-            loginByEmail: {
-              __typename: "LoginChallenge",
-              token: "00000000-0000-4000-8000-000000000100",
-              created: "0",
+      remoteAuthority: createRemoteAuthority({
+        transport: async () =>
+          Response.json({
+            data: {
+              loginByEmail: {
+                __typename: "LoginChallenge",
+                token: "00000000-0000-4000-8000-000000000100",
+                created: "0",
+              },
             },
-          },
-        }),
+          }),
+      }),
     });
 
     await expect(
@@ -190,15 +194,17 @@ describe("HackersPub challenge auth strategies", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async (input, init) => {
-        const body = (await new Request(input, init).json()) as { readonly query: string };
-        if (body.query.includes("loginByEmail")) {
-          return Response.json({
-            data: { loginByEmail: { __typename: "AccountNotFoundError", query: "hidden" } },
-          });
-        }
-        return Response.json({ data: { loginByPasskey: null } });
-      },
+      remoteAuthority: createRemoteAuthority({
+        transport: async (input, init) => {
+          const body = (await new Request(input, init).json()) as { readonly query: string };
+          if (body.query.includes("loginByEmail")) {
+            return Response.json({
+              data: { loginByEmail: { __typename: "AccountNotFoundError", query: "hidden" } },
+            });
+          }
+          return Response.json({ data: { loginByPasskey: null } });
+        },
+      }),
     });
 
     await expect(

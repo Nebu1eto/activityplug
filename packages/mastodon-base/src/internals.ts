@@ -3,6 +3,7 @@ import {
   createEntityRef,
   decodePageCursor,
   encodePageCursor,
+  unsupportedOperation,
   type Account,
   type AdapterOperationContext,
   type AuthAdapterContext,
@@ -279,18 +280,65 @@ export async function revokeToken(
   context: AuthAdapterContext,
   options: MastodonBaseAdapterOptions,
 ): Promise<void> {
-  await requestVoid(
-    clientFor(context, options)
-      .post("oauth/revoke", {
-        body: tokenRequestBody({
-          token: input.session.tokenSet.accessToken,
-          token_type_hint: input.tokenTypeHint,
-        }),
-      })
-      .then(() => undefined),
-    "auth.oauth.revoke",
-    context,
-  );
+  const credentials = await resolveOAuthRevocationCredentials(input.session, context);
+  try {
+    await requestVoid(
+      clientFor(context, options)
+        .post("oauth/revoke", {
+          body: tokenRequestBody({
+            client_id: credentials.clientId,
+            client_secret: credentials.clientSecret,
+            token: input.session.tokenSet.accessToken,
+          }),
+        })
+        .then(() => undefined),
+      "auth.oauth.revoke",
+      context,
+    );
+  } catch (error) {
+    // ky's HTTPError retains its Request, including the form body. Recreate the
+    // public error without that cause so client credentials cannot escape.
+    if (error instanceof ActivityPlugError) {
+      throw new ActivityPlugError(error.code, error.message, {
+        adapter: error.context.adapter,
+        origin: error.context.origin,
+        operation: error.context.operation,
+        ...(error.context.capability === undefined ? {} : { capability: error.context.capability }),
+      });
+    }
+    throw error;
+  }
+}
+
+async function resolveOAuthRevocationCredentials(
+  session: StoredAuthSession,
+  context: AuthAdapterContext,
+): Promise<{ readonly clientId: string; readonly clientSecret: string }> {
+  const oauthClient = session.metadata?.oauthClient;
+  if (!isRecord(oauthClient) || context.credentialLeases === undefined) {
+    throw unsupportedOperation("auth.oauth.revoke", errorContext(context, "auth.oauth.revoke"));
+  }
+  const clientId = oauthClient["clientId"];
+  const reference = oauthClient["clientSecret"];
+  if (
+    typeof clientId !== "string" ||
+    clientId.length === 0 ||
+    !isRecord(reference) ||
+    typeof reference["id"] !== "string" ||
+    typeof reference["owner"] !== "string" ||
+    typeof reference["version"] !== "number"
+  ) {
+    throw unsupportedOperation("auth.oauth.revoke", errorContext(context, "auth.oauth.revoke"));
+  }
+  const clientSecret = await context.credentialLeases.resolve({
+    id: reference["id"],
+    owner: reference["owner"],
+    version: reference["version"],
+  });
+  if (clientSecret === null) {
+    throw unsupportedOperation("auth.oauth.revoke", errorContext(context, "auth.oauth.revoke"));
+  }
+  return { clientId, clientSecret };
 }
 
 export async function verifyCredentials(

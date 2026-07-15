@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { ActivityPlugError } from "../errors/error.js";
+import { BudgetScope } from "../security/budget.js";
+import { setRequestBudget } from "../security/request-budget.js";
 import {
   createVettedFetch,
   resolveVettedRemoteTarget,
@@ -587,6 +589,125 @@ describe("createVettedFetch", () => {
       } as RequestInit),
     ).resolves.toMatchObject({ status: 200 });
     expect(dispatch).toHaveBeenCalledOnce();
+  });
+
+  it("shares the read budget across request and response bodies", async () => {
+    const encoder = new TextEncoder();
+    const requestBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("12"));
+        controller.enqueue(encoder.encode("34"));
+        controller.close();
+      },
+    });
+    let responseCancelled = false;
+    const responseBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("a"));
+        controller.enqueue(encoder.encode("b"));
+      },
+      cancel() {
+        responseCancelled = true;
+      },
+    });
+    const vettedFetch = createTestFetch({
+      maxBodyReads: 3,
+      replayBodyBytes: 4,
+      dispatchPinned: {
+        dispatch: async ({ request }) => {
+          await expect(request.text()).resolves.toBe("1234");
+          return new Response(responseBody);
+        },
+      },
+    });
+
+    const response = await vettedFetch("https://social.example/upload", {
+      method: "POST",
+      body: requestBody,
+      duplex: "half",
+    } as RequestInit);
+
+    await expect(response.text()).rejects.toMatchObject({
+      code: "REQUEST_LIMIT_EXCEEDED",
+      context: {
+        operation: "remote.response",
+        raw: { dimension: "reads", limit: 3 },
+      },
+    });
+    expect(responseCancelled).toBe(true);
+  });
+
+  it("charges one operation budget across request and response body chunks", async () => {
+    const encoder = new TextEncoder();
+    const budget = new BudgetScope({
+      operation: "post.create",
+      limits: { bytes: 100, reads: 3 },
+    });
+    const requestBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("12"));
+        controller.enqueue(encoder.encode("34"));
+        controller.close();
+      },
+    });
+    let responseCancelled = false;
+    const responseBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("a"));
+        controller.enqueue(encoder.encode("b"));
+      },
+      cancel() {
+        responseCancelled = true;
+      },
+    });
+    const vettedFetch = createTestFetch({
+      replayBodyBytes: 4,
+      dispatchPinned: {
+        dispatch: async ({ request }) => {
+          await request.text();
+          return new Response(responseBody);
+        },
+      },
+    });
+    const request = setRequestBudget(
+      new Request("https://social.example/upload", {
+        method: "POST",
+        body: requestBody,
+        duplex: "half",
+      } as RequestInit),
+      budget,
+    );
+
+    const response = await vettedFetch(request);
+    await expect(response.text()).rejects.toMatchObject({
+      code: "REQUEST_LIMIT_EXCEEDED",
+      dimension: "reads",
+    });
+    expect(budget.snapshot().used).toMatchObject({ bytes: 5, reads: 3 });
+    expect(responseCancelled).toBe(true);
+  });
+
+  it("retains one operation budget through body replay and redirects", async () => {
+    const budget = new BudgetScope({
+      operation: "post.create",
+      limits: { bytes: 16, reads: 4, requests: 2 },
+    });
+    budget.charge("requests");
+    const dispatch = vi
+      .fn<(input: PinnedDispatchInput) => Promise<Response>>()
+      .mockResolvedValueOnce(
+        new Response(null, { status: 307, headers: { location: "/complete" } }),
+      )
+      .mockResolvedValueOnce(new Response("ok"));
+    const request = setRequestBudget(
+      new Request("https://social.example/upload", { method: "POST", body: "data" }),
+      budget,
+    );
+    const response = await createTestFetch({ dispatchPinned: { dispatch } })(request);
+
+    await expect(response.text()).resolves.toBe("ok");
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(budget.snapshot().used).toMatchObject({ bytes: 6, reads: 2, requests: 2 });
   });
 
   it("preserves the typed response-limit error when stream cancellation fails", async () => {

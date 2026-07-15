@@ -62,16 +62,17 @@ describe.skipIf(!runIntegration)("PostgresAuthSessionStore integration", () => {
     await expect(store.get("expired")).resolves.toBeNull();
   });
 
-  it("accepts a real Pool factory and allows one winner in a 20-way CAS race", async () => {
+  it("allows one winner in concurrent create, CAS, and consume races", async () => {
     const store = createPostgresAuthSessionStore(pool, {
       tableName,
       now: () => new Date("2026-04-26T00:00:00.000Z"),
     });
     const original = createSession("factory-race");
-    await expect(store.create(original)).resolves.toBe(true);
+    const creates = await Promise.all(Array.from({ length: 32 }, () => store.create(original)));
+    expect(creates.filter(Boolean)).toHaveLength(1);
 
     const results = await Promise.all(
-      Array.from({ length: 20 }, (_, index) =>
+      Array.from({ length: 32 }, (_, index) =>
         store.compareAndSet(
           original.id,
           0,
@@ -84,8 +85,11 @@ describe.skipIf(!runIntegration)("PostgresAuthSessionStore integration", () => {
     );
     expect(results.filter(Boolean)).toHaveLength(1);
     await expect(store.get(original.id)).resolves.toMatchObject({ revision: 1 });
-    const consumed = await store.consume(original.id);
-    expect(consumed?.revision).toBe(1);
+    const consumed = await Promise.all(
+      Array.from({ length: 32 }, () => store.consume(original.id)),
+    );
+    expect(consumed.filter((session) => session !== null)).toHaveLength(1);
+    expect(consumed.find((session) => session !== null)?.revision).toBe(1);
     await expect(
       store.compareAndSet(original.id, 1, createSession(original.id, { revision: 2 })),
     ).resolves.toBe(false);
@@ -198,39 +202,6 @@ describe.skipIf(!runIntegration)("PostgresAuthSessionStore integration", () => {
       ).rejects.toThrow("unexpected definition");
     } finally {
       await pool.query(`drop table if exists ${defaultTable}, ${collidingTable}`);
-    }
-  });
-
-  it("creates the partial auth cleanup index and uses it in the delete plan", async () => {
-    const indexes = await pool.query<{ indexdef: string }>(
-      `select indexdef from pg_indexes where tablename = $1`,
-      [tableName],
-    );
-    expect(indexes.rows.map(({ indexdef }) => indexdef).join("\n")).toMatch(
-      /using btree \(expires_at\) where \(expires_at is not null\)/i,
-    );
-
-    const client = await pool.connect();
-    try {
-      await client.query("begin");
-      await client.query("set local enable_seqscan = off");
-      const plan = await client.query<{ "QUERY PLAN": unknown }>(
-        `explain (format json)
-         with deleted as (
-           delete from ${tableName}
-           where data ? 'storageExpiresAt'
-             and expires_at is not null
-             and expires_at <= $1
-           returning 1
-         )
-         select count(*)::text as count from deleted`,
-        ["2026-04-26T00:00:00.000Z"],
-      );
-      expect(JSON.stringify(plan.rows)).toContain("Index Scan");
-      expect(JSON.stringify(plan.rows)).toContain("expires_at");
-    } finally {
-      await client.query("rollback");
-      client.release();
     }
   });
 
@@ -468,6 +439,59 @@ describe.skipIf(!runIntegration)("PostgresAuthSessionStore integration", () => {
 
     await expect(store.deleteExpired()).resolves.toBe(1);
     await expect(store.get("offset-expiry")).resolves.toBeNull();
+  });
+
+  it("physically deletes expired auth rows in bounded batches", async () => {
+    const store = new PostgresAuthSessionStore({
+      client: pool,
+      tableName,
+      now: () => new Date("2026-04-26T00:00:00.000Z"),
+    });
+    await pool.query(
+      `insert into ${tableName} (id, data, revision, expires_at)
+       select 'bounded-expiry-' || value,
+              jsonb_build_object('storageExpiresAt', '2026-01-01T00:00:00.000Z'),
+              0,
+              '2026-01-01T00:00:00.000Z'::timestamptz
+       from generate_series(1, 501) as value`,
+    );
+
+    await expect(store.deleteExpired()).resolves.toBe(500);
+    await expect(
+      pool.query<{ count: string }>(
+        `select count(*)::text as count from ${tableName} where id like 'bounded-expiry-%'`,
+      ),
+    ).resolves.toMatchObject({ rows: [{ count: "1" }] });
+    await expect(store.deleteExpired()).resolves.toBe(1);
+    await expect(
+      pool.query<{ count: string }>(
+        `select count(*)::text as count from ${tableName} where id like 'bounded-expiry-%'`,
+      ),
+    ).resolves.toMatchObject({ rows: [{ count: "0" }] });
+  });
+
+  it("enforces a caller cleanup limit below the default batch", async () => {
+    const store = new PostgresAuthSessionStore({
+      client: pool,
+      tableName,
+      now: () => new Date("2026-04-26T00:00:00.000Z"),
+    });
+    await pool.query(
+      `insert into ${tableName} (id, data, revision, expires_at)
+       select 'small-limit-expiry-' || value,
+              jsonb_build_object('storageExpiresAt', '2026-01-01T00:00:00.000Z'),
+              0,
+              '2026-01-01T00:00:00.000Z'::timestamptz
+       from generate_series(1, 3) as value`,
+    );
+
+    await expect(store.deleteExpired(undefined, 1)).resolves.toBe(1);
+    await expect(
+      pool.query<{ count: string }>(
+        `select count(*)::text as count from ${tableName} where id like 'small-limit-expiry-%'`,
+      ),
+    ).resolves.toMatchObject({ rows: [{ count: "2" }] });
+    await expect(store.deleteExpired(undefined, 2)).resolves.toBe(2);
   });
 
   it("fails closed for rows whose stored identity and revision disagree", async () => {

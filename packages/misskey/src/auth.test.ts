@@ -1,17 +1,27 @@
 import {
-  createActivityPlugClient,
+  createActivityPlugClient as createActivityPlugClientWithVersion,
   createCapabilitySet,
   createEntityRef,
+  createRemoteAuthority,
   decodePageCursor,
   encodePageCursor,
   InMemoryAuthSessionStore,
   MAX_STREAMING_QUEUED_BYTES,
   type AdapterOperationContext,
+  type ActivityPlugClientOptions,
   type AuthSession,
+  type WebSocketFactoryCallOptions,
 } from "@activityplug/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createMisskeyAdapter } from "./index.js";
+
+function createActivityPlugClient(options: ActivityPlugClientOptions) {
+  return createActivityPlugClientWithVersion({
+    detectedSoftware: { name: "misskey", version: "2026.6.0" },
+    ...options,
+  });
+}
 
 describe("Misskey auth adapter", () => {
   afterEach(() => {
@@ -61,38 +71,40 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch: mockFetch(async (request) => {
-        requests.push(request);
-        const url = new URL(request.url);
-        if (request.method === "POST" && url.pathname === "/oauth/token") {
-          expect(await request.text()).toBe(
-            "grant_type=authorization_code&client_id=https%3A%2F%2Fclient.example&code=code-1&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&code_verifier=verifier-1",
-          );
-          return jsonResponse({
-            access_token: "misskey-oauth-token",
-            token_type: "Bearer",
-            scope: "read:account write:notes",
-          });
-        }
-        if (request.method === "POST" && url.pathname === "/api/i") {
-          expect(request.headers.get("Authorization")).toBe("Bearer misskey-oauth-token");
-          expect(await request.json()).toEqual({});
-          return jsonResponse({
-            id: "9s4u",
-            username: "alice",
-            host: null,
-            name: "Alice",
-            url: "https://misskey.example/@alice",
-            avatarUrl: "https://misskey.example/avatar.webp",
-            bannerUrl: "https://misskey.example/banner.webp",
-            isBot: false,
-            isLocked: false,
-            followersCount: 12,
-            followingCount: 7,
-            notesCount: 42,
-          });
-        }
-        return jsonResponse({ error: "unexpected request" }, 404);
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          requests.push(request);
+          const url = new URL(request.url);
+          if (request.method === "POST" && url.pathname === "/oauth/token") {
+            expect(await request.text()).toBe(
+              "grant_type=authorization_code&client_id=https%3A%2F%2Fclient.example&code=code-1&redirect_uri=https%3A%2F%2Fclient.example%2Fcallback&code_verifier=verifier-1",
+            );
+            return jsonResponse({
+              access_token: "misskey-oauth-token",
+              token_type: "Bearer",
+              scope: "read:account write:notes",
+            });
+          }
+          if (request.method === "POST" && url.pathname === "/api/i") {
+            expect(request.headers.get("Authorization")).toBe("Bearer misskey-oauth-token");
+            expect(await request.json()).toEqual({});
+            return jsonResponse({
+              id: "9s4u",
+              username: "alice",
+              host: null,
+              name: "Alice",
+              url: "https://misskey.example/@alice",
+              avatarUrl: "https://misskey.example/avatar.webp",
+              bannerUrl: "https://misskey.example/banner.webp",
+              isBot: false,
+              isLocked: false,
+              followersCount: 12,
+              followingCount: 7,
+              notesCount: 42,
+            });
+          }
+          return jsonResponse({ error: "unexpected request" }, 404);
+        }),
       }),
     });
 
@@ -155,17 +167,19 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch: mockFetch(async (request) => {
-        expect(new URL(request.url).pathname).toBe("/api/i");
-        expect(request.headers.get("Authorization")).toBe("Bearer bot-token");
-        return jsonResponse({
-          id: "bot-1",
-          username: "buildbot",
-          host: null,
-          name: "Build Bot",
-          isBot: true,
-          isLocked: false,
-        });
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          expect(new URL(request.url).pathname).toBe("/api/i");
+          expect(request.headers.get("Authorization")).toBe("Bearer bot-token");
+          return jsonResponse({
+            id: "bot-1",
+            username: "buildbot",
+            host: null,
+            name: "Build Bot",
+            isBot: true,
+            isLocked: false,
+          });
+        }),
       }),
     });
 
@@ -191,8 +205,10 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch: mockFetch(async () => {
-        throw new Error("expired token must be rejected before a remote request");
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async () => {
+          throw new Error("expired token must be rejected before a remote request");
+        }),
       }),
     });
     const session = await client.auth.token.importToken({
@@ -236,60 +252,62 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch: mockFetch(async (request) => {
-        const url = new URL(request.url);
-        requests.push(`${request.method} ${url.pathname}`);
-        if (url.pathname === "/.well-known/nodeinfo") {
-          return jsonResponse({
-            links: [
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          const url = new URL(request.url);
+          requests.push(`${request.method} ${url.pathname}`);
+          if (url.pathname === "/.well-known/nodeinfo") {
+            return jsonResponse({
+              links: [
+                {
+                  rel: "http://nodeinfo.diaspora.software/ns/schema/2.0",
+                  href: "https://misskey.example/nodeinfo/2.0",
+                },
+                {
+                  rel: "http://nodeinfo.diaspora.software/ns/schema/2.1",
+                  href: "https://misskey.example/nodeinfo/2.1",
+                },
+              ],
+            });
+          }
+          if (url.pathname === "/nodeinfo/2.1") {
+            return jsonResponse({ software: { name: "misskey", version: "2025.10.0" } });
+          }
+          if (url.pathname === "/api/meta") {
+            expect(await request.json()).toEqual({ detail: false });
+            return jsonResponse({
+              name: "Misskey Example",
+              version: "2025.10.0",
+              langs: ["en"],
+              disableRegistration: true,
+            });
+          }
+          if (url.pathname === "/api/users/show") {
+            const body = (await request.json()) as {
+              readonly userId?: string;
+              readonly username?: string;
+            };
+            expect(body.userId ?? body.username).toBeTruthy();
+            return misskeyAccount();
+          }
+          if (url.pathname === "/api/users/notes") {
+            expect(await request.json()).toMatchObject({ userId: "9s4u", limit: 2 });
+            return jsonResponse([
               {
-                rel: "http://nodeinfo.diaspora.software/ns/schema/2.0",
-                href: "https://misskey.example/nodeinfo/2.0",
+                id: "note-1",
+                user: {
+                  id: "9s4u",
+                  username: "alice",
+                  host: null,
+                },
+                text: "<b>Hello</b>",
+                createdAt: "2026-04-27T00:00:00.000Z",
+                visibility: "home",
               },
-              {
-                rel: "http://nodeinfo.diaspora.software/ns/schema/2.1",
-                href: "https://misskey.example/nodeinfo/2.1",
-              },
-            ],
-          });
-        }
-        if (url.pathname === "/nodeinfo/2.1") {
-          return jsonResponse({ software: { name: "misskey", version: "2025.10.0" } });
-        }
-        if (url.pathname === "/api/meta") {
-          expect(await request.json()).toEqual({ detail: false });
-          return jsonResponse({
-            name: "Misskey Example",
-            version: "2025.10.0",
-            langs: ["en"],
-            disableRegistration: true,
-          });
-        }
-        if (url.pathname === "/api/users/show") {
-          const body = (await request.json()) as {
-            readonly userId?: string;
-            readonly username?: string;
-          };
-          expect(body.userId ?? body.username).toBeTruthy();
-          return misskeyAccount();
-        }
-        if (url.pathname === "/api/users/notes") {
-          expect(await request.json()).toMatchObject({ userId: "9s4u", limit: 2 });
-          return jsonResponse([
-            {
-              id: "note-1",
-              user: {
-                id: "9s4u",
-                username: "alice",
-                host: null,
-              },
-              text: "<b>Hello</b>",
-              createdAt: "2026-04-27T00:00:00.000Z",
-              visibility: "home",
-            },
-          ]);
-        }
-        return jsonResponse({ error: "unexpected request" }, 404);
+            ]);
+          }
+          return jsonResponse({ error: "unexpected request" }, 404);
+        }),
       }),
     });
     const accountRef = (await client.accounts.getByHandle({ handle: "@alice@misskey.example" }))
@@ -337,7 +355,7 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch,
+      remoteAuthority: createRemoteAuthority({ transport: fetch }),
     });
 
     await expect(client.instances.getProfile()).rejects.toMatchObject({
@@ -351,74 +369,76 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch: mockFetch(async (request) => {
-        const url = new URL(request.url);
-        requests.push(`${request.method} ${url.pathname}`);
-        if (url.pathname === "/api/notes/timeline") {
-          expect(request.headers.get("Authorization")).toBe("Bearer token-1");
-          return jsonResponse([misskeyNote()]);
-        }
-        if (url.pathname === "/api/notes/local-timeline") {
-          return jsonResponse([misskeyNote()]);
-        }
-        if (url.pathname === "/api/notes/search-by-tag") {
-          expect(await request.json()).toMatchObject({ tag: "activitypub" });
-          return jsonResponse([misskeyNote()]);
-        }
-        if (url.pathname === "/api/users/search-by-username-and-host") {
-          const body = (await request.clone().json()) as Record<string, unknown>;
-          expect(body["limit"]).toBe(body["username"] === "activitypub" ? 20 : 100);
-          return jsonResponse([misskeyAccountBody()]);
-        }
-        if (url.pathname === "/api/notes/search") {
-          const body = (await request.json()) as Record<string, unknown>;
-          expect(body["limit"]).toBe(body["query"] === "activitypub" ? 20 : 100);
-          return jsonResponse([misskeyNote()]);
-        }
-        if (url.pathname === "/api/hashtags/search") {
-          expect(await request.json()).toMatchObject({ query: "activitypub", limit: 20 });
-          return jsonResponse(["activitypub"]);
-        }
-        if (url.pathname === "/api/notes/create") {
-          expect(request.headers.get("Authorization")).toBe("Bearer token-1");
-          const body = (await request.json()) as Record<string, unknown>;
-          if (body["renoteId"] === "note-1") {
-            expect(body).not.toHaveProperty("text");
-          } else {
-            expect(body).toMatchObject({ text: "Hello" });
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          const url = new URL(request.url);
+          requests.push(`${request.method} ${url.pathname}`);
+          if (url.pathname === "/api/notes/timeline") {
+            expect(request.headers.get("Authorization")).toBe("Bearer token-1");
+            return jsonResponse([misskeyNote()]);
           }
-          return jsonResponse({ createdNote: misskeyNote("created-1") });
-        }
-        if (url.pathname === "/api/notes/favorites/create") {
-          return jsonResponse({});
-        }
-        if (url.pathname === "/api/notes/favorites/delete") {
-          return jsonResponse({});
-        }
-        if (url.pathname === "/api/notes/show") {
-          return jsonResponse(misskeyNote());
-        }
-        if (url.pathname === "/api/following/create") {
-          return jsonResponse({});
-        }
-        if (url.pathname === "/api/users/relation") {
-          return jsonResponse({
-            id: "9s4u",
-            isFollowing: true,
-            isFollowed: false,
-            hasPendingFollowRequestFromYou: false,
-            isBlocking: false,
-            isMuted: false,
-          });
-        }
-        if (url.pathname === "/api/drive/files/create") {
-          return jsonResponse({
-            id: "file-1",
-            type: "image/png",
-            url: "https://misskey.example/file.png",
-          });
-        }
-        return jsonResponse({ error: "unexpected request" }, 404);
+          if (url.pathname === "/api/notes/local-timeline") {
+            return jsonResponse([misskeyNote()]);
+          }
+          if (url.pathname === "/api/notes/search-by-tag") {
+            expect(await request.json()).toMatchObject({ tag: "activitypub" });
+            return jsonResponse([misskeyNote()]);
+          }
+          if (url.pathname === "/api/users/search-by-username-and-host") {
+            const body = (await request.clone().json()) as Record<string, unknown>;
+            expect(body["limit"]).toBe(body["username"] === "activitypub" ? 20 : 100);
+            return jsonResponse([misskeyAccountBody()]);
+          }
+          if (url.pathname === "/api/notes/search") {
+            const body = (await request.json()) as Record<string, unknown>;
+            expect(body["limit"]).toBe(body["query"] === "activitypub" ? 20 : 100);
+            return jsonResponse([misskeyNote()]);
+          }
+          if (url.pathname === "/api/hashtags/search") {
+            expect(await request.json()).toMatchObject({ query: "activitypub", limit: 20 });
+            return jsonResponse(["activitypub"]);
+          }
+          if (url.pathname === "/api/notes/create") {
+            expect(request.headers.get("Authorization")).toBe("Bearer token-1");
+            const body = (await request.json()) as Record<string, unknown>;
+            if (body["renoteId"] === "note-1") {
+              expect(body).not.toHaveProperty("text");
+            } else {
+              expect(body).toMatchObject({ text: "Hello" });
+            }
+            return jsonResponse({ createdNote: misskeyNote("created-1") });
+          }
+          if (url.pathname === "/api/notes/favorites/create") {
+            return jsonResponse({});
+          }
+          if (url.pathname === "/api/notes/favorites/delete") {
+            return jsonResponse({});
+          }
+          if (url.pathname === "/api/notes/show") {
+            return jsonResponse(misskeyNote());
+          }
+          if (url.pathname === "/api/following/create") {
+            return jsonResponse({});
+          }
+          if (url.pathname === "/api/users/relation") {
+            return jsonResponse({
+              id: "9s4u",
+              isFollowing: true,
+              isFollowed: false,
+              hasPendingFollowRequestFromYou: false,
+              isBlocking: false,
+              isMuted: false,
+            });
+          }
+          if (url.pathname === "/api/drive/files/create") {
+            return jsonResponse({
+              id: "file-1",
+              type: "image/png",
+              url: "https://misskey.example/file.png",
+            });
+          }
+          return jsonResponse({ error: "unexpected request" }, 404);
+        }),
       }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
@@ -492,7 +512,7 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter,
       origin: "https://misskey.example",
-      fetch,
+      remoteAuthority: createRemoteAuthority({ transport: fetch }),
     });
 
     for (const page of [{ after: "opaque-after" }, { before: "opaque-before" }]) {
@@ -522,31 +542,40 @@ describe("Misskey auth adapter", () => {
     const sockets: UrlUploadWebSocket[] = [];
     const globalWebSocket = rejectingGlobalWebSocket();
     vi.stubGlobal("WebSocket", globalWebSocket);
-    const webSocket = vi.fn((url: string) => {
-      const socket = new UrlUploadWebSocket(url);
-      sockets.push(socket);
-      return socket as unknown as WebSocket;
-    });
+    const webSocket = vi.fn(
+      (
+        url: string,
+        _protocols?: string | string[],
+        _signal?: AbortSignal,
+        _options?: WebSocketFactoryCallOptions,
+      ) => {
+        const socket = new UrlUploadWebSocket(url);
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    );
     const uploadBodies: Record<string, unknown>[] = [];
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter({ webSocket }),
       origin: "https://misskey.example",
-      fetch: mockFetch(async (request) => {
-        expect(request.url).toBe("https://misskey.example/api/drive/files/upload-from-url");
-        expect(request.method).toBe("POST");
-        expect(request.headers.get("Authorization")).toBe("Bearer token");
-        const body = (await request.json()) as Record<string, unknown> & {
-          readonly marker: string;
-        };
-        uploadBodies.push(body);
-        queueMicrotask(() =>
-          sockets.at(-1)?.finish(body.marker, {
-            id: `file-${uploadBodies.length}`,
-            type: "image/png",
-            url: `https://misskey.example/file-${uploadBodies.length}.png`,
-          }),
-        );
-        return new Response(null, { status: 204 });
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          expect(request.url).toBe("https://misskey.example/api/drive/files/upload-from-url");
+          expect(request.method).toBe("POST");
+          expect(request.headers.get("Authorization")).toBe("Bearer token");
+          const body = (await request.json()) as Record<string, unknown> & {
+            readonly marker: string;
+          };
+          uploadBodies.push(body);
+          queueMicrotask(() =>
+            sockets.at(-1)?.finish(body.marker, {
+              id: `file-${uploadBodies.length}`,
+              type: "image/png",
+              url: `https://misskey.example/file-${uploadBodies.length}.png`,
+            }),
+          );
+          return new Response(null, { status: 204 });
+        }),
       }),
     });
     const session = await client.auth.injectToken({ accessToken: "token" });
@@ -580,13 +609,16 @@ describe("Misskey auth adapter", () => {
     ]);
     expect(webSocket).toHaveBeenCalledTimes(2);
     expect(globalWebSocket).not.toHaveBeenCalled();
-    for (const [rawUrl] of webSocket.mock.calls) {
+    for (const [rawUrl, _protocols, _signal, callOptions] of webSocket.mock.calls) {
       const url = new URL(rawUrl);
       expect(url.origin).toBe("wss://misskey.example");
       expect(url.pathname).toBe("/streaming");
-      expect(url.searchParams.get("i")).toBe("token");
       expect(url.searchParams.get("_t")).toMatch(/^\d+$/u);
-      expect([...url.searchParams.keys()].toSorted()).toEqual(["_t", "i"]);
+      expect([...url.searchParams.keys()]).toEqual(["_t"]);
+      expect(callOptions).toEqual({
+        operation: "media.ingestUrl",
+        authorization: "Bearer token",
+      });
     }
     const connectFrame = JSON.stringify({
       type: "connect",
@@ -603,7 +635,7 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter({ webSocket }),
       origin: "https://misskey.example",
-      fetch: vi.fn<typeof globalThis.fetch>(),
+      remoteAuthority: createRemoteAuthority({ transport: vi.fn<typeof globalThis.fetch>() }),
     });
     const session = await client.auth.injectToken({ accessToken: "token" });
 
@@ -623,14 +655,17 @@ describe("Misskey auth adapter", () => {
 
   it("redacts credential-bearing URL-ingestion factory failures", async () => {
     let requestedUrl = "";
-    const webSocket = vi.fn(async (url: string) => {
+    let authorization: string | undefined;
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const webSocket = vi.fn(async (url: string, _protocols, _signal, options) => {
       requestedUrl = url;
+      authorization = options?.authorization;
       throw new Error(`Unable to connect to ${url}`);
     });
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter({ webSocket }),
       origin: "https://misskey.example",
-      fetch: vi.fn<typeof globalThis.fetch>(),
+      remoteAuthority: createRemoteAuthority({ transport: fetch }),
     });
     const session = await client.auth.injectToken({ accessToken: "viewer-secret" });
 
@@ -638,7 +673,10 @@ describe("Misskey auth adapter", () => {
       .ingestUrl({ session, url: "https://cdn.example/private.png" })
       .catch((cause: unknown) => cause);
 
-    expect(requestedUrl).toContain("i=viewer-secret");
+    const url = new URL(requestedUrl);
+    expect([...url.searchParams.keys()]).toEqual(["_t"]);
+    expect(requestedUrl).not.toContain("viewer-secret");
+    expect(authorization).toBe("Bearer viewer-secret");
     expect(error).toMatchObject({
       code: "NETWORK_ERROR",
       context: { operation: "media.ingestUrl", origin: "https://misskey.example" },
@@ -646,6 +684,7 @@ describe("Misskey auth adapter", () => {
     expect(String(error)).not.toContain("viewer-secret");
     expect(JSON.stringify(error)).not.toContain("viewer-secret");
     expect((error as Error).cause).toBeUndefined();
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("classifies the injected socket payload limit as a request limit", async () => {
@@ -654,7 +693,7 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter({ webSocket }),
       origin: "https://misskey.example",
-      fetch: vi.fn<typeof globalThis.fetch>(),
+      remoteAuthority: createRemoteAuthority({ transport: vi.fn<typeof globalThis.fetch>() }),
     });
     const session = await client.auth.injectToken({ accessToken: "token" });
 
@@ -679,7 +718,7 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter({ webSocket }),
       origin: "https://misskey.example",
-      fetch,
+      remoteAuthority: createRemoteAuthority({ transport: fetch }),
     });
     const session = await client.auth.injectToken({ accessToken: "token" });
 
@@ -710,10 +749,13 @@ describe("Misskey auth adapter", () => {
         _url: string,
         _protocols?: string | string[],
         signal?: AbortSignal,
-        callOptions?: { readonly operation: string },
+        callOptions?: WebSocketFactoryCallOptions,
       ) => {
         expect(signal).toBe(controller.signal);
-        expect(callOptions).toEqual({ operation: "media.ingestUrl" });
+        expect(callOptions).toEqual({
+          operation: "media.ingestUrl",
+          authorization: "Bearer token",
+        });
         return socket as unknown as WebSocket;
       },
     );
@@ -721,13 +763,15 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter({ webSocket }),
       origin: "https://misskey.example",
-      fetch: mockFetch(async (request) => {
-        uploadRequest = request;
-        return new Promise<Response>((_resolve, reject) => {
-          const rejectAbort = () => reject(request.signal.reason);
-          request.signal.addEventListener("abort", rejectAbort, { once: true });
-          if (request.signal.aborted) rejectAbort();
-        });
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          uploadRequest = request;
+          return new Promise<Response>((_resolve, reject) => {
+            const rejectAbort = () => reject(request.signal.reason);
+            request.signal.addEventListener("abort", rejectAbort, { once: true });
+            if (request.signal.aborted) rejectAbort();
+          });
+        }),
       }),
     });
     const session = await client.auth.injectToken({ accessToken: "token" });
@@ -754,7 +798,7 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter({ webSocket }),
       origin: "http://misskey.example",
-      fetch,
+      remoteAuthority: createRemoteAuthority({ transport: fetch }),
     });
     const session = await client.auth.injectToken({ accessToken: "token" });
 
@@ -775,7 +819,7 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter({ webSocket }),
       origin: "https://misskey.example",
-      fetch: vi.fn<typeof globalThis.fetch>(),
+      remoteAuthority: createRemoteAuthority({ transport: vi.fn<typeof globalThis.fetch>() }),
     });
     const session = await client.auth.injectToken({ accessToken: "token" });
 
@@ -800,7 +844,7 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter({ webSocket }),
       origin: "https://misskey.example",
-      fetch: vi.fn<typeof globalThis.fetch>(),
+      remoteAuthority: createRemoteAuthority({ transport: vi.fn<typeof globalThis.fetch>() }),
     });
     const session = await client.auth.injectToken({ accessToken: "token" });
 
@@ -846,7 +890,7 @@ describe("Misskey auth adapter", () => {
             throw new Error("legacy session must be rejected before socket construction");
           },
         }),
-        fetch,
+        remoteAuthority: createRemoteAuthority({ transport: fetch }),
         origin: "https://misskey.example",
         sessionStore: sessions,
       });
@@ -894,7 +938,7 @@ describe("Misskey auth adapter", () => {
     vi.stubGlobal("WebSocket", globalWebSocket);
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter({ webSocket }),
-      fetch,
+      remoteAuthority: createRemoteAuthority({ transport: fetch }),
       origin: "https://misskey.example",
       sessionStore: sessions,
     });
@@ -922,10 +966,12 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch: mockFetch(async (request) => {
-        expect(new URL(request.url).pathname).toBe("/api/hashtags/search");
-        expect(await request.json()).toMatchObject({ query: "activitypub", limit: 20 });
-        return jsonResponse(["activitypub", "activityplug"]);
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          expect(new URL(request.url).pathname).toBe("/api/hashtags/search");
+          expect(await request.json()).toMatchObject({ query: "activitypub", limit: 20 });
+          return jsonResponse(["activitypub", "activityplug"]);
+        }),
       }),
     });
 
@@ -947,18 +993,20 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch: mockFetch(async (request) => {
-        expect(new URL(request.url).pathname).toBe("/api/drive/files/create");
-        const form = await request.formData();
-        for (const [key, value] of form) fields[key] = value;
-        return jsonResponse({
-          id: "file-1",
-          name: "x.txt",
-          type: "text/plain",
-          size: 1,
-          url: "https://misskey.example/files/x.txt",
-          isSensitive: true,
-        });
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          expect(new URL(request.url).pathname).toBe("/api/drive/files/create");
+          const form = await request.formData();
+          for (const [key, value] of form) fields[key] = value;
+          return jsonResponse({
+            id: "file-1",
+            name: "x.txt",
+            type: "text/plain",
+            size: 1,
+            url: "https://misskey.example/files/x.txt",
+            isSensitive: true,
+          });
+        }),
       }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
@@ -977,18 +1025,20 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch: mockFetch(async (request) => {
-        expect(new URL(request.url).pathname).toBe("/api/notes/create");
-        expect(await request.json()).toMatchObject({
-          text: "Reply with media",
-          visibility: "public",
-          cw: "Summary",
-          replyId: "reply-1",
-          renoteId: "quote-1",
-          fileIds: ["file-1"],
-          poll: { choices: ["Yes", "No"], multiple: true, expiredAfter: 3_600_000 },
-        });
-        return jsonResponse({ createdNote: misskeyNote("created-1") });
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          expect(new URL(request.url).pathname).toBe("/api/notes/create");
+          expect(await request.json()).toMatchObject({
+            text: "Reply with media",
+            visibility: "public",
+            cw: "Summary",
+            replyId: "reply-1",
+            renoteId: "quote-1",
+            fileIds: ["file-1"],
+            poll: { choices: ["Yes", "No"], multiple: true, expiredAfter: 3_600_000 },
+          });
+          return jsonResponse({ createdNote: misskeyNote("created-1") });
+        }),
       }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
@@ -1018,14 +1068,16 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch: mockFetch(async (request) => {
-        expect(new URL(request.url).pathname).toBe("/api/notes/show");
-        return jsonResponse({
-          ...misskeyNote("quote-note"),
-          text: "Quoted locally",
-          renoteId: "quoted-note",
-          renote: misskeyNote("quoted-note"),
-        });
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          expect(new URL(request.url).pathname).toBe("/api/notes/show");
+          return jsonResponse({
+            ...misskeyNote("quote-note"),
+            text: "Quoted locally",
+            renoteId: "quoted-note",
+            renote: misskeyNote("quoted-note"),
+          });
+        }),
       }),
     });
 
@@ -1039,15 +1091,17 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch: mockFetch(async (request) => {
-        expect(new URL(request.url).pathname).toBe("/api/notes/show");
-        return jsonResponse({
-          ...misskeyNote("reply-quote"),
-          text: null,
-          replyId: "reply-target",
-          renoteId: "quoted-note",
-          renote: misskeyNote("quoted-note"),
-        });
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          expect(new URL(request.url).pathname).toBe("/api/notes/show");
+          return jsonResponse({
+            ...misskeyNote("reply-quote"),
+            text: null,
+            replyId: "reply-target",
+            renoteId: "quoted-note",
+            renote: misskeyNote("quoted-note"),
+          });
+        }),
       }),
     });
 
@@ -1081,7 +1135,7 @@ describe("Misskey auth adapter", () => {
         },
       },
       origin: "https://misskey.example",
-      fetch,
+      remoteAuthority: createRemoteAuthority({ transport: fetch }),
     });
     const session = await client.auth.token.importToken({ accessToken: "viewer-token" });
 
@@ -1094,11 +1148,13 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch: mockFetch(async (request) => {
-        expect(new URL(request.url).pathname).toBe("/api/notes/show");
-        expect(request.headers.get("Authorization")).toBeNull();
-        expect(await request.json()).toEqual({ noteId: "anonymous-note" });
-        return jsonResponse(misskeyNote("anonymous-note"));
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          expect(new URL(request.url).pathname).toBe("/api/notes/show");
+          expect(request.headers.get("Authorization")).toBeNull();
+          expect(await request.json()).toEqual({ noteId: "anonymous-note" });
+          return jsonResponse(misskeyNote("anonymous-note"));
+        }),
       }),
     });
 
@@ -1140,7 +1196,7 @@ describe("Misskey auth adapter", () => {
       );
       const client = createActivityPlugClient({
         adapter: createMisskeyAdapter(),
-        fetch,
+        remoteAuthority: createRemoteAuthority({ transport: fetch }),
         origin: "https://misskey.example",
         sessionStore: sessions,
       });
@@ -1173,13 +1229,15 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch: mockFetch(async (request) => {
-        expect(new URL(request.url).pathname).toBe("/api/notes/search-by-tag");
-        expect(await request.json()).toMatchObject({
-          tag: "activitypub",
-          sinceId: "note-before",
-        });
-        return jsonResponse([misskeyNote("newer"), misskeyNote("older")]);
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          expect(new URL(request.url).pathname).toBe("/api/notes/search-by-tag");
+          expect(await request.json()).toMatchObject({
+            tag: "activitypub",
+            sinceId: "note-before",
+          });
+          return jsonResponse([misskeyNote("newer"), misskeyNote("older")]);
+        }),
       }),
     });
 
@@ -1234,17 +1292,19 @@ describe("Misskey auth adapter", () => {
       const client = createActivityPlugClient({
         adapter: createMisskeyAdapter(),
         origin: "https://misskey.example",
-        fetch: mockFetch(async (request) => {
-          const pathname = new URL(request.url).pathname;
-          if (pathname === "/api/mute/create") {
-            expect(await request.json()).toMatchObject({
-              userId: "9s4u",
-              expiresAt: Date.parse("2026-04-27T01:00:00.000Z"),
-            });
-            return jsonResponse({});
-          }
-          expect(pathname).toBe("/api/users/relation");
-          return jsonResponse({ id: "9s4u", isMuted: true });
+        remoteAuthority: createRemoteAuthority({
+          transport: mockFetch(async (request) => {
+            const pathname = new URL(request.url).pathname;
+            if (pathname === "/api/mute/create") {
+              expect(await request.json()).toMatchObject({
+                userId: "9s4u",
+                expiresAt: Date.parse("2026-04-27T01:00:00.000Z"),
+              });
+              return jsonResponse({});
+            }
+            expect(pathname).toBe("/api/users/relation");
+            return jsonResponse({ id: "9s4u", isMuted: true });
+          }),
         }),
       });
       const session = await client.auth.injectToken({ accessToken: "token-1" });
@@ -1264,20 +1324,22 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch: mockFetch(async (request) => {
-        const url = new URL(request.url);
-        expect(url.pathname).toBe("/api/i/notifications");
-        const body = await request.json();
-        requests.push(body);
-        return jsonResponse([
-          { id: "notification-1", createdAt: "2026-04-27T00:00:00.000Z", type: "reaction" },
-          {
-            id: "notification-2",
-            createdAt: "2026-04-27T00:00:01.000Z",
-            type: "reaction",
-            user: misskeyAccountBody(),
-          },
-        ]);
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          const url = new URL(request.url);
+          expect(url.pathname).toBe("/api/i/notifications");
+          const body = await request.json();
+          requests.push(body);
+          return jsonResponse([
+            { id: "notification-1", createdAt: "2026-04-27T00:00:00.000Z", type: "reaction" },
+            {
+              id: "notification-2",
+              createdAt: "2026-04-27T00:00:01.000Z",
+              type: "reaction",
+              user: misskeyAccountBody(),
+            },
+          ]);
+        }),
       }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
@@ -1318,7 +1380,9 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch: mockFetch(async () => jsonResponse({ error: "unexpected request" }, 500)),
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async () => jsonResponse({ error: "unexpected request" }, 500)),
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
 
@@ -1332,11 +1396,13 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch: mockFetch(async () =>
-        jsonResponse([
-          { id: "", createdAt: "2026-04-27T00:00:00.000Z", type: "reaction", user: null },
-        ]),
-      ),
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async () =>
+          jsonResponse([
+            { id: "", createdAt: "2026-04-27T00:00:00.000Z", type: "reaction", user: null },
+          ]),
+        ),
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
 
@@ -1350,16 +1416,18 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch: mockFetch(async () =>
-        jsonResponse([
-          {
-            id: "notification-1",
-            createdAt: "2026-04-31T00:00:00Z",
-            type: "reaction",
-            user: misskeyAccountBody(),
-          },
-        ]),
-      ),
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async () =>
+          jsonResponse([
+            {
+              id: "notification-1",
+              createdAt: "2026-04-31T00:00:00Z",
+              type: "reaction",
+              user: misskeyAccountBody(),
+            },
+          ]),
+        ),
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
 
@@ -1373,8 +1441,10 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch: mockFetch(async () => {
-        throw new Error("adapter should not be called");
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async () => {
+          throw new Error("adapter should not be called");
+        }),
       }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
@@ -1404,18 +1474,20 @@ describe("Misskey auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch: mockFetch(async (request) => {
-        const url = new URL(request.url);
-        if (url.pathname === "/api/notes/show") {
-          return jsonResponse({
-            ...misskeyNote("note-1"),
-            poll: { multiple: true, choices: [{ text: "Yes" }, { text: "No" }] },
-          });
-        }
-        if (url.pathname === "/api/notes/polls/vote") {
-          voteCalled = true;
-        }
-        return jsonResponse({});
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          const url = new URL(request.url);
+          if (url.pathname === "/api/notes/show") {
+            return jsonResponse({
+              ...misskeyNote("note-1"),
+              poll: { multiple: true, choices: [{ text: "Yes" }, { text: "No" }] },
+            });
+          }
+          if (url.pathname === "/api/notes/polls/vote") {
+            voteCalled = true;
+          }
+          return jsonResponse({});
+        }),
       }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });

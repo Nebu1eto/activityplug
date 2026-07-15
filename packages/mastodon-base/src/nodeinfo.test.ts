@@ -1,4 +1,4 @@
-import { capability, createActivityPlugClient } from "@activityplug/core";
+import { capability, createActivityPlugClient, createRemoteAuthority } from "@activityplug/core";
 import { describe, expect, it, vi } from "vitest";
 
 import { createMastodonBaseAdapter } from "./index.js";
@@ -51,7 +51,7 @@ describe("Mastodon NodeInfo discovery", () => {
         supportedSoftware: ["mastodon"],
       }),
       origin: "https://social.example",
-      fetch,
+      remoteAuthority: createRemoteAuthority({ transport: fetch }),
     });
 
     await expect(client.instances.detect()).rejects.toMatchObject({
@@ -106,7 +106,7 @@ describe("Mastodon NodeInfo discovery", () => {
     const client = createActivityPlugClient({
       adapter,
       origin: "https://social.example",
-      fetch,
+      remoteAuthority: createRemoteAuthority({ transport: fetch }),
     });
 
     await expect(client.instances.detect()).resolves.toMatchObject({
@@ -139,7 +139,9 @@ describe("Mastodon NodeInfo discovery", () => {
         webSocket: () => new EventTarget() as WebSocket,
       }),
       origin: "https://social.example",
-      fetch: discoveryFetch({ domain: "social.example", version: "4.1.0" }),
+      remoteAuthority: createRemoteAuthority({
+        transport: discoveryFetch({ domain: "social.example", version: "4.1.0" }),
+      }),
     });
 
     await expect(client.instances.detect()).resolves.toMatchObject({
@@ -168,10 +170,12 @@ describe("Mastodon NodeInfo discovery", () => {
         webSocket: () => new EventTarget() as WebSocket,
       }),
       origin: "https://social.example",
-      fetch: discoveryFetch({
-        domain: "social.example",
-        version: "4.1.0",
-        configuration: { urls: { streaming: "ftp://stream.social.example/socket" } },
+      remoteAuthority: createRemoteAuthority({
+        transport: discoveryFetch({
+          domain: "social.example",
+          version: "4.1.0",
+          configuration: { urls: { streaming: "ftp://stream.social.example/socket" } },
+        }),
       }),
     });
 

@@ -32,6 +32,15 @@ export interface PostgresCountRow {
 }
 
 export const maximumSafeRevision = Number.MAX_SAFE_INTEGER;
+export const postgresCleanupBatchSize = 500;
+
+export function resolvePostgresCleanupLimit(limit?: number): number {
+  const cleanupLimit = limit ?? postgresCleanupBatchSize;
+  if (!Number.isSafeInteger(cleanupLimit) || cleanupLimit <= 0) {
+    throw new TypeError("PostgreSQL cleanup limit must be a positive safe integer.");
+  }
+  return cleanupLimit;
+}
 
 const nonEmptyStringSchema = z.string().min(1);
 
@@ -309,16 +318,25 @@ export async function deleteExpiredRows(
   client: PostgresQueryClient,
   tableName: string,
   checkedAt: string,
+  limit: number,
 ): Promise<number> {
   const table = validateIdentifier(tableName, "PostgreSQL cleanup table name");
   const result = await client.query<PostgresCountRow>(
-    `with deleted as (
-       delete from ${table}
+    `with expired as (
+       select ctid
+       from ${table}
        where expires_at <= $1
+       order by expires_at, ctid
+       limit $2
+       for update skip locked
+     ), deleted as (
+       delete from ${table} as target
+       using expired
+       where target.ctid = expired.ctid
        returning 1
      )
      select count(*)::text as count from deleted`,
-    [checkedAt],
+    [checkedAt, limit],
   );
   return deletedRowCount(result);
 }

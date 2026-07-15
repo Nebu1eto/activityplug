@@ -1,13 +1,16 @@
 import { once } from "node:events";
+import { createServer } from "node:http";
 
 import {
   ActivityPlugError,
+  BudgetScope,
   capability,
   createCapabilitySet,
   createEntityRef,
   mergeCapabilityLayers,
   type ActivityPlugAdapter,
   type AdapterOperationContext,
+  type AuthAdapterContext,
   type OAuthCodeExchangeInput,
   type Post,
   type StoredAuthSession,
@@ -17,11 +20,175 @@ import { describe, expect, it, vi } from "vitest";
 
 import { InMemoryAuthSessionStore, type AuthSessionStore } from "../auth/session-store.js";
 import { InMemoryBrowserSessionStore, InMemoryStreamTicketStore } from "../storage/in-memory.js";
+import { SecurityStateLifecycle } from "./security-state-lifecycle.js";
 import { createActivityPlugServer } from "./server.js";
 
 const allowAllOriginPolicy = { assertAllowed: async () => undefined } as const;
 
 describe("createActivityPlugServer", () => {
+  it("runs traffic-free security-state cleanup and closes it idempotently", async () => {
+    const sessions = new InMemoryAuthSessionStore();
+    const deleteExpiredSessions = vi.spyOn(sessions, "deleteExpired");
+    const deleteExpiredSecrets = vi.fn(async () => 0);
+    const server = createActivityPlugServer({
+      adapters: [testAdapter],
+      originPolicy: allowAllOriginPolicy,
+      sessions,
+      oauthClientSecrets: {
+        put: async () => true,
+        take: async () => null,
+        get: async () => null,
+        delete: async () => false,
+        deleteExpired: deleteExpiredSecrets,
+      },
+    });
+
+    await server.ready;
+
+    expect(deleteExpiredSessions).toHaveBeenCalledOnce();
+    expect(deleteExpiredSecrets).toHaveBeenCalledOnce();
+    await Promise.all([server.close(), server.close()]);
+  });
+
+  it("keeps readiness closed when startup security-state cleanup fails", async () => {
+    const sessions = new InMemoryAuthSessionStore();
+    const error = new Error("session store unavailable");
+    vi.spyOn(sessions, "deleteExpired").mockRejectedValue(error);
+    const server = createActivityPlugServer({
+      adapters: [testAdapter],
+      originPolicy: allowAllOriginPolicy,
+      sessions,
+    });
+
+    await expect(server.ready).rejects.toBe(error);
+    await expect(server.app.request("/health")).resolves.toMatchObject({ status: 500 });
+    await server.close();
+  });
+
+  it("does not sweep stores that declare native expiry", async () => {
+    const sessions = Object.assign(new InMemoryAuthSessionStore(), {
+      expiryMode: "native" as const,
+    });
+    const deleteExpiredSessions = vi.spyOn(sessions, "deleteExpired");
+    const deleteExpiredSecrets = vi.fn(async () => 0);
+    const server = createActivityPlugServer({
+      adapters: [testAdapter],
+      originPolicy: allowAllOriginPolicy,
+      sessions,
+      oauthClientSecrets: {
+        expiryMode: "native",
+        put: async () => true,
+        take: async () => null,
+        get: async () => null,
+        delete: async () => false,
+        deleteExpired: deleteExpiredSecrets,
+      },
+    });
+
+    await server.ready;
+
+    expect(deleteExpiredSessions).not.toHaveBeenCalled();
+    expect(deleteExpiredSecrets).not.toHaveBeenCalled();
+    await server.close();
+  });
+
+  it("rejects start after the constructed server has closed", async () => {
+    const server = createActivityPlugServer({
+      adapters: [testAdapter],
+      originPolicy: allowAllOriginPolicy,
+    });
+
+    await server.close();
+
+    expect(() => server.start({ hostname: "127.0.0.1", port: 0 })).toThrow(
+      "ActivityPlug server is closing or closed.",
+    );
+  });
+
+  it("rejects start while close is still draining", async () => {
+    const sessions = new InMemoryAuthSessionStore();
+    let finishCleanup: (() => void) | undefined;
+    vi.spyOn(sessions, "deleteExpired").mockImplementation(
+      () =>
+        new Promise<number>((resolve) => {
+          finishCleanup = () => resolve(0);
+        }),
+    );
+    const server = createActivityPlugServer({
+      adapters: [testAdapter],
+      originPolicy: allowAllOriginPolicy,
+      sessions,
+    });
+    await vi.waitFor(() => expect(finishCleanup).toBeTypeOf("function"));
+
+    const closing = server.close();
+
+    expect(() => server.start({ hostname: "127.0.0.1", port: 0 })).toThrow(
+      "ActivityPlug server is closing or closed.",
+    );
+    finishCleanup?.();
+    await closing;
+  });
+
+  it("cancels an immediately closing listener and releases its port", async () => {
+    const port = await reserveLocalPort();
+    const server = createActivityPlugServer({
+      adapters: [testAdapter],
+      originPolicy: allowAllOriginPolicy,
+    });
+
+    server.start({ hostname: "127.0.0.1", port });
+    await server.close();
+
+    const replacement = createServer();
+    try {
+      replacement.listen(port, "127.0.0.1");
+      await once(replacement, "listening");
+      expect(replacement.listening).toBe(true);
+    } finally {
+      await closeTestServer(replacement);
+    }
+  });
+
+  it("releases browser allocations without closing a shared lifecycle", async () => {
+    const telemetry = vi.fn();
+    const budget = new BudgetScope({
+      operation: "browser.session.admit",
+      limits: { activeAllocations: 1 },
+      telemetry,
+    });
+    const lifecycle = new SecurityStateLifecycle([]);
+    const closeLifecycle = vi.spyOn(lifecycle, "close");
+    const server = createActivityPlugServer({
+      adapters: [testAdapter],
+      originPolicy: allowAllOriginPolicy,
+      securityStateLifecycle: lifecycle,
+      createBudgetScope: () => budget,
+      browser: {
+        publicOrigin: "https://client.test",
+        cookieSigningKey: new Uint8Array(32).fill(9),
+        anonymousSessionMode: "stored",
+        browserSessions: new InMemoryBrowserSessionStore(),
+        streamTickets: new InMemoryStreamTicketStore(),
+        clientIp: () => "198.51.100.10",
+      },
+    });
+
+    await expect(
+      server.app.request("https://client.test/v1/browser/session"),
+    ).resolves.toMatchObject({ status: 200 });
+    expect(budget.snapshot().used.activeAllocations).toBe(1);
+
+    await server.close();
+
+    expect(budget.snapshot().used.activeAllocations).toBe(0);
+    expect(telemetry).toHaveBeenCalledWith(
+      expect.objectContaining({ dimension: "activeAllocations", result: "released" }),
+    );
+    expect(closeLifecycle).not.toHaveBeenCalled();
+    await lifecycle.close();
+  });
+
   it("preserves synchronous health checks when no readiness probe is configured", () => {
     const server = createActivityPlugServer({
       adapters: [testAdapter],
@@ -268,8 +435,9 @@ describe("createActivityPlugServer", () => {
     });
   });
 
-  it("injects one server-owned vetted fetch into detection and selected clients", async () => {
+  it("injects server-owned operation-scoped fetches into selected clients", async () => {
     const seenFetches: (typeof fetch)[] = [];
+    const seenOperations: (string | undefined)[] = [];
     const adapter: ActivityPlugAdapter = {
       ...instanceAdapter("mastodon", "mastodon"),
       metadata: {
@@ -284,10 +452,12 @@ describe("createActivityPlugServer", () => {
             kind: "token",
             importToken: async (input, context) => {
               seenFetches.push(context.fetch);
+              seenOperations.push(context.operation);
               return { accessToken: input.accessToken, scopes: input.scopes };
             },
             verifySession: async (_session, context) => {
               seenFetches.push(context.fetch);
+              seenOperations.push(context.operation);
               return {
                 ref: createEntityRef({
                   adapter: "mastodon",
@@ -309,6 +479,7 @@ describe("createActivityPlugServer", () => {
       instances: {
         detect: async (_input, context) => {
           seenFetches.push(context.fetch);
+          seenOperations.push(context.operation);
           return {
             ref: createEntityRef({
               adapter: context.adapterId,
@@ -324,6 +495,7 @@ describe("createActivityPlugServer", () => {
         },
         getProfile: async (_input, context) => {
           seenFetches.push(context.fetch);
+          seenOperations.push(context.operation);
           return {
             ref: createEntityRef({
               adapter: context.adapterId,
@@ -357,7 +529,264 @@ describe("createActivityPlugServer", () => {
     expect(seenFetches.length).toBeGreaterThanOrEqual(4);
     expect(seenFetches[0]).toBeTypeOf("function");
     expect(seenFetches[0]).not.toBe(globalThis.fetch);
-    expect(seenFetches.every((operationFetch) => operationFetch === seenFetches[0])).toBe(true);
+    expect(seenFetches.every((operationFetch) => operationFetch !== globalThis.fetch)).toBe(true);
+    expect(seenOperations).toEqual(
+      expect.arrayContaining([
+        "instance.detect",
+        "instance.get",
+        "auth.tokenInjection",
+        "auth.verifyCredentials",
+      ]),
+    );
+  });
+
+  it.each(["requests", "nodes", "deadline"] as const)(
+    "propagates and enforces the %s operation budget through runtime clients",
+    async (dimension) => {
+      const scopes: BudgetScope[] = [];
+      const seen: BudgetScope[] = [];
+      let now = 0;
+      const adapter: ActivityPlugAdapter = {
+        ...testAdapter,
+        instances: {
+          detect: async (_input, context) => {
+            if (context.budget !== undefined) seen.push(context.budget);
+            if (dimension === "deadline") now = 2;
+            else context.budget?.charge(dimension);
+            return {
+              ref: createEntityRef({
+                adapter: context.adapterId,
+                origin: context.origin,
+                type: "instance",
+                id: "instance",
+              }),
+              software: { name: "mastodon" },
+              languages: [],
+              capabilities: context.capabilities,
+              raw: {},
+            };
+          },
+        },
+      };
+      const server = createActivityPlugServer({
+        adapters: [adapter],
+        originPolicy: allowAllOriginPolicy,
+        createBudgetScope: ({ operation }) => {
+          const budget = new BudgetScope({
+            operation: operation ?? "unknown",
+            limits: { [dimension]: 0 },
+            now: () => now,
+          });
+          scopes.push(budget);
+          return budget;
+        },
+      });
+
+      await expect(
+        server.service.instances.detect({
+          adapter: "mastodon",
+          origin: "https://example.test",
+        }),
+      ).rejects.toMatchObject({
+        code: "REQUEST_LIMIT_EXCEEDED",
+        dimension,
+        context: { operation: "instance.detect" },
+      });
+      expect(seen).toHaveLength(1);
+      expect(scopes).toContain(seen[0]);
+      await server.close();
+    },
+  );
+
+  it("charges cold instance detection to the following public operation budget", async () => {
+    const createBudgetedServer = (requestLimit: number) => {
+      const scopes: BudgetScope[] = [];
+      const detect = vi.fn(async (_input, context: AdapterOperationContext) => {
+        context.budget?.charge("requests");
+        return budgetTestProfile(context);
+      });
+      const getProfile = vi.fn(async (_input, context: AdapterOperationContext) => {
+        context.budget?.charge("requests");
+        return budgetTestProfile(context);
+      });
+      const server = createActivityPlugServer({
+        adapters: [{ ...testAdapter, instances: { detect, getProfile } }],
+        originPolicy: allowAllOriginPolicy,
+        createBudgetScope: ({ operation }) => {
+          const budget = new BudgetScope({
+            operation: operation ?? "unknown",
+            limits: { requests: requestLimit },
+          });
+          scopes.push(budget);
+          return budget;
+        },
+      });
+      return { server, scopes, detect, getProfile };
+    };
+
+    const exhausted = createBudgetedServer(1);
+    await expect(
+      exhausted.server.service.instances.get({
+        adapter: "mastodon",
+        origin: "https://cold-limit.example",
+      }),
+    ).rejects.toMatchObject({
+      code: "REQUEST_LIMIT_EXCEEDED",
+      dimension: "requests",
+      context: { operation: "instance.get" },
+    });
+    expect(exhausted.detect).toHaveBeenCalledOnce();
+    expect(exhausted.getProfile).toHaveBeenCalledOnce();
+    expect(exhausted.scopes.map((scope) => scope.operation)).toEqual([
+      "instance.detect",
+      "instance.get",
+    ]);
+    await exhausted.server.close();
+
+    const admitted = createBudgetedServer(2);
+    const request = {
+      adapter: "mastodon",
+      origin: "https://cold-admitted.example",
+    } as const;
+    await expect(admitted.server.service.instances.get(request)).resolves.toBeDefined();
+    expect(admitted.scopes[1]?.snapshot().used.requests).toBe(2);
+
+    await expect(admitted.server.service.instances.get(request)).resolves.toBeDefined();
+    expect(admitted.detect).toHaveBeenCalledOnce();
+    expect(admitted.scopes[2]?.snapshot().used.requests).toBe(1);
+    await admitted.server.close();
+  });
+
+  it("shares one admitted allocation budget with nested OAuth registration", async () => {
+    const base = oauthAdapter([]);
+    const strategy = base.auth?.strategies[0];
+    if (strategy?.kind !== "oauth") throw new Error("expected OAuth strategy");
+    const seen: BudgetScope[] = [];
+    const budget = new BudgetScope({
+      operation: "auth.registerClient",
+      limits: { activeAllocations: 1 },
+    });
+    const createBudgetScope = vi.fn(() => budget);
+    const registerClient = vi.fn(async (_input, context: AuthAdapterContext) => {
+      if (context.budget !== undefined) seen.push(context.budget);
+      expect(context.operation).toBe("auth.registerClient");
+      expect(context.budget?.snapshot().used.activeAllocations).toBe(1);
+      return {
+        clientId: "registered-client",
+        redirectUris: ["https://client.example/callback"],
+      };
+    });
+    const server = createActivityPlugServer({
+      adapters: [
+        {
+          ...base,
+          auth: { strategies: [{ ...strategy, registerClient }] },
+        },
+      ],
+      originPolicy: allowAllOriginPolicy,
+      createBudgetScope,
+    });
+
+    await expect(
+      server.service.auth.registerClient({
+        adapter: "mastodon",
+        origin: "https://example.test",
+        client: {
+          clientName: "ActivityPlug",
+          redirectUris: ["https://client.example/callback"],
+        },
+      }),
+    ).resolves.toMatchObject({ clientId: "registered-client" });
+
+    expect(createBudgetScope).toHaveBeenCalledOnce();
+    expect(createBudgetScope).toHaveBeenCalledWith({
+      adapterId: "mastodon",
+      origin: "https://example.test",
+      operation: "auth.registerClient",
+    });
+    expect(seen).toEqual([budget]);
+    expect(budget.snapshot().used.activeAllocations).toBe(0);
+    await server.close();
+  });
+
+  it("does not allocate before OAuth registration policy and limiter admission", async () => {
+    const createBudgetScope = vi.fn(
+      () =>
+        new BudgetScope({
+          operation: "auth.registerClient",
+          limits: { activeAllocations: 1 },
+        }),
+    );
+    const deniedByLimiter = createActivityPlugServer({
+      adapters: [oauthAdapter([])],
+      originPolicy: allowAllOriginPolicy,
+      authStartLimiter: {
+        take: async () => ({ allowed: false, retryAfterSeconds: 60 }),
+        reserve: async () => ({ allowed: false, reason: "capacity_exceeded" }),
+      },
+      createBudgetScope,
+    });
+
+    await expect(
+      deniedByLimiter.service.auth.registerClient({
+        adapter: "mastodon",
+        origin: "https://example.test",
+        client: { clientName: "ActivityPlug", redirectUris: [] },
+      }),
+    ).rejects.toMatchObject({ code: "RATE_LIMITED" });
+    expect(createBudgetScope).not.toHaveBeenCalled();
+    await deniedByLimiter.close();
+
+    const deniedByPolicy = createActivityPlugServer({
+      adapters: [oauthAdapter([])],
+      originPolicy: {
+        assertAllowed: async () => {
+          throw new ActivityPlugError("ORIGIN_NOT_ALLOWED", "Blocked origin.");
+        },
+      },
+      createBudgetScope,
+    });
+    await expect(
+      deniedByPolicy.service.auth.registerClient({
+        adapter: "mastodon",
+        origin: "https://blocked.example",
+        client: { clientName: "ActivityPlug", redirectUris: [] },
+      }),
+    ).rejects.toMatchObject({ code: "ORIGIN_NOT_ALLOWED" });
+    expect(createBudgetScope).not.toHaveBeenCalled();
+    await deniedByPolicy.close();
+  });
+
+  it("releases OAuth registration admission when the allocation budget is exhausted", async () => {
+    const release = vi.fn(async () => undefined);
+    const registerClient = vi.fn();
+    const base = oauthAdapter([]);
+    const strategy = base.auth?.strategies[0];
+    if (strategy?.kind !== "oauth") throw new Error("expected OAuth strategy");
+    const server = createActivityPlugServer({
+      adapters: [{ ...base, auth: { strategies: [{ ...strategy, registerClient }] } }],
+      originPolicy: allowAllOriginPolicy,
+      authStartLimiter: {
+        take: async () => ({ allowed: true }),
+        reserve: async () => ({ allowed: true, release }),
+      },
+      createBudgetScope: () =>
+        new BudgetScope({
+          operation: "auth.registerClient",
+          limits: { activeAllocations: 0 },
+        }),
+    });
+
+    await expect(
+      server.service.auth.registerClient({
+        adapter: "mastodon",
+        origin: "https://example.test",
+        client: { clientName: "ActivityPlug", redirectUris: [] },
+      }),
+    ).rejects.toMatchObject({ code: "REQUEST_LIMIT_EXCEEDED" });
+    expect(registerClient).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledOnce();
+    await server.close();
   });
 
   it("propagates constructed-server request aborts into the vetted adapter fetch", async () => {
@@ -940,10 +1369,12 @@ describe("createActivityPlugServer", () => {
     const sessions = new InMemoryAuthSessionStore();
     const put = vi.fn(async () => false);
     const take = vi.fn(async () => null);
+    const get = vi.fn(async () => null);
+    const deleteSecret = vi.fn(async () => false);
     const server = createActivityPlugServer({
       adapters: [oauthAdapter([])],
       sessions,
-      oauthClientSecrets: { put, take },
+      oauthClientSecrets: { put, take, get, delete: deleteSecret },
       originPolicy: allowAllOriginPolicy,
     });
 
@@ -1151,8 +1582,24 @@ describe("createActivityPlugServer", () => {
   it("consumes OAuth callback state once and keeps client secrets out of session metadata", async () => {
     const sessions = new InMemoryAuthSessionStore();
     const exchanges: OAuthCodeExchangeInput[] = [];
+    const revokeSession = vi.fn(
+      async (input: { readonly session: StoredAuthSession }, context: AuthAdapterContext) => {
+        const oauthClient = input.session.metadata?.oauthClient as {
+          readonly clientId: string;
+          readonly clientSecret: {
+            readonly id: string;
+            readonly owner: string;
+            readonly version: number;
+          };
+        };
+        expect(oauthClient.clientId).toBe("registered-client");
+        await expect(context.credentialLeases?.resolve(oauthClient.clientSecret)).resolves.toBe(
+          "registered-secret",
+        );
+      },
+    );
     const server = createActivityPlugServer({
-      adapters: [oauthAdapter(exchanges)],
+      adapters: [oauthAdapter(exchanges, "mastodon", revokeSession)],
       sessions,
       originPolicy: allowAllOriginPolicy,
     });
@@ -1178,7 +1625,7 @@ describe("createActivityPlugServer", () => {
     const storedClient = storedState?.metadata?.client as { readonly clientSecret?: string };
     expect(storedClient.clientSecret).toBe(undefined);
 
-    await server.service.auth.exchange({
+    const exchanged = await server.service.auth.exchange({
       adapter: "mastodon",
       origin: "https://example.test",
       client: started.client,
@@ -1186,6 +1633,17 @@ describe("createActivityPlugServer", () => {
       code: "code-secret",
       state: "state-secret",
     });
+    const activeSession = await sessions.get(exchanged.id);
+    expect(activeSession?.metadata).toMatchObject({
+      oauthClient: {
+        clientId: "registered-client",
+        clientSecret: { id: expect.any(String), owner: exchanged.id, version: 0 },
+      },
+    });
+    expect(JSON.stringify(activeSession)).not.toContain("registered-secret");
+    await server.service.auth.revokeSession({ sessionId: exchanged.id });
+    expect(revokeSession).toHaveBeenCalledOnce();
+    await expect(sessions.get(exchanged.id)).resolves.toBeNull();
     await expect(
       server.service.auth.exchange({
         adapter: "mastodon",
@@ -1842,6 +2300,21 @@ function testRuntimePost(context: AdapterOperationContext): Post {
   };
 }
 
+function budgetTestProfile(context: AdapterOperationContext) {
+  return {
+    ref: createEntityRef({
+      adapter: context.adapterId,
+      origin: context.origin,
+      type: "instance" as const,
+      id: "instance",
+    }),
+    software: { name: "mastodon" },
+    languages: [],
+    capabilities: context.capabilities,
+    raw: {},
+  };
+}
+
 const testAdapter: ActivityPlugAdapter = {
   metadata: {
     id: "mastodon",
@@ -1885,6 +2358,10 @@ const testAdapter: ActivityPlugAdapter = {
 function oauthAdapter(
   exchanges: OAuthCodeExchangeInput[],
   adapterId: "mastodon" | "misskey" = "mastodon",
+  revokeSession?: (
+    input: { readonly session: StoredAuthSession },
+    context: AuthAdapterContext,
+  ) => Promise<void>,
 ): ActivityPlugAdapter {
   return {
     metadata: {
@@ -1894,6 +2371,7 @@ function oauthAdapter(
       staticCapabilities: createCapabilitySet({
         "auth.oauth.authorizationCode": capability("supported"),
         "auth.oauth.clientCredentials": capability("supported"),
+        ...(revokeSession === undefined ? {} : { "auth.oauth.revoke": capability("supported") }),
       }),
     },
     auth: {
@@ -1916,6 +2394,7 @@ function oauthAdapter(
               scopes: ["read"],
             };
           },
+          ...(revokeSession === undefined ? {} : { revokeSession }),
           verifySession: async () => ({
             ref: createEntityRef({
               adapter: adapterId,
@@ -2060,6 +2539,8 @@ function durableSecretStore() {
       values.delete(id);
       return value;
     },
+    get: async (id: string) => values.get(id) ?? null,
+    delete: async (id: string) => values.delete(id),
   };
 }
 
@@ -2075,6 +2556,8 @@ function trackingSecretStore() {
         values.delete(id);
         return value;
       },
+      get: async (id: string) => values.get(id) ?? null,
+      delete: async (id: string) => values.delete(id),
     },
     values,
   };
@@ -2136,6 +2619,24 @@ function authRequest(sessionId: string): RequestInit {
     method: "POST",
     headers: { authorization: `Bearer ${sessionId}` },
   };
+}
+
+async function reserveLocalPort(): Promise<number> {
+  const probe = createServer();
+  probe.listen(0, "127.0.0.1");
+  await once(probe, "listening");
+  const address = probe.address();
+  if (address === null || typeof address === "string") {
+    throw new Error("Test server did not bind a TCP port.");
+  }
+  await closeTestServer(probe);
+  return address.port;
+}
+
+async function closeTestServer(server: ReturnType<typeof createServer>): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => (error === undefined ? resolve() : reject(error)));
+  });
 }
 
 function deferred<T>(): {

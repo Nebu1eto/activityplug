@@ -1,12 +1,23 @@
 import {
-  createActivityPlugClient,
+  createActivityPlugClient as createActivityPlugClientWithAuthority,
   createEntityRef,
+  createRemoteAuthority,
   InMemoryAuthSessionStore,
+  type ActivityPlugClientOptions,
 } from "@activityplug/core";
 import { accountMappingFixtures } from "@activityplug/test-fixtures";
 import { describe, expect, it, vi } from "vitest";
 
 import { createPleromaAdapter } from "./index.js";
+
+function createActivityPlugClient(options: ActivityPlugClientOptions) {
+  const { fetch = globalThis.fetch, ...clientOptions } = options;
+  const transport: typeof globalThis.fetch = (input, init) => fetch(input, init);
+  return createActivityPlugClientWithAuthority({
+    ...clientOptions,
+    remoteAuthority: createRemoteAuthority({ transport }),
+  });
+}
 
 describe("Pleroma adapter", () => {
   it("declares every supported post creation input", () => {
@@ -25,7 +36,7 @@ describe("Pleroma adapter", () => {
     ]);
   });
 
-  it("uses Pleroma's legacy query authentication for streaming", async () => {
+  it("uses Pleroma's tokenless WebSocket subprotocol authentication", async () => {
     const factoryCalls: unknown[][] = [];
     const sockets: PleromaFakeWebSocket[] = [];
     const client = createActivityPlugClient({
@@ -46,11 +57,143 @@ describe("Pleroma adapter", () => {
 
     await waitForPleromaSocket(sockets);
     expect(factoryCalls[0]?.[0]).toBe(
-      "wss://pleroma.example/api/v1/streaming/?stream=user%3Anotification&access_token=pleroma-token",
+      "wss://pleroma.example/api/v1/streaming/?stream=user%3Anotification",
     );
+    expect(factoryCalls[0]?.[1]).toEqual(["pleroma-token"]);
     expect(factoryCalls[0]?.[3]).toEqual({ operation: "stream.notifications" });
     sockets[0]?.remoteClose();
     await expect(pending).resolves.toEqual({ done: true, value: undefined });
+  });
+
+  it("uses the same tokenless subprotocol for authenticated home timelines", async () => {
+    const factoryCalls: unknown[][] = [];
+    const sockets: PleromaFakeWebSocket[] = [];
+    const client = createActivityPlugClient({
+      adapter: createPleromaAdapter({
+        webSocket: (...args) => {
+          factoryCalls.push(args);
+          const socket = new PleromaFakeWebSocket();
+          sockets.push(socket);
+          return socket as unknown as WebSocket;
+        },
+      }),
+      origin: "https://pleroma.example",
+      fetch: pleromaStreamingFetch(),
+    });
+    const session = await client.auth.injectToken({ accessToken: "pleroma-token" });
+    const stream = await client.streams.timeline({ type: "home", session });
+    const pending = stream[Symbol.asyncIterator]().next();
+
+    await waitForPleromaSocket(sockets);
+    expect(factoryCalls[0]?.[0]).toBe("wss://pleroma.example/api/v1/streaming/?stream=user");
+    expect(factoryCalls[0]?.[1]).toEqual(["pleroma-token"]);
+    expect(factoryCalls[0]?.[3]).toEqual({ operation: "stream.timeline" });
+    sockets[0]?.remoteClose();
+    await expect(pending).resolves.toEqual({ done: true, value: undefined });
+  });
+
+  it("uses the same tokenless subprotocol authentication for Akkoma", async () => {
+    const factoryCalls: unknown[][] = [];
+    const sockets: PleromaFakeWebSocket[] = [];
+    const client = createActivityPlugClient({
+      adapter: createPleromaAdapter({
+        webSocket: (...args) => {
+          factoryCalls.push(args);
+          const socket = new PleromaFakeWebSocket();
+          sockets.push(socket);
+          return socket as unknown as WebSocket;
+        },
+      }),
+      origin: "https://pleroma.example",
+      fetch: pleromaStreamingFetch("3.13.2", "akkoma"),
+    });
+    const session = await client.auth.injectToken({ accessToken: "akkoma-token" });
+    const stream = await client.streams.notifications({ session });
+    const pending = stream[Symbol.asyncIterator]().next();
+
+    await waitForPleromaSocket(sockets);
+    expect(factoryCalls[0]?.[0]).not.toContain("akkoma-token");
+    expect(factoryCalls[0]?.[1]).toEqual(["akkoma-token"]);
+    expect(factoryCalls[0]?.[3]).toEqual({ operation: "stream.notifications" });
+    sockets[0]?.remoteClose();
+    await expect(pending).resolves.toEqual({ done: true, value: undefined });
+  });
+
+  it.each(["2.7.0", null])(
+    "rejects unverified Pleroma subprotocol authentication for version %s",
+    async (version) => {
+      const webSocket = vi.fn(() => new PleromaFakeWebSocket() as unknown as WebSocket);
+      const client = createActivityPlugClient({
+        adapter: createPleromaAdapter({ webSocket }),
+        origin: "https://pleroma.example",
+        fetch: pleromaStreamingFetch(version),
+      });
+      const session = await client.auth.injectToken({ accessToken: "pleroma-secret" });
+      const stream = await client.streams.notifications({ session });
+
+      const error = await stream[Symbol.asyncIterator]()
+        .next()
+        .catch((cause: unknown) => cause);
+
+      expect(webSocket).not.toHaveBeenCalled();
+      expect(error).toMatchObject({
+        code: "UNSUPPORTED_OPERATION",
+        context: {
+          operation: "stream.notifications",
+          capability: "streaming.notifications",
+        },
+      });
+      expect(String(error)).not.toContain("pleroma-secret");
+      expect(JSON.stringify(error)).not.toContain("pleroma-secret");
+    },
+  );
+
+  it("keeps anonymous public streaming available for an unknown Pleroma version", async () => {
+    const factoryCalls: unknown[][] = [];
+    const sockets: PleromaFakeWebSocket[] = [];
+    const client = createActivityPlugClient({
+      adapter: createPleromaAdapter({
+        webSocket: (...args) => {
+          factoryCalls.push(args);
+          const socket = new PleromaFakeWebSocket();
+          sockets.push(socket);
+          return socket as unknown as WebSocket;
+        },
+      }),
+      origin: "https://pleroma.example",
+      fetch: pleromaStreamingFetch(null),
+    });
+    const stream = await client.streams.timeline({ type: "public" });
+    const pending = stream[Symbol.asyncIterator]().next();
+
+    await waitForPleromaSocket(sockets);
+    expect(factoryCalls[0]?.[0]).toBe("wss://pleroma.example/api/v1/streaming/?stream=public");
+    expect(factoryCalls[0]?.[1]).toBeUndefined();
+    sockets[0]?.remoteClose();
+    await expect(pending).resolves.toEqual({ done: true, value: undefined });
+  });
+
+  it("rejects authenticated cross-origin Pleroma discovery before socket creation", async () => {
+    const webSocket = vi.fn(() => new PleromaFakeWebSocket() as unknown as WebSocket);
+    const client = createActivityPlugClient({
+      adapter: createPleromaAdapter({ webSocket }),
+      origin: "https://pleroma.example",
+      fetch: pleromaStreamingFetch("2.7.1", "pleroma", "https://stream.example/socket"),
+    });
+    const session = await client.auth.injectToken({ accessToken: "pleroma-secret" });
+    const stream = await client.streams.notifications({ session });
+
+    const error = await stream[Symbol.asyncIterator]()
+      .next()
+      .catch((cause: unknown) => cause);
+
+    expect(webSocket).not.toHaveBeenCalled();
+    expect(error).toMatchObject({
+      code: "ORIGIN_NOT_ALLOWED",
+      context: { operation: "stream.notifications", origin: "https://stream.example" },
+    });
+    expect(String(error)).not.toContain("pleroma-secret");
+    expect(JSON.stringify(error)).not.toContain("pleroma-secret");
   });
 
   it("removes list accounts with Pleroma query parameters", async () => {
@@ -574,8 +717,7 @@ describe("Pleroma adapter", () => {
 });
 
 function mockFetch(handler: (request: Request) => Promise<Response>): typeof fetch {
-  return ((request) =>
-    handler(request instanceof Request ? request : new Request(request))) as typeof fetch;
+  return (request) => handler(request instanceof Request ? request : new Request(request));
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -620,7 +762,11 @@ async function waitForPleromaSocket(sockets: readonly PleromaFakeWebSocket[]): P
   throw new Error("Expected Pleroma streaming test to create a WebSocket.");
 }
 
-function pleromaStreamingFetch(): typeof globalThis.fetch {
+function pleromaStreamingFetch(
+  version: string | null = "2.7.1",
+  softwareName = "pleroma",
+  streamingEndpoint?: string,
+): typeof globalThis.fetch {
   return vi.fn<typeof globalThis.fetch>(async (input) => {
     const url = new URL(input instanceof Request ? input.url : input);
     if (url.pathname === "/.well-known/nodeinfo") {
@@ -634,10 +780,18 @@ function pleromaStreamingFetch(): typeof globalThis.fetch {
       });
     }
     if (url.pathname === "/nodeinfo/2.1") {
-      return Response.json({ software: { name: "pleroma", version: "2.7.2" } });
+      return Response.json({
+        software: { name: softwareName, ...(version === null ? {} : { version }) },
+      });
     }
     if (url.pathname === "/api/v2/instance") {
-      return Response.json({ domain: "pleroma.example", version: "2.7.2" });
+      return Response.json({
+        domain: "pleroma.example",
+        ...(version === null ? {} : { version }),
+        ...(streamingEndpoint === undefined
+          ? {}
+          : { configuration: { urls: { streaming: streamingEndpoint } } }),
+      });
     }
     return Response.json({ error: "unexpected request" }, { status: 404 });
   });

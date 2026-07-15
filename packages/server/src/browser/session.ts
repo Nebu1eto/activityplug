@@ -1,5 +1,11 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
+import {
+  ActivityPlugError,
+  type BudgetReservation,
+  type BudgetScope,
+  type BudgetScopeFactoryContext,
+} from "@activityplug/core";
 import { type Context } from "hono";
 
 import { type AuthSessionStore } from "../auth/session-store.js";
@@ -10,8 +16,6 @@ import {
   type BrowserAnonymousSessionMode,
   type BrowserRequestContext,
 } from "./types.js";
-
-const cleanupIntervalMilliseconds = 60_000;
 
 interface SignedAnonymousSession {
   readonly v: 1;
@@ -30,9 +34,11 @@ export interface BrowserSessionManager {
   readonly resolveOptional: (request: Request) => Promise<BrowserSessionRecord | null>;
   readonly issueCsrf: (
     existing: BrowserSessionRecord | null,
+    admissionClient?: string,
   ) => Promise<{ readonly record: BrowserSessionRecord; readonly csrfToken: string }>;
-  readonly promote: (record: BrowserSessionRecord) => Promise<void>;
-  readonly scheduleDeleteExpired: () => void;
+  readonly promote: (record: BrowserSessionRecord, admissionClient: string) => Promise<void>;
+  readonly delete: (id: string) => Promise<void>;
+  readonly close: () => Promise<void>;
   readonly setCookie: (context: Context, record: BrowserSessionRecord) => void;
   readonly clearCookie: (context: Context) => void;
   readonly assertCsrf: (request: Request, expectedHash: string, headerName: string) => void;
@@ -47,18 +53,101 @@ export function createBrowserSessionManager(input: {
   readonly randomBytes: (length: number) => Uint8Array;
   readonly ttlMilliseconds: number;
   readonly anonymousSessionMode: BrowserAnonymousSessionMode;
+  readonly storedSessionCapacity: number;
+  readonly storedSessionCapacityPerClient: number;
+  readonly storedSessionCreationLimit: number;
+  readonly storedSessionCreationWindowMilliseconds: number;
+  readonly publicOrigin: string;
+  readonly createBudgetScope?: (context: BudgetScopeFactoryContext) => BudgetScope;
 }): BrowserSessionManager {
-  let nextCleanupAt = 0;
-  let cleanup: Promise<void> | null = null;
-
+  const allocations = new BrowserSessionAllocationLedger(input.now);
+  let closed = false;
+  let pendingAdmissions = 0;
+  let closeFailed = false;
+  let closeFailure: unknown;
+  let closePromise: Promise<void> | undefined;
+  let resolveClose: (() => void) | undefined;
+  let rejectClose: ((error: unknown) => void) | undefined;
+  const assertOpen = (): void => {
+    if (closed) {
+      throw new BrowserBoundaryError("UPSTREAM_FAILURE", "Browser boundary is closed.", 502);
+    }
+  };
+  const finishCloseIfDrained = (): void => {
+    if (!closed || pendingAdmissions !== 0 || closePromise === undefined) return;
+    if (closeFailed) {
+      rejectClose?.(closeFailure);
+      return;
+    }
+    allocations.close();
+    resolveClose?.();
+  };
+  const admit = async (record: BrowserSessionRecord, client: string): Promise<boolean> => {
+    assertOpen();
+    pendingAdmissions += 1;
+    try {
+      const operation = "browser.session.admit";
+      const budget = input.createBudgetScope?.({
+        adapterId: "browser",
+        origin: input.publicOrigin,
+        operation,
+      });
+      assertAdmittedBudgetOperation(budget, operation, input.publicOrigin);
+      const reservation = budget?.reserve("activeAllocations");
+      let result;
+      try {
+        result = await input.browserSessions.admit(record, {
+          subject: createHmac("sha256", input.signingKey).update(client).digest("base64url"),
+          maximumLiveSessions: input.storedSessionCapacity,
+          maximumLiveSessionsPerSubject: input.storedSessionCapacityPerClient,
+          maximumCreationsPerWindow: input.storedSessionCreationLimit,
+          windowMilliseconds: input.storedSessionCreationWindowMilliseconds,
+        });
+      } catch (error) {
+        reservation?.release();
+        throw error;
+      }
+      if (result.admitted && closed) {
+        try {
+          await input.browserSessions.delete(record.id);
+          reservation?.release();
+        } catch (error) {
+          if (!closeFailed) closeFailure = error;
+          closeFailed = true;
+          if (reservation !== undefined) {
+            allocations.retain(record, reservation);
+          }
+          throw error;
+        }
+        throw new BrowserBoundaryError("UPSTREAM_FAILURE", "Browser boundary is closed.", 502);
+      }
+      if (!result.admitted) reservation?.release();
+      else if (reservation !== undefined) allocations.retain(record, reservation);
+      if (result.admitted) return true;
+      if (result.reason !== "conflict") {
+        throw new BrowserBoundaryError(
+          "RATE_LIMITED",
+          result.reason === "rate_limited"
+            ? "Browser session creation rate is exceeded."
+            : "Browser session capacity is exhausted.",
+          429,
+          result.reason === "rate_limited" ? result.retryAfterSeconds : undefined,
+        );
+      }
+      return false;
+    } finally {
+      pendingAdmissions -= 1;
+      finishCloseIfDrained();
+    }
+  };
   const resolveOptional = async (request: Request): Promise<BrowserSessionRecord | null> => {
+    assertOpen();
     const parsed = verifyCookie(request.headers.get("cookie"), input.signingKey, input.now());
     if (parsed === null) return null;
     const stored = await input.browserSessions.get(parsed.id);
+    if (stored === null) allocations.release(parsed.id);
     if (stored !== null || parsed.anonymousRecord === null) return stored;
-    if (input.anonymousSessionMode === "stateless") return parsed.anonymousRecord;
-    if (await input.browserSessions.create(parsed.anonymousRecord)) return parsed.anonymousRecord;
-    return input.browserSessions.get(parsed.id);
+    return input.anonymousSessionMode === "stateless" ? parsed.anonymousRecord : null;
   };
 
   const resolveRequest = async (request: Request): Promise<BrowserRequestContext> => {
@@ -81,7 +170,9 @@ export function createBrowserSessionManager(input: {
 
   const issueCsrf = async (
     existing: BrowserSessionRecord | null,
+    admissionClient?: string,
   ): Promise<{ readonly record: BrowserSessionRecord; readonly csrfToken: string }> => {
+    assertOpen();
     for (let attempt = 0; attempt < 5; attempt += 1) {
       if (existing === null) {
         const issuedAt = input.now();
@@ -97,7 +188,7 @@ export function createBrowserSessionManager(input: {
         };
         if (
           input.anonymousSessionMode === "stateless" ||
-          (await input.browserSessions.create(record))
+          (admissionClient !== undefined && (await admit(record, admissionClient)))
         ) {
           return { record, csrfToken };
         }
@@ -121,30 +212,16 @@ export function createBrowserSessionManager(input: {
     throw new BrowserBoundaryError("CONFLICT", "Browser session changed concurrently.", 409);
   };
 
-  const promote = async (record: BrowserSessionRecord): Promise<void> => {
+  const promote = async (record: BrowserSessionRecord, admissionClient: string): Promise<void> => {
+    assertOpen();
     const stored = await input.browserSessions.get(record.id);
     if (stored !== null) return;
     if (record.authenticated) {
       throw new BrowserBoundaryError("CONFLICT", "Browser session changed concurrently.", 409);
     }
-    if (await input.browserSessions.create(record)) return;
+    if (await admit(record, admissionClient)) return;
     if ((await input.browserSessions.get(record.id)) !== null) return;
     throw new BrowserBoundaryError("CONFLICT", "Browser session could not be created.", 409);
-  };
-
-  const scheduleDeleteExpired = (): void => {
-    const checkedAt = input.now();
-    if (checkedAt.getTime() < nextCleanupAt) return;
-    if (cleanup !== null) return;
-    nextCleanupAt = checkedAt.getTime() + cleanupIntervalMilliseconds;
-    cleanup = Promise.resolve()
-      .then(() => input.browserSessions.deleteExpired(checkedAt))
-      .then(() => undefined)
-      .catch(() => undefined)
-      .finally(() => {
-        cleanup = null;
-      });
-    void cleanup;
   };
 
   return {
@@ -152,7 +229,21 @@ export function createBrowserSessionManager(input: {
     resolveOptional,
     issueCsrf,
     promote,
-    scheduleDeleteExpired,
+    async delete(id) {
+      assertOpen();
+      await input.browserSessions.delete(id);
+      allocations.release(id);
+    },
+    close() {
+      if (closePromise !== undefined) return closePromise;
+      closed = true;
+      closePromise = new Promise<void>((resolve, reject) => {
+        resolveClose = resolve;
+        rejectClose = reject;
+      });
+      finishCloseIfDrained();
+      return closePromise;
+    },
     setCookie(context, record) {
       const value =
         input.anonymousSessionMode === "stateless"
@@ -197,6 +288,82 @@ export function createBrowserSessionManager(input: {
       }
     },
   };
+}
+
+const maximumTimerDelayMilliseconds = 2_147_483_647;
+
+class BrowserSessionAllocationLedger {
+  readonly #allocations = new Map<
+    string,
+    { readonly reservation: BudgetReservation; timer?: ReturnType<typeof setTimeout> }
+  >();
+  readonly #now: () => Date;
+  #closed = false;
+
+  public constructor(now: () => Date) {
+    this.#now = now;
+  }
+
+  public retain(record: BrowserSessionRecord, reservation: BudgetReservation): void {
+    if (this.#closed) {
+      reservation.release();
+      return;
+    }
+    this.release(record.id);
+    const allocation = { reservation };
+    this.#allocations.set(record.id, allocation);
+    this.#schedule(record.id, record.expiresAt, allocation);
+  }
+
+  public release(id: string): void {
+    const allocation = this.#allocations.get(id);
+    if (allocation === undefined) return;
+    this.#allocations.delete(id);
+    if (allocation.timer !== undefined) clearTimeout(allocation.timer);
+    allocation.reservation.release();
+  }
+
+  public close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    for (const id of this.#allocations.keys()) this.release(id);
+  }
+
+  #schedule(
+    id: string,
+    expiresAt: string,
+    allocation: { readonly reservation: BudgetReservation; timer?: ReturnType<typeof setTimeout> },
+  ): void {
+    const remaining = Date.parse(expiresAt) - this.#now().getTime();
+    if (!Number.isFinite(remaining) || remaining <= 0) {
+      this.release(id);
+      return;
+    }
+    allocation.timer = setTimeout(
+      () => {
+        if (remaining > maximumTimerDelayMilliseconds) {
+          this.#schedule(id, expiresAt, allocation);
+        } else {
+          this.release(id);
+        }
+      },
+      Math.min(remaining, maximumTimerDelayMilliseconds),
+    );
+    allocation.timer.unref?.();
+  }
+}
+
+function assertAdmittedBudgetOperation(
+  budget: BudgetScope | undefined,
+  operation: string,
+  origin: string,
+): void {
+  if (budget === undefined || budget.operation === operation) return;
+  throw new ActivityPlugError(
+    "VALIDATION_FAILED",
+    "Budget scope operation does not match the admitted operation.",
+    { origin, operation, raw: { budgetOperation: budget.operation } },
+  );
 }
 
 export function normalizePublicOrigin(origin: string): string {
@@ -315,7 +482,7 @@ function normalizeHeaderOrigin(origin: string): string | null {
   }
 }
 
-function randomToken(randomBytes: (length: number) => Uint8Array, length: number): string {
+export function randomToken(randomBytes: (length: number) => Uint8Array, length: number): string {
   const bytes = randomBytes(length);
   if (!(bytes instanceof Uint8Array) || bytes.byteLength !== length) {
     throw new TypeError(`Random source must return exactly ${length} bytes.`);
@@ -323,11 +490,11 @@ function randomToken(randomBytes: (length: number) => Uint8Array, length: number
   return Buffer.from(bytes).toString("base64url");
 }
 
-function hashToken(token: string): string {
+export function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("base64url");
 }
 
-function constantTimeTextEqual(left: string, right: string): boolean {
+export function constantTimeTextEqual(left: string, right: string): boolean {
   const leftBytes = Buffer.from(left, "utf8");
   const rightBytes = Buffer.from(right, "utf8");
   return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);

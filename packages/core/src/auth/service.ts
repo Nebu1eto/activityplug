@@ -6,7 +6,15 @@ import {
   type ActivityPlugErrorContext,
   unsupportedOperation,
 } from "../errors/error.js";
+import { type BudgetScope } from "../security/budget.js";
+import { createBudgetedFetch } from "../security/request-budget.js";
 import { createUuid } from "../utils/uuid.js";
+import {
+  createCredentialLeaseReference,
+  InMemoryCredentialLeaseStore,
+  type CredentialLeaseReference,
+  type CredentialLeaseStore,
+} from "./credential-lease.js";
 import {
   isAuthStrategyKind,
   type AuthAdapter,
@@ -36,6 +44,13 @@ import {
   type TokenSet,
   type VerifyCredentialsResult,
 } from "./types.js";
+
+export {
+  InMemoryCredentialLeaseStore,
+  type CredentialLeaseReference,
+  type CredentialLeaseResolver,
+  type CredentialLeaseStore,
+} from "./credential-lease.js";
 
 export type { AuthAdapter } from "./types.js";
 
@@ -113,8 +128,15 @@ export interface AuthServiceClientContext {
   };
   readonly origin: string;
   readonly fetch: typeof globalThis.fetch;
+  readonly fetchForOperation?: (operation: string) => typeof globalThis.fetch;
   readonly capabilities: import("../capabilities/capability.js").CapabilitySet;
   readonly sessionStore?: AuthSessionStore;
+  readonly credentialLeases?: CredentialLeaseStore;
+  readonly createBudgetScope?: (context: {
+    readonly adapterId: string;
+    readonly origin: string;
+    readonly operation?: string;
+  }) => BudgetScope;
 }
 
 export function createAuthService(client: AuthServiceClientContext): AuthService {
@@ -124,6 +146,7 @@ export function createAuthService(client: AuthServiceClientContext): AuthService
 class DefaultAuthService implements AuthService {
   readonly #client: AuthServiceClientContext;
   readonly #sessionStore: AuthSessionStore;
+  readonly #credentialLeases: CredentialLeaseStore;
   readonly #strategies: ReadonlyMap<AuthStrategyKind, AuthStrategy>;
   public readonly availableStrategies: readonly AuthStrategyKind[];
   public readonly oauth: OAuthAuthService;
@@ -134,7 +157,13 @@ class DefaultAuthService implements AuthService {
   public constructor(client: AuthServiceClientContext) {
     this.#client = client;
     this.#sessionStore = client.sessionStore ?? new InMemoryAuthSessionStore();
-    this.#strategies = compileStrategies(client);
+    this.#credentialLeases = client.credentialLeases ?? new InMemoryCredentialLeaseStore();
+    this.#strategies = new Map(
+      [...compileStrategies(client)].map(([kind, strategy]) => [
+        kind,
+        budgetCheckedAuthStrategy(strategy),
+      ]),
+    );
     this.availableStrategies = [...this.#strategies.keys()];
     this.oauth = {
       registerClient: async (input) => this.#registerOAuthClient(input),
@@ -165,7 +194,7 @@ class DefaultAuthService implements AuthService {
     this.#assertRevisionCanAdvance(storedSession, "auth.verifyCredentials");
     const account = await strategy.verifySession(
       { session: storedSession },
-      this.#adapterContext(),
+      this.#adapterContext("auth.verifyCredentials"),
     );
     const updatedSession: StoredAuthSession = {
       ...storedSession,
@@ -233,7 +262,7 @@ class DefaultAuthService implements AuthService {
     const strategy = this.#requireStrategy("token", "auth.tokenInjection");
     const session = this.#sessionFromTokenSet(
       "token",
-      await strategy.importToken(input, this.#adapterContext()),
+      await strategy.importToken(input, this.#adapterContext("auth.tokenInjection")),
       input.account,
       input.metadata,
     );
@@ -249,30 +278,66 @@ class DefaultAuthService implements AuthService {
     if (strategy.registerClient === undefined) {
       throw unsupportedOperation("auth.registerClient", this.#context());
     }
-    return strategy.registerClient(input, this.#adapterContext());
+    const { budget, ...registration } = input;
+    return strategy.registerClient(
+      registration,
+      this.#adapterContext("auth.registerClient", budget),
+    );
   }
 
   async #startOAuth(input: OAuthAuthorizationUrlInput): Promise<OAuthAuthorizationRequest> {
     requireCapability(this.#client.capabilities, "auth.oauth.authorizationCode");
     const strategy = this.#requireStrategy("oauth", "auth.oauth.authorizationUrl");
-    return strategy.start(input, this.#adapterContext());
+    return strategy.start(input, this.#adapterContext("auth.oauth.authorizationUrl"));
   }
 
   async #exchangeOAuth(input: OAuthCodeExchangeInput): Promise<AuthSession> {
     requireCapability(this.#client.capabilities, "auth.oauth.authorizationCode");
     const strategy = this.#requireStrategy("oauth", "auth.oauth.exchangeCode");
-    const session = this.#sessionFromTokenSet(
+    let session = this.#sessionFromTokenSet(
       "oauth",
-      await strategy.exchange(input, this.#adapterContext()),
+      await strategy.exchange(input, this.#adapterContext("auth.oauth.exchangeCode")),
     );
-    await this.#createSession(session, "auth.oauth.exchangeCode");
+    let clientSecret: CredentialLeaseReference | undefined;
+    if (input.client.clientSecret !== undefined) {
+      clientSecret = createCredentialLeaseReference(session.id);
+      const expiresAt = credentialLeaseExpiration(session);
+      if (
+        !(await this.#credentialLeases.create({
+          reference: clientSecret,
+          secret: input.client.clientSecret,
+          expiresAt,
+        }))
+      ) {
+        throw new ActivityPlugError("INTERNAL_ERROR", "OAuth credentials could not be retained.", {
+          ...this.#context(),
+          operation: "auth.oauth.exchangeCode",
+        });
+      }
+    }
+    session = {
+      ...session,
+      metadata: {
+        ...session.metadata,
+        oauthClient: {
+          clientId: input.client.clientId,
+          ...(clientSecret === undefined ? {} : { clientSecret }),
+        },
+      },
+    };
+    try {
+      await this.#createSession(session, "auth.oauth.exchangeCode");
+    } catch (error) {
+      if (clientSecret !== undefined) await this.#credentialLeases.delete(clientSecret);
+      throw error;
+    }
     return toPublicSession(session);
   }
 
   async #startEmailChallenge(input: EmailChallengeStartInput): Promise<EmailChallengeStartResult> {
     requireCapability(this.#client.capabilities, "auth.emailChallenge");
     const strategy = this.#requireStrategy("emailChallenge", "auth.emailChallenge.start");
-    const result = await strategy.start(input, this.#adapterContext());
+    const result = await strategy.start(input, this.#adapterContext("auth.emailChallenge.start"));
     return { challengeId: result.challengeId, expiresAt: result.expiresAt };
   }
 
@@ -281,7 +346,7 @@ class DefaultAuthService implements AuthService {
     const strategy = this.#requireStrategy("emailChallenge", "auth.emailChallenge.verify");
     const session = this.#sessionFromTokenSet(
       "emailChallenge",
-      await strategy.verify(input, this.#adapterContext()),
+      await strategy.verify(input, this.#adapterContext("auth.emailChallenge.verify")),
     );
     await this.#createSession(session, "auth.emailChallenge.verify");
     return toPublicSession(session);
@@ -290,7 +355,9 @@ class DefaultAuthService implements AuthService {
   async #startPasskey(input: PasskeyStartInput): Promise<PasskeyStartResult> {
     requireCapability(this.#client.capabilities, "auth.passkey");
     const strategy = this.#requireStrategy("passkey", "auth.passkey.start");
-    return toPublicPasskeyStartResult(await strategy.start(input, this.#adapterContext()));
+    return toPublicPasskeyStartResult(
+      await strategy.start(input, this.#adapterContext("auth.passkey.start")),
+    );
   }
 
   async #finishPasskey(input: PasskeyFinishInput): Promise<AuthSession> {
@@ -298,7 +365,7 @@ class DefaultAuthService implements AuthService {
     const strategy = this.#requireStrategy("passkey", "auth.passkey.finish");
     const session = this.#sessionFromTokenSet(
       "passkey",
-      await strategy.finish(input, this.#adapterContext()),
+      await strategy.finish(input, this.#adapterContext("auth.passkey.finish")),
     );
     await this.#createSession(session, "auth.passkey.finish");
     return toPublicSession(session);
@@ -306,6 +373,7 @@ class DefaultAuthService implements AuthService {
 
   async #refreshSession(session: AuthSession, operation: string): Promise<AuthSession> {
     const { storedSession, strategy } = await this.#resolveStoredStrategy(session);
+    if (isRevocationClaimed(storedSession)) throw this.#sessionConflict(operation);
     this.#requireLifecycleCapability(strategy, "auth.oauth.refreshToken", operation);
     if (strategy.refreshSession === undefined) {
       throw unsupportedOperation(operation, this.#context());
@@ -313,7 +381,7 @@ class DefaultAuthService implements AuthService {
     this.#assertRevisionCanAdvance(storedSession, operation);
     const tokenSet = mergeRefreshTokenSet(
       storedSession.tokenSet,
-      await strategy.refreshSession({ session: storedSession }, this.#adapterContext()),
+      await strategy.refreshSession({ session: storedSession }, this.#adapterContext(operation)),
     );
     const updatedSession = sessionWithTokenSet(storedSession, tokenSet);
     await this.#persistRevision(storedSession, updatedSession, operation);
@@ -326,14 +394,61 @@ class DefaultAuthService implements AuthService {
     operation: string,
   ): Promise<void> {
     const { storedSession, strategy } = await this.#resolveStoredStrategy(session);
-    this.#requireLifecycleCapability(strategy, "auth.oauth.revoke", operation);
-    if (strategy.revokeSession === undefined) {
-      throw unsupportedOperation(operation, this.#context());
-    }
-    await strategy.revokeSession({ session: storedSession, tokenTypeHint }, this.#adapterContext());
-    // Remote revocation does not authorize deleting a newer local replacement.
-    if (!(await this.#sessionStore.compareAndDelete(storedSession.id, storedSession.revision))) {
+    if (isRevocationClaimed(storedSession)) throw this.#sessionConflict(operation);
+    this.#assertRevisionCanAdvance(storedSession, operation);
+    const claimedSession: StoredAuthSession = {
+      ...storedSession,
+      revision: storedSession.revision + 1,
+      updatedAt: new Date().toISOString(),
+      metadata: {
+        ...storedSession.metadata,
+        activityplugRevocationClaimed: true,
+      },
+    };
+    if (
+      !(await this.#sessionStore.compareAndSet(
+        storedSession.id,
+        storedSession.revision,
+        claimedSession,
+      ))
+    ) {
       throw this.#sessionConflict(operation);
+    }
+
+    let remoteError: unknown;
+    try {
+      this.#requireLifecycleCapability(strategy, "auth.oauth.revoke", operation);
+      if (strategy.kind !== "oauth" || strategy.revokeSession === undefined) {
+        throw unsupportedOperation(operation, this.#context());
+      }
+      await strategy.revokeSession(
+        { session: claimedSession, tokenTypeHint },
+        this.#adapterContext(operation),
+      );
+    } catch (error) {
+      remoteError = error;
+    }
+
+    const deleted = await this.#sessionStore.compareAndDelete(
+      claimedSession.id,
+      claimedSession.revision,
+    );
+    const clientSecret = oauthClientSecretReference(claimedSession);
+    let leaseDeleteFailed = false;
+    if (clientSecret !== undefined) {
+      try {
+        await this.#credentialLeases.delete(clientSecret);
+      } catch {
+        leaseDeleteFailed = true;
+      }
+    }
+    if (!deleted) throw this.#sessionConflict(operation);
+    if (remoteError !== undefined) throw remoteError;
+    if (leaseDeleteFailed) {
+      throw new ActivityPlugError("INTERNAL_ERROR", "OAuth credential cleanup did not complete.", {
+        ...this.#context(),
+        operation,
+      });
     }
   }
 
@@ -465,13 +580,97 @@ class DefaultAuthService implements AuthService {
     return { adapter: this.#client.adapter.metadata.id, origin: this.#client.origin };
   }
 
-  #adapterContext(): AuthAdapterContext {
+  #adapterContext(operation: string, admittedBudget?: BudgetScope): AuthAdapterContext {
+    const budget =
+      admittedBudget ??
+      this.#client.createBudgetScope?.({
+        adapterId: this.#client.adapter.metadata.id,
+        origin: this.#client.origin,
+        operation,
+      });
+    assertBudgetOperation(budget, operation, this.#context());
+    budget?.checkDeadline();
+    const fetch = this.#client.fetchForOperation?.(operation) ?? this.#client.fetch;
     return {
       adapterId: this.#client.adapter.metadata.id,
       origin: this.#client.origin,
-      fetch: this.#client.fetch,
+      operation,
+      fetch: budget === undefined ? fetch : createBudgetedFetch(fetch, budget),
+      credentialLeases: this.#credentialLeases,
+      ...(budget === undefined ? {} : { budget }),
     };
   }
+}
+
+function budgetCheckedAuthStrategy(strategy: AuthStrategy): AuthStrategy {
+  return new Proxy(strategy, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (typeof value !== "function") return value;
+      return (...args: unknown[]) => {
+        const result = Reflect.apply(value, target, args) as unknown;
+        const context = args.at(-1) as AuthAdapterContext | undefined;
+        return checkBudgetOnCompletion(result, context?.budget);
+      };
+    },
+  });
+}
+
+function checkBudgetOnCompletion(result: unknown, budget: BudgetScope | undefined): unknown {
+  if (result instanceof Promise) {
+    return result.then((value) => {
+      budget?.checkDeadline();
+      return value;
+    });
+  }
+  budget?.checkDeadline();
+  return result;
+}
+
+function assertBudgetOperation(
+  budget: BudgetScope | undefined,
+  operation: string,
+  context: { readonly adapter: string; readonly origin: string },
+): void {
+  if (budget === undefined || budget.operation === operation) return;
+  throw new ActivityPlugError(
+    "VALIDATION_FAILED",
+    "Budget scope operation does not match the admitted operation.",
+    { ...context, operation, raw: { budgetOperation: budget.operation } },
+  );
+}
+
+const defaultCredentialLeaseLifetimeMs = 30 * 24 * 60 * 60 * 1000;
+
+function credentialLeaseExpiration(session: StoredAuthSession): string {
+  if (session.storageExpiresAt !== undefined) return session.storageExpiresAt;
+  if (session.expiresAt !== undefined) return session.expiresAt;
+  return new Date(Date.now() + defaultCredentialLeaseLifetimeMs).toISOString();
+}
+
+const oauthClientSecretMetadataSchema = z.looseObject({
+  oauthClient: z.looseObject({
+    clientSecret: z.looseObject({
+      id: z.string(),
+      owner: z.string(),
+      // Mirror the historical `typeof version === "number"` admission: any
+      // number is accepted, including non-integer and non-finite values.
+      version: z.custom<number>((value) => typeof value === "number"),
+    }),
+  }),
+});
+
+function oauthClientSecretReference(
+  session: StoredAuthSession,
+): CredentialLeaseReference | undefined {
+  const parsed = oauthClientSecretMetadataSchema.safeParse(session.metadata);
+  if (!parsed.success) return undefined;
+  const { id, owner, version } = parsed.data.oauthClient.clientSecret;
+  return { id, owner, version };
+}
+
+function isRevocationClaimed(session: StoredAuthSession): boolean {
+  return session.metadata?.activityplugRevocationClaimed === true;
 }
 
 type StrategyByKind = {
@@ -848,6 +1047,11 @@ const accountReferenceSchema = z.looseObject({
   rawUrl: z.string().optional(),
 });
 
+const authSessionOwnerSchema = z.looseObject({
+  kind: z.literal("browser-session"),
+  id: z.string().min(1),
+});
+
 const storedAuthSessionSchema = z.looseObject({
   id: z.string(),
   adapter: z.string(),
@@ -862,6 +1066,7 @@ const storedAuthSessionSchema = z.looseObject({
   account: accountReferenceSchema.optional(),
   expiresAt: z.string().optional(),
   storageExpiresAt: z.string().optional(),
+  owner: authSessionOwnerSchema.optional(),
   metadata: jsonRecordSchema.optional(),
 });
 

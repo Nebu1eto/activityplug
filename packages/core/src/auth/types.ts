@@ -1,5 +1,7 @@
 import { type AdapterKind } from "../adapters/metadata.js";
+import { type BudgetScope } from "../security/budget.js";
 import { type Account, type EntityRef, type ISODateTimeString } from "../types/entities.js";
+import { type CredentialLeaseReference, type CredentialLeaseResolver } from "./credential-lease.js";
 
 export type AuthTokenType = "Bearer" | (string & {});
 
@@ -7,7 +9,10 @@ export type AuthTokenType = "Bearer" | (string & {});
 export interface AuthAdapterContext {
   readonly origin: string;
   readonly adapterId: string;
+  readonly operation?: string;
   readonly fetch: typeof globalThis.fetch;
+  readonly budget?: BudgetScope;
+  readonly credentialLeases?: CredentialLeaseResolver;
 }
 
 export type AuthStrategyKind = "oauth" | "token" | "emailChallenge" | "passkey";
@@ -41,13 +46,24 @@ export interface AuthSession {
 
 export type AuthCapabilitySet = Readonly<Record<string, unknown>>;
 
+export interface AuthSessionOwner {
+  readonly kind: "browser-session";
+  readonly id: string;
+}
+
 export interface StoredAuthSession extends AuthSession {
   readonly revision: number;
   readonly tokenSet: TokenSet;
   readonly createdAt: ISODateTimeString;
   readonly updatedAt: ISODateTimeString;
   readonly storageExpiresAt?: ISODateTimeString;
+  readonly owner?: AuthSessionOwner;
   readonly metadata?: Readonly<Record<string, unknown>>;
+}
+
+export interface OAuthClientCredentialMetadata {
+  readonly clientId: string;
+  readonly clientSecret?: CredentialLeaseReference;
 }
 
 export interface InjectTokenInput {
@@ -74,6 +90,8 @@ export interface OAuthClientRegistrationInput {
   readonly redirectUris: readonly string[];
   readonly scopes?: readonly string[];
   readonly website?: string;
+  /** Reuses an already admitted public-operation budget without resetting it. */
+  readonly budget?: BudgetScope;
 }
 
 export interface OAuthClientRegistration {

@@ -1,4 +1,9 @@
-import { type ActivityPlugAdapter, createActivityPlug, createEntityRef } from "@activityplug/core";
+import {
+  type ActivityPlugAdapter,
+  createActivityPlug,
+  createEntityRef,
+  createRemoteAuthority,
+} from "@activityplug/core";
 import { expect } from "vitest";
 import { z } from "zod";
 
@@ -43,6 +48,15 @@ export function targetsForAdapter(adapter: string): readonly AdapterE2ETarget[] 
   return parseTargets(rawTargets).filter((target) => target.adapter === adapter);
 }
 
+export function createE2ERemoteAuthority() {
+  return createRemoteAuthority({
+    // E2E targets are locally provisioned and explicitly trusted. Disable
+    // transport-level redirect following so every destination is rechecked
+    // by the authority before the adapter can send another request.
+    transport: (input, init) => globalThis.fetch(input, { ...init, redirect: "error" }),
+  });
+}
+
 export async function expectReadBaseline(
   target: AdapterE2ETarget,
   adapter: ActivityPlugAdapter,
@@ -50,6 +64,7 @@ export async function expectReadBaseline(
   const client = createActivityPlug({
     adapter,
     origin: target.origin,
+    remoteAuthority: createE2ERemoteAuthority(),
   });
   const instance = await client.instances.getProfile();
 

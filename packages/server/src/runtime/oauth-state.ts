@@ -9,14 +9,18 @@ import {
 
 import { type InstanceSelector } from "../api/service.js";
 import { type AuthSessionStore } from "../auth/session-store.js";
+import { type SecurityStateExpiryMetadata } from "../storage/contracts.js";
 
-export interface OAuthClientSecretStore {
+export interface OAuthClientSecretStore extends SecurityStateExpiryMetadata {
   readonly put: (
     id: string,
     secret: string,
     expiresAt: string,
   ) => Promise<boolean | void> | boolean | void;
   readonly take: (id: string) => Promise<string | null>;
+  readonly get: (id: string) => Promise<string | null>;
+  readonly delete: (id: string) => Promise<boolean>;
+  readonly deleteExpired?: (now?: Date, limit?: number) => Promise<number>;
 }
 
 const inMemorySecretStoreBrand = Symbol("activityplug.inMemorySecretStore");
@@ -185,6 +189,35 @@ export class InMemoryOAuthClientSecretStore implements OAuthClientSecretStore {
     if (entry === undefined) return null;
     if (Date.parse(entry.expiresAt) <= Date.now()) return null;
     return entry.secret;
+  }
+
+  public async get(id: string): Promise<string | null> {
+    const entry = this.#secrets.get(id);
+    if (entry === undefined) return null;
+    if (Date.parse(entry.expiresAt) <= Date.now()) {
+      this.#secrets.delete(id);
+      return null;
+    }
+    return entry.secret;
+  }
+
+  public async delete(id: string): Promise<boolean> {
+    return this.#secrets.delete(id);
+  }
+
+  public async deleteExpired(
+    now: Date = new Date(),
+    limit = Number.MAX_SAFE_INTEGER,
+  ): Promise<number> {
+    const checkedAt = now.getTime();
+    let deleted = 0;
+    for (const [id, entry] of this.#secrets) {
+      if (Date.parse(entry.expiresAt) > checkedAt) continue;
+      this.#secrets.delete(id);
+      deleted += 1;
+      if (deleted >= limit) break;
+    }
+    return deleted;
   }
 }
 

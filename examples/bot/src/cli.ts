@@ -1,4 +1,5 @@
 import { createBotClient, type BotAdapter } from "./index.js";
+import { createNodeBotRemoteAuthority } from "./node-remote-authority.js";
 
 try {
   await main();
@@ -23,6 +24,7 @@ async function main(): Promise<void> {
     origin,
     accessToken,
     scopes: scopes(),
+    remoteAuthority: createNodeBotRemoteAuthority(origin),
   });
   const viewer = await bot.verifyViewer();
   const replies = await bot.handleTimelineMentions({

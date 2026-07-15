@@ -1,6 +1,9 @@
+import { type CredentialLeaseStore } from "../auth/credential-lease.js";
 import { type AuthService, type AuthSessionStore } from "../auth/service.js";
 import { type AuthAdapter, type AuthSession } from "../auth/types.js";
 import { type CapabilitySet } from "../capabilities/capability.js";
+import { type RemoteAuthority } from "../http/remote-authority.js";
+import { type BudgetScope } from "../security/budget.js";
 import {
   type Account,
   type AccountList,
@@ -59,9 +62,27 @@ export interface ActivityPlugAdapter {
 export interface AdapterOperationContext {
   readonly origin: string;
   readonly adapterId: string;
+  readonly operation?: string;
   readonly capabilities: CapabilitySet;
   readonly fetch: typeof globalThis.fetch;
   readonly sessionStore?: AuthSessionStore;
+  readonly budget?: BudgetScope;
+  readonly assertCredentialAllowed?: (input: {
+    readonly recipient: string;
+    readonly operation: string;
+    readonly credentialClass: string;
+    readonly representation: import("../http/remote-authority.js").RemoteCredentialRepresentation;
+  }) => void;
+  readonly detectedSoftware?: {
+    readonly name: string;
+    readonly version?: string;
+  };
+}
+
+export interface BudgetScopeFactoryContext {
+  readonly adapterId: string;
+  readonly origin: string;
+  readonly operation?: string;
 }
 
 export interface InstanceAdapterOperations {
@@ -390,6 +411,14 @@ export interface ActivityPlugClientOptions {
   readonly origin: string;
   readonly capabilities?: CapabilitySet;
   readonly sessionStore?: AuthSessionStore;
+  readonly credentialLeases?: CredentialLeaseStore;
+  readonly remoteAuthority?: RemoteAuthority;
+  readonly createBudgetScope?: (context: BudgetScopeFactoryContext) => BudgetScope;
+  readonly detectedSoftware?: {
+    readonly name: string;
+    readonly version?: string;
+  };
+  /** @deprecated Raw transports are rejected. Provide `remoteAuthority`. */
   readonly fetch?: typeof globalThis.fetch;
 }
 

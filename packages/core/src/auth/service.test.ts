@@ -6,7 +6,9 @@ import {
   createCapabilitySet,
   type PartialCapabilitySet,
 } from "../capabilities/capability.js";
+import { ActivityPlugError } from "../errors/error.js";
 import { createEntityRef } from "../ids/opaque-id.js";
+import { BudgetScope } from "../security/budget.js";
 import { type Account } from "../types/entities.js";
 import { InMemoryAuthSessionStore, type AuthSessionStore } from "./service.js";
 import {
@@ -43,15 +45,14 @@ describe("auth service strategies", () => {
     ]);
   });
 
-  it("passes the configured remote fetch through auth adapter contexts", async () => {
-    const remoteFetch = vi.fn<typeof fetch>(async () => new Response("ok"));
-    let receivedFetch: typeof fetch | undefined;
+  it("passes a scoped remote authority through auth adapter contexts", async () => {
+    const remoteFetch = vi.fn(async () => new Response("ok"));
     const client = createActivityPlugClient({
       adapter: adapterWithStrategies(
         [
           tokenStrategy({
             importToken: async (input, context) => {
-              receivedFetch = context.fetch;
+              await context.fetch("https://social.example/api/v1/accounts/verify_credentials");
               return { accessToken: input.accessToken };
             },
           }),
@@ -59,12 +60,144 @@ describe("auth service strategies", () => {
         { "auth.tokenInjection": capability("supported") },
       ),
       origin: "https://social.example",
-      fetch: remoteFetch,
+      remoteAuthority: { fetch: remoteFetch },
     });
 
     await client.auth.token.importToken({ accessToken: "secret" });
 
-    expect(receivedFetch).toBe(remoteFetch);
+    expect(remoteFetch).toHaveBeenCalledOnce();
+    expect(remoteFetch).toHaveBeenCalledWith(
+      "https://social.example/api/v1/accounts/verify_credentials",
+      undefined,
+      {
+        destination: "https://social.example",
+        credentialIssuer: "https://social.example",
+        operation: "auth.tokenInjection",
+        credentialClass: "oauth-access-token",
+      },
+    );
+  });
+
+  it("charges nested auth requests to one operation budget", async () => {
+    const scopes: BudgetScope[] = [];
+    const remoteFetch = vi.fn(async () => new Response("ok"));
+    const client = createActivityPlugClient({
+      adapter: adapterWithStrategies(
+        [
+          tokenStrategy({
+            importToken: async (input, context) => {
+              await (await context.fetch("https://social.example/first")).text();
+              await (await context.fetch("https://social.example/second")).text();
+              await (await context.fetch("https://social.example/third")).text();
+              return { accessToken: input.accessToken };
+            },
+          }),
+        ],
+        { "auth.tokenInjection": capability("supported") },
+      ),
+      origin: "https://social.example",
+      remoteAuthority: { fetch: remoteFetch },
+      createBudgetScope: ({ operation }) => {
+        const budget = new BudgetScope({
+          operation: operation ?? "unknown",
+          limits: { concurrency: 1, requests: 2 },
+        });
+        scopes.push(budget);
+        return budget;
+      },
+    });
+
+    await expect(client.auth.token.importToken({ accessToken: "secret" })).rejects.toMatchObject({
+      code: "REQUEST_LIMIT_EXCEEDED",
+      dimension: "requests",
+      context: { operation: "auth.tokenInjection" },
+    });
+    expect(remoteFetch).toHaveBeenCalledTimes(2);
+    expect(scopes).toHaveLength(1);
+    expect(scopes[0]?.snapshot().used).toMatchObject({ concurrency: 0, requests: 2 });
+  });
+
+  it("holds auth request concurrency until the response reaches EOF", async () => {
+    let headerConcurrency = -1;
+    let eofConcurrency = -1;
+    const remoteFetch = vi.fn(async () => new Response("ok"));
+    const client = createActivityPlugClient({
+      adapter: adapterWithStrategies(
+        [
+          tokenStrategy({
+            importToken: async (input, context) => {
+              const response = await context.fetch("https://social.example/check");
+              headerConcurrency = context.budget?.snapshot().used.concurrency ?? -1;
+              await response.text();
+              eofConcurrency = context.budget?.snapshot().used.concurrency ?? -1;
+              return { accessToken: input.accessToken };
+            },
+          }),
+        ],
+        { "auth.tokenInjection": capability("supported") },
+      ),
+      origin: "https://social.example",
+      remoteAuthority: { fetch: remoteFetch },
+      createBudgetScope: ({ operation }) =>
+        new BudgetScope({ operation: operation ?? "unknown", limits: { concurrency: 1 } }),
+    });
+
+    await client.auth.token.importToken({ accessToken: "secret" });
+
+    expect(headerConcurrency).toBe(1);
+    expect(eofConcurrency).toBe(0);
+  });
+
+  it("checks auth deadlines after no-fetch strategy completion", async () => {
+    let now = 0;
+    const client = createActivityPlugClient({
+      adapter: adapterWithStrategies(
+        [
+          tokenStrategy({
+            importToken: async (input) => {
+              now = 2;
+              return { accessToken: input.accessToken };
+            },
+          }),
+        ],
+        { "auth.tokenInjection": capability("supported") },
+      ),
+      origin: "https://social.example",
+      createBudgetScope: ({ operation }) =>
+        new BudgetScope({
+          operation: operation ?? "unknown",
+          limits: { deadline: 1 },
+          now: () => now,
+        }),
+    });
+
+    await expect(client.auth.token.importToken({ accessToken: "secret" })).rejects.toMatchObject({
+      code: "REQUEST_LIMIT_EXCEEDED",
+      dimension: "deadline",
+      context: { operation: "auth.tokenInjection" },
+    });
+  });
+
+  it("rejects a mismatched auth budget before adapter execution", async () => {
+    const importToken = vi.fn(async (input: { readonly accessToken: string }) => ({
+      accessToken: input.accessToken,
+    }));
+    const client = createActivityPlugClient({
+      adapter: adapterWithStrategies([tokenStrategy({ importToken })], {
+        "auth.tokenInjection": capability("supported"),
+      }),
+      origin: "https://social.example",
+      createBudgetScope: () => new BudgetScope({ operation: "wrong.operation" }),
+    });
+
+    await expect(client.auth.token.importToken({ accessToken: "secret" })).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+      context: {
+        operation: "auth.tokenInjection",
+        raw: { budgetOperation: "wrong.operation" },
+      },
+    });
+    expect(importToken).not.toHaveBeenCalled();
   });
 
   it("rejects duplicate strategy kinds while constructing a client", () => {
@@ -417,12 +550,14 @@ describe("auth service strategies", () => {
   });
 
   it("does not fall back to another strategy revoke hook", async () => {
+    const sessions = new MemoryAuthSessionStore();
     const revokeSession = vi.fn(async () => undefined);
     const client = createActivityPlugClient({
       adapter: adapterWithStrategies([tokenStrategy(), oauthStrategy({ revokeSession })], {
         "auth.tokenInjection": capability("supported"),
       }),
       origin: "https://social.example",
+      sessionStore: sessions,
     });
     const session = await client.auth.token.importToken({ accessToken: "access-secret" });
 
@@ -433,6 +568,44 @@ describe("auth service strategies", () => {
       }),
     );
     expect(revokeSession).not.toHaveBeenCalled();
+    await expect(sessions.get(session.id)).resolves.toBeNull();
+  });
+
+  it("removes the local OAuth session even when remote revocation fails", async () => {
+    const sessions = new MemoryAuthSessionStore();
+    const remoteFailure = new ActivityPlugError("TIMEOUT", "Remote revocation timed out.", {
+      operation: "auth.oauth.revoke",
+    });
+    const client = createActivityPlugClient({
+      adapter: adapterWithStrategies(
+        [oauthStrategy({ revokeSession: async () => Promise.reject(remoteFailure) })],
+        {
+          "auth.oauth.authorizationCode": capability("supported"),
+          "auth.oauth.revoke": capability("supported"),
+        },
+      ),
+      origin: "https://social.example",
+      sessionStore: sessions,
+    });
+    const session = await client.auth.oauth.exchange({
+      client: {
+        clientId: "client-id",
+        clientSecret: "client-secret-sentinel",
+        redirectUris: ["https://client.example/callback"],
+      },
+      code: "code",
+      redirectUri: "https://client.example/callback",
+    });
+    const stored = await sessions.get(session.id);
+    expect(stored?.metadata?.oauthClient).toEqual({
+      clientId: "client-id",
+      clientSecret: expect.objectContaining({ owner: session.id, version: 0 }),
+    });
+    expect(JSON.stringify(stored)).not.toContain("client-secret-sentinel");
+
+    await expect(client.auth.revokeSession(session)).rejects.toBe(remoteFailure);
+    await expect(sessions.get(session.id)).resolves.toBeNull();
+    expect(JSON.stringify(remoteFailure)).not.toContain("client-secret-sentinel");
   });
 
   it("permits OAuth revocation while independently rejecting refresh", async () => {
@@ -770,6 +943,37 @@ describe("auth service strategies", () => {
 
     await expect(refresh).rejects.toMatchObject({ code: "CONFLICT" });
     expect(await sessions.get(session.id)).toBeNull();
+  });
+
+  it("does not start refresh or a second revoke after revocation is claimed", async () => {
+    const sessions = new MemoryAuthSessionStore();
+    const revokeResult = deferred<void>();
+    const refreshSession = vi.fn(async () => ({ accessToken: "refreshed" }));
+    const revokeSession = vi.fn(async () => revokeResult.promise);
+    const client = createActivityPlugClient({
+      adapter: adapterWithStrategies([oauthStrategy({ refreshSession, revokeSession })], {
+        "auth.oauth.authorizationCode": capability("supported"),
+        "auth.oauth.refreshToken": capability("supported"),
+        "auth.oauth.revoke": capability("supported"),
+      }),
+      origin: "https://social.example",
+      sessionStore: sessions,
+    });
+    const session = await client.auth.oauth.exchange({
+      client: { clientId: "client", redirectUris: ["https://client.example/callback"] },
+      code: "code",
+      redirectUri: "https://client.example/callback",
+    });
+
+    const revoke = client.auth.revokeSession(session);
+    await vi.waitFor(() => expect(revokeSession).toHaveBeenCalledOnce());
+    await expect(client.auth.refreshSession(session)).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(client.auth.revokeSession(session)).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(refreshSession).not.toHaveBeenCalled();
+    expect(revokeSession).toHaveBeenCalledOnce();
+    revokeResult.resolve();
+    await expect(revoke).resolves.toBeUndefined();
+    await expect(sessions.get(session.id)).resolves.toBeNull();
   });
 
   it("reports the legacy OAuth refresh capability context when unavailable", async () => {

@@ -6,8 +6,10 @@ import { createPostgresAuthSessionStore } from "./index.js";
 import { createPostgresOAuthClientSecretStore } from "./oauth.js";
 
 describe("PostgreSQL OAuth client-secret server contract", () => {
-  it("passes the factory directly to a server with durable sessions", () => {
-    const pool = {} as Pool;
+  it("passes the factory directly to a server with durable sessions", async () => {
+    const pool = {
+      query: async () => ({ rows: [{ count: "0" }] }),
+    } as unknown as Pool;
     const server = createActivityPlugServer({
       adapters: [],
       sessions: createPostgresAuthSessionStore(pool),
@@ -16,5 +18,7 @@ describe("PostgreSQL OAuth client-secret server contract", () => {
     });
 
     expect(server.service.health()).toEqual({ ok: true, version: "v1" });
+    await server.ready;
+    await server.close();
   });
 });

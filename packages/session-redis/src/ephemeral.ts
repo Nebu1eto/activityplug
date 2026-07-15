@@ -13,7 +13,7 @@ import {
 import { type Redis } from "ioredis";
 import { z } from "zod";
 
-import { type RedisStoreOptions } from "./index.js";
+import { type RedisNativeExpiryMetadata, type RedisStoreOptions } from "./index.js";
 import {
   assertDirectRedisClient,
   compareAndDeleteRaw,
@@ -156,7 +156,8 @@ class RedisOAuthStartLimiter implements OAuthStartLimiter {
   }
 }
 
-class RedisShortCacheStore implements ShortCacheStore {
+class RedisShortCacheStore implements ShortCacheStore, RedisNativeExpiryMetadata {
+  public readonly expiryMode = "native" as const;
   readonly #client: Redis;
   readonly #keyPrefix: string;
   readonly #now: () => Date;
@@ -252,7 +253,7 @@ export function createRedisOAuthStartLimiter(
 export function createRedisShortCache(
   client: Redis,
   options: RedisStoreOptions = {},
-): ShortCacheStore {
+): ShortCacheStore & RedisNativeExpiryMetadata {
   assertDirectRedisClient(client, options);
   return new RedisShortCacheStore(client, options);
 }

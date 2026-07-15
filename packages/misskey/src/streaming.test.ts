@@ -1,14 +1,31 @@
 import {
-  createActivityPlugClient,
+  createActivityPlugClient as createActivityPlugClientWithVersion,
+  createRemoteAuthority,
   InMemoryAuthSessionStore,
   MAX_STREAMING_QUEUED_BYTES,
   MAX_STREAMING_QUEUED_EVENTS,
   type AuthSession,
+  type ActivityPlugClientOptions,
 } from "@activityplug/core";
 import { accountMappingFixtures } from "@activityplug/test-fixtures";
 import { describe, expect, it, vi } from "vitest";
 
 import { createMisskeyAdapter } from "./index.js";
+
+function createActivityPlugClient(options: ActivityPlugClientOptions) {
+  const { remoteAuthority, ...clientOptions } = options;
+  return createActivityPlugClientWithVersion({
+    detectedSoftware: { name: "misskey", version: "2026.6.0" },
+    ...clientOptions,
+    remoteAuthority:
+      remoteAuthority ??
+      createRemoteAuthority({
+        transport: async () => {
+          throw new Error("Unexpected remote request.");
+        },
+      }),
+  });
+}
 
 describe("Misskey streaming", () => {
   it("fails closed with the exact missing-factory capability context", async () => {
@@ -43,12 +60,12 @@ describe("Misskey streaming", () => {
     const timeline = await client.streams.timeline({ type: "public" });
     await expect(timeline[Symbol.asyncIterator]().next()).rejects.toMatchObject({
       code: "UNSUPPORTED_OPERATION",
-      context: { capability: "streaming.timeline", operation: "stream.connect" },
+      context: { capability: "streaming.timeline", operation: "stream.timeline" },
     });
     const notifications = await client.streams.notifications({ session });
     await expect(notifications[Symbol.asyncIterator]().next()).rejects.toMatchObject({
       code: "UNSUPPORTED_OPERATION",
-      context: { capability: "streaming.notifications", operation: "stream.connect" },
+      context: { capability: "streaming.notifications", operation: "stream.notifications" },
     });
   });
 
@@ -63,17 +80,21 @@ describe("Misskey streaming", () => {
 
     await expect(stream[Symbol.asyncIterator]().next()).rejects.toMatchObject({
       code: "ORIGIN_NOT_ALLOWED",
-      context: { operation: "stream.connect", origin: "http://misskey.example" },
+      context: { operation: "stream.notifications", origin: "http://misskey.example" },
     });
     expect(webSocket).not.toHaveBeenCalled();
   });
 
   it("redacts credential-bearing errors from an injected WebSocket factory", async () => {
     let requestedUrl = "";
+    let authorization: string | undefined;
+    let operation: string | undefined;
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter({
-        webSocket: async (url) => {
+        webSocket: async (url, _protocols, _signal, options) => {
           requestedUrl = url;
+          authorization = options?.authorization;
+          operation = options?.operation;
           throw new Error(`Unable to connect to ${url}`);
         },
       }),
@@ -86,14 +107,59 @@ describe("Misskey streaming", () => {
       .next()
       .catch((cause: unknown) => cause);
 
-    expect(requestedUrl).toContain("i=viewer-secret");
+    expect(requestedUrl).toBe("wss://misskey.example/streaming");
+    expect(authorization).toBe("Bearer viewer-secret");
+    expect(operation).toBe("stream.notifications");
     expect(error).toMatchObject({
       code: "NETWORK_ERROR",
-      context: { operation: "stream.connect", origin: "https://misskey.example" },
+      context: { operation: "stream.notifications", origin: "https://misskey.example" },
     });
     expect(String(error)).not.toContain("viewer-secret");
     expect(JSON.stringify(error)).not.toContain("viewer-secret");
     expect((error as Error).cause).toBeUndefined();
+  });
+
+  it.each([undefined, "13.13.2", "13.14.0-alpha.1", "13.14.0+build", "13.14.0garbage"])(
+    "rejects authenticated streaming before socket creation for unsupported version %s",
+    async (version) => {
+      const webSocket = vi.fn();
+      const client = createActivityPlugClientWithVersion({
+        adapter: createMisskeyAdapter({ webSocket }),
+        origin: "https://misskey.example",
+        ...(version === undefined ? {} : { detectedSoftware: { name: "misskey", version } }),
+      });
+      const session = await client.auth.injectToken({ accessToken: "viewer-secret" });
+      const stream = await client.streams.notifications({ session });
+
+      await expect(stream[Symbol.asyncIterator]().next()).rejects.toMatchObject({
+        code: "UNSUPPORTED_OPERATION",
+        context: {
+          capability: "streaming.notifications",
+          operation: "stream.notifications",
+        },
+      });
+      expect(webSocket).not.toHaveBeenCalled();
+    },
+  );
+
+  it("applies same-origin authorization-header policy to authenticated streams", async () => {
+    const webSocket = vi.fn();
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({ webSocket }),
+      origin: "https://misskey.example",
+      remoteAuthority: createRemoteAuthority({
+        transport: async () => new Response("ok"),
+        sameOriginRepresentations: [],
+      }),
+    });
+    const session = await client.auth.injectToken({ accessToken: "viewer-secret" });
+    const stream = await client.streams.notifications({ session });
+
+    await expect(stream[Symbol.asyncIterator]().next()).rejects.toMatchObject({
+      code: "ORIGIN_NOT_ALLOWED",
+      context: { operation: "stream.notifications" },
+    });
+    expect(webSocket).not.toHaveBeenCalled();
   });
 
   it("connects timeline channels and maps note events", async () => {
@@ -328,7 +394,7 @@ describe("Misskey streaming", () => {
     const webSocket = vi.fn();
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter({ webSocket }),
-      fetch,
+      remoteAuthority: createRemoteAuthority({ transport: fetch }),
       origin: "https://misskey.example",
       sessionStore: sessions,
     });

@@ -1,9 +1,15 @@
 import { once } from "node:events";
 import { createServer } from "node:http";
 
+import { createActivityPlugServer } from "@activityplug/server";
 import { Redis } from "ioredis";
 import { Pool } from "pg";
 import { describe, expect, it, vi } from "vitest";
+
+vi.mock("@activityplug/server", async (importOriginal) => {
+  const server = await importOriginal<typeof import("@activityplug/server")>();
+  return { ...server, createActivityPlugServer: vi.fn(server.createActivityPlugServer) };
+});
 
 import {
   createCaddyClientIpResolver,
@@ -13,6 +19,19 @@ import {
 } from "./server.js";
 
 const cookieSigningKey = Buffer.alloc(32, 7).toString("base64url");
+const originalPoolConnect = Pool.prototype.connect;
+
+function mockInitialSecurityCleanup() {
+  return vi.spyOn(Pool.prototype, "connect").mockImplementation(function (this: Pool) {
+    if (this.options.query_timeout === 15_000) {
+      return Promise.resolve({
+        query: async () => ({ rows: [{ count: "0" }] }),
+        release: () => undefined,
+      });
+    }
+    return Reflect.apply(originalPoolConnect, this, []);
+  } as never);
+}
 
 function validTestEnvironment(): Record<string, string> {
   return {
@@ -63,15 +82,15 @@ describe("createProductServer", () => {
     await expect(runtime.close()).resolves.toBeUndefined();
   });
 
-  it("uses stored anonymous sessions by default and enables stateless issuance explicitly", async () => {
-    const stored = await createProductServer({
-      ...validTestEnvironment(),
-      ACTIVITYPLUG_STORAGE: "memory",
-    });
+  it("uses stateless anonymous sessions by default and enables stored issuance explicitly", async () => {
     const stateless = await createProductServer({
       ...validTestEnvironment(),
       ACTIVITYPLUG_STORAGE: "memory",
-      ACTIVITYPLUG_ANONYMOUS_SESSION_MODE: "stateless",
+    });
+    const stored = await createProductServer({
+      ...validTestEnvironment(),
+      ACTIVITYPLUG_STORAGE: "memory",
+      ACTIVITYPLUG_ANONYMOUS_SESSION_MODE: "stored",
     });
 
     try {
@@ -83,6 +102,7 @@ describe("createProductServer", () => {
   });
 
   it("reports durable dependency failures as an unhealthy public readiness response", async () => {
+    const connect = mockInitialSecurityCleanup();
     const runtime = await createProductServer({
       ...validTestEnvironment(),
       DATABASE_URL: "postgresql://activityplug:activityplug@127.0.0.1:1/activityplug",
@@ -95,10 +115,12 @@ describe("createProductServer", () => {
       await expect(response.json()).resolves.toEqual({ data: { ok: false, version: "v1" } });
     } finally {
       await runtime.close();
+      connect.mockRestore();
     }
   });
 
   it("handles idle PostgreSQL client errors without an unhandled error event", async () => {
+    const connect = mockInitialSecurityCleanup();
     const on = vi.spyOn(Pool.prototype, "on");
     const runtime = await createProductServer(validTestEnvironment());
     try {
@@ -114,10 +136,12 @@ describe("createProductServer", () => {
     } finally {
       await runtime.close();
       on.mockRestore();
+      connect.mockRestore();
     }
   });
 
   it("configures finite timeouts for durable serving clients", async () => {
+    const connect = mockInitialSecurityCleanup();
     const end = vi.spyOn(Pool.prototype, "end").mockResolvedValue();
     const quit = vi.spyOn(Redis.prototype, "quit").mockResolvedValue("OK");
     const runtime = await createProductServer(validTestEnvironment());
@@ -160,15 +184,92 @@ describe("createProductServer", () => {
         }),
       );
     } finally {
+      connect.mockRestore();
       end.mockRestore();
       quit.mockRestore();
     }
   });
 
+  it("closes the ActivityPlug lifecycle before durable resources during shutdown", async () => {
+    const events: string[] = [];
+    const connect = mockInitialSecurityCleanup();
+    const end = vi.spyOn(Pool.prototype, "end").mockImplementation(async () => {
+      events.push("resources");
+    });
+    const factory = vi.mocked(createActivityPlugServer);
+    const originalFactory = factory.getMockImplementation();
+    if (originalFactory === undefined)
+      throw new Error("ActivityPlug server factory is unavailable.");
+    factory.mockImplementation((options) => {
+      const productServer = originalFactory(options);
+      const close = productServer.close;
+      return {
+        ...productServer,
+        close: async () => {
+          events.push("activityPlug");
+          await close();
+        },
+      };
+    });
+    const runtime = await createProductServer(validTestEnvironment());
+
+    try {
+      void runtime.app;
+      await runtime.close();
+
+      expect(events).toEqual(["activityPlug", "resources", "resources", "resources"]);
+    } finally {
+      factory.mockImplementation(originalFactory);
+      connect.mockRestore();
+      end.mockRestore();
+    }
+  });
+
+  it("joins concurrent close calls to the same deferred completion", async () => {
+    const closeGate = deferred<void>();
+    const factory = vi.mocked(createActivityPlugServer);
+    const originalFactory = factory.getMockImplementation();
+    if (originalFactory === undefined)
+      throw new Error("ActivityPlug server factory is unavailable.");
+    factory.mockImplementation((options) => {
+      const productServer = originalFactory(options);
+      return {
+        ...productServer,
+        close: () => closeGate.promise,
+      };
+    });
+    const runtime = await createProductServer({
+      ...validTestEnvironment(),
+      ACTIVITYPLUG_STORAGE: "memory",
+    });
+
+    try {
+      void runtime.app;
+      const first = runtime.close();
+      const second = runtime.close();
+
+      expect(second).toBe(first);
+      let completed = false;
+      void first.then(() => {
+        completed = true;
+      });
+      await Promise.resolve();
+      expect(completed).toBe(false);
+
+      closeGate.resolve();
+      await expect(first).resolves.toBeUndefined();
+      expect(completed).toBe(true);
+    } finally {
+      closeGate.resolve();
+      factory.mockImplementation(originalFactory);
+    }
+  });
+
   it("isolates lifecycle initialization from serving query limits", async () => {
+    const pgConnect = mockInitialSecurityCleanup();
     const query = vi.spyOn(Pool.prototype, "query").mockResolvedValue({ rows: [] } as never);
     const end = vi.spyOn(Pool.prototype, "end").mockResolvedValue();
-    const connect = vi.spyOn(Redis.prototype, "connect").mockResolvedValue();
+    const redisConnect = vi.spyOn(Redis.prototype, "connect").mockResolvedValue();
     const ping = vi.spyOn(Redis.prototype, "ping").mockResolvedValue("PONG");
     const quit = vi.spyOn(Redis.prototype, "quit").mockResolvedValue("OK");
     const runtime = await createProductServer(validTestEnvironment());
@@ -198,9 +299,10 @@ describe("createProductServer", () => {
       expect(new Set(end.mock.contexts).size).toBe(3);
     } finally {
       await runtime.close();
+      pgConnect.mockRestore();
       query.mockRestore();
       end.mockRestore();
-      connect.mockRestore();
+      redisConnect.mockRestore();
       ping.mockRestore();
       quit.mockRestore();
     }
@@ -257,19 +359,68 @@ describe("createProductServer", () => {
   });
 
   it("cleans failed durable initialization before a retry", async () => {
+    const events: string[] = [];
+    const connect = mockInitialSecurityCleanup();
+    const redisConnect = vi
+      .spyOn(Redis.prototype, "connect")
+      .mockRejectedValue(new Error("durable dependency unavailable"));
+    const query = vi
+      .spyOn(Pool.prototype, "query")
+      .mockRejectedValue(new Error("durable dependency unavailable"));
+    const quit = vi.spyOn(Redis.prototype, "quit").mockResolvedValue("OK");
     const end = vi.spyOn(Pool.prototype, "end");
+    const factory = vi.mocked(createActivityPlugServer);
+    const originalFactory = factory.getMockImplementation();
+    if (originalFactory === undefined)
+      throw new Error("ActivityPlug server factory is unavailable.");
+    factory.mockImplementation((options) => {
+      const productServer = originalFactory(options);
+      const close = productServer.close;
+      return {
+        ...productServer,
+        close: async () => {
+          events.push("activityPlug");
+          await close();
+        },
+      };
+    });
+    end.mockImplementation(async function (this: Pool) {
+      events.push("resources");
+      return undefined;
+    });
     const runtime = await createProductServer({
       ...validTestEnvironment(),
       DATABASE_URL: "postgresql://activityplug:activityplug@127.0.0.1:1/activityplug",
     });
     const appBeforeFailedStart = runtime.app;
 
-    await expect(runtime.start({ hostname: "127.0.0.1", port: 0 })).rejects.toThrow();
-    expect(end).toHaveBeenCalledTimes(3);
-    await expect(appBeforeFailedStart.request("/health")).resolves.toMatchObject({ status: 503 });
-    await expect(runtime.start({ hostname: "127.0.0.1", port: 0 })).rejects.toThrow();
-    expect(end).toHaveBeenCalledTimes(6);
-    await runtime.close();
+    try {
+      await expect(runtime.start({ hostname: "127.0.0.1", port: 0 })).rejects.toThrow();
+      expect(end).toHaveBeenCalledTimes(3);
+      expect(events).toEqual(["resources", "activityPlug", "resources", "resources"]);
+      await expect(appBeforeFailedStart.request("/health")).resolves.toMatchObject({ status: 503 });
+      await expect(runtime.start({ hostname: "127.0.0.1", port: 0 })).rejects.toThrow();
+      expect(end).toHaveBeenCalledTimes(6);
+      expect(events).toEqual([
+        "resources",
+        "activityPlug",
+        "resources",
+        "resources",
+        "resources",
+        "activityPlug",
+        "resources",
+        "resources",
+      ]);
+      await runtime.close();
+    } finally {
+      await runtime.close();
+      factory.mockImplementation(originalFactory);
+      connect.mockRestore();
+      redisConnect.mockRestore();
+      query.mockRestore();
+      quit.mockRestore();
+      end.mockRestore();
+    }
   });
 
   it("uses only Caddy's single sanitized forwarding hop", () => {
@@ -362,3 +513,14 @@ describe("createProductServer", () => {
     ).rejects.toThrow("ACTIVITYPLUG_ANONYMOUS_SESSION_MODE must be either stored or stateless.");
   });
 });
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((innerResolve) => {
+    resolve = innerResolve;
+  });
+  return { promise, resolve };
+}

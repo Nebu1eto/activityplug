@@ -11,6 +11,7 @@ import {
   indexName,
   type PostgresCountRow,
   readClock,
+  resolvePostgresCleanupLimit,
   withConnection,
 } from "./storage-internal.js";
 
@@ -183,19 +184,28 @@ export class PostgresAuthSessionStore implements AuthSessionStore {
     });
   }
 
-  public async deleteExpired(now?: Date): Promise<number> {
+  public async deleteExpired(now?: Date, limit?: number): Promise<number> {
+    const cleanupLimit = resolvePostgresCleanupLimit(limit);
     return await withConnection(this.#client, async (client) => {
       const checkedAt = readClock(() => now ?? this.#now());
       const result = await client.query<PostgresCountRow>(
-        `with deleted as (
-           delete from ${this.#tableName}
+        `with expired as (
+           select ctid
+           from ${this.#tableName}
            where data ? 'storageExpiresAt'
              and expires_at is not null
              and expires_at <= $1
+           order by expires_at, ctid
+           limit $2
+           for update skip locked
+         ), deleted as (
+           delete from ${this.#tableName} as target
+           using expired
+           where target.ctid = expired.ctid
            returning 1
          )
          select count(*)::text as count from deleted`,
-        [checkedAt.iso],
+        [checkedAt.iso, cleanupLimit],
       );
       return deletedRowCount(result);
     });
@@ -525,6 +535,11 @@ const accountRefSchema = z.looseObject({
   rawUrl: z.string().optional(),
 });
 
+const authSessionOwnerSchema = z.looseObject({
+  kind: z.literal("browser-session"),
+  id: z.string().min(1),
+});
+
 const storableSessionSchema = z.looseObject({
   id: z.string(),
   revision: revisionSchema,
@@ -538,6 +553,7 @@ const storableSessionSchema = z.looseObject({
   updatedAt: z.string(),
   expiresAt: z.string().optional(),
   account: accountRefSchema.optional(),
+  owner: authSessionOwnerSchema.optional(),
   metadata: jsonRecordSchema.optional(),
   storageExpiresAt: z.string().optional(),
 });

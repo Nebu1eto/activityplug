@@ -64,7 +64,11 @@ import {
 } from "./internals.js";
 import { listNotifications } from "./notifications.js";
 import { getPoll, votePoll } from "./polls.js";
-import { connectMisskeyNotificationStream, connectMisskeyTimelineStream } from "./streaming.js";
+import {
+  assertMisskeyWebSocketBearerSupported,
+  connectMisskeyNotificationStream,
+  connectMisskeyTimelineStream,
+} from "./streaming.js";
 import {
   assertAccessTokenFresh,
   assertRecordResponse,
@@ -913,11 +917,12 @@ async function uploadMediaFromUrl(
   context: AdapterOperationContext,
   options: MisskeyAdapterOptions,
 ): Promise<MediaAttachment> {
+  assertMisskeyWebSocketBearerSupported(context, "media.ingestUrl");
   const tokenSet = await requireStoredTokenSet(input.session, context, "media.ingestUrl");
   const marker = globalThis.crypto.randomUUID();
   const file = await waitForUrlUpload(
     marker,
-    tokenSet.accessToken,
+    authorizationHeader(tokenSet).Authorization,
     input.signal,
     context,
     options,
@@ -953,7 +958,7 @@ async function uploadMediaFromUrl(
 
 async function waitForUrlUpload(
   marker: string,
-  accessToken: string,
+  authorization: string,
   signal: AbortSignal | undefined,
   context: AdapterOperationContext,
   options: MisskeyAdapterOptions,
@@ -975,13 +980,15 @@ async function waitForUrlUpload(
   const streamingUrl = new URL("streaming", context.origin);
   streamingUrl.protocol = streamingUrl.protocol === "https:" ? "wss:" : "ws:";
   assertEncryptedWebSocket(streamingUrl, context, "media.ingestUrl");
-  streamingUrl.searchParams.set("i", accessToken);
   streamingUrl.searchParams.set("_t", String(Date.now()));
 
   let socket: WebSocket;
   try {
     const candidate = resolveWebSocketFactoryResult(
-      webSocket(streamingUrl.toString(), undefined, signal, { operation: "media.ingestUrl" }),
+      webSocket(streamingUrl.toString(), undefined, signal, {
+        operation: "media.ingestUrl",
+        authorization,
+      }),
       signal,
     );
     socket = isWebSocketPromise(candidate) ? await candidate : candidate;

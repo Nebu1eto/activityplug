@@ -5,13 +5,14 @@ import { z } from "zod";
 
 import {
   type BrowserSessionRecord,
+  type BrowserSessionAdmissionLimits,
+  type BrowserSessionAdmissionResult,
   type BrowserSessionStore,
   type OAuthClientSecretStore,
   type OAuthStartLimiter,
   type OAuthStartLimiterInput,
   type OAuthStartLimitResult,
   type OAuthStartReservationResult,
-  type OAuthStateBinding,
   type OAuthStateClaim,
   type OAuthStateRecord,
   type OAuthStateStore,
@@ -19,6 +20,7 @@ import {
   type StreamTicketRecord,
   type StreamTicketStore,
 } from "./contracts.js";
+import { ExpirationIndex } from "./expiration-index.js";
 
 const opportunisticCleanupIntervalMilliseconds = 60_000;
 
@@ -32,6 +34,11 @@ export interface InMemoryOAuthStateStoreOptions extends InMemoryExpiringStoreOpt
 
 export class InMemoryBrowserSessionStore implements BrowserSessionStore {
   readonly #records = new Map<string, BrowserSessionRecord>();
+  readonly #admissionSubjects = new Map<string, string>();
+  readonly #subjectLiveSessionCounts = new Map<string, number>();
+  readonly #expirations = new ExpirationIndex();
+  readonly #creationTimes = new Map<string, number[]>();
+  readonly #creationExpirations = new ExpirationIndex();
   readonly #now: () => Date;
   readonly #mutex = new PromiseChainMutex();
 
@@ -48,7 +55,69 @@ export class InMemoryBrowserSessionStore implements BrowserSessionStore {
       if (expiryMilliseconds(snapshot) <= now) return false;
       if (this.#records.has(snapshot.id)) return false;
       this.#records.set(snapshot.id, snapshot);
+      this.#expirations.set(snapshot.id, expiryMilliseconds(snapshot));
       return true;
+    });
+  }
+
+  public admit(
+    record: BrowserSessionRecord,
+    limits: BrowserSessionAdmissionLimits,
+  ): Promise<BrowserSessionAdmissionResult> {
+    const snapshot = cloneBrowserSession(record);
+    if (
+      snapshot === null ||
+      snapshot.revision !== 0 ||
+      !Number.isSafeInteger(limits.maximumLiveSessions) ||
+      limits.maximumLiveSessions <= 0 ||
+      !isNonEmptyString(limits.subject) ||
+      !Number.isSafeInteger(limits.maximumLiveSessionsPerSubject) ||
+      limits.maximumLiveSessionsPerSubject <= 0 ||
+      !Number.isSafeInteger(limits.maximumCreationsPerWindow) ||
+      limits.maximumCreationsPerWindow <= 0 ||
+      !Number.isSafeInteger(limits.windowMilliseconds) ||
+      limits.windowMilliseconds <= 0
+    ) {
+      return Promise.resolve({ admitted: false, reason: "conflict" });
+    }
+
+    return this.#mutex.run(() => {
+      const now = readClock(this.#now);
+      if (expiryMilliseconds(snapshot) <= now || this.#records.has(snapshot.id)) {
+        return { admitted: false, reason: "conflict" } as const;
+      }
+      this.#deleteExpiredBrowserSessions(now);
+      this.#deleteExpiredCreationTimes(now);
+      if (this.#records.size >= limits.maximumLiveSessions) {
+        return { admitted: false, reason: "capacity_exceeded" } as const;
+      }
+      const subjectLiveSessions = this.#subjectLiveSessionCounts.get(limits.subject) ?? 0;
+      if (subjectLiveSessions >= limits.maximumLiveSessionsPerSubject) {
+        return { admitted: false, reason: "subject_capacity_exceeded" } as const;
+      }
+      const cutoff = now - limits.windowMilliseconds;
+      const creationTimes = (this.#creationTimes.get(limits.subject) ?? []).filter(
+        (createdAt) => createdAt > cutoff,
+      );
+      if (creationTimes.length >= limits.maximumCreationsPerWindow) {
+        const retryAfterSeconds = Math.max(
+          1,
+          Math.ceil(((creationTimes[0] ?? now) + limits.windowMilliseconds - now) / 1_000),
+        );
+        this.#creationTimes.set(limits.subject, creationTimes);
+        this.#creationExpirations.set(
+          limits.subject,
+          (creationTimes.at(-1) ?? now) + limits.windowMilliseconds,
+        );
+        return { admitted: false, reason: "rate_limited", retryAfterSeconds } as const;
+      }
+      this.#records.set(snapshot.id, snapshot);
+      this.#expirations.set(snapshot.id, expiryMilliseconds(snapshot));
+      this.#admissionSubjects.set(snapshot.id, limits.subject);
+      this.#subjectLiveSessionCounts.set(limits.subject, subjectLiveSessions + 1);
+      this.#creationTimes.set(limits.subject, [...creationTimes, now]);
+      this.#creationExpirations.set(limits.subject, now + limits.windowMilliseconds);
+      return { admitted: true } as const;
     });
   }
 
@@ -57,7 +126,7 @@ export class InMemoryBrowserSessionStore implements BrowserSessionStore {
       const record = this.#records.get(id);
       if (record === undefined) return null;
       if (expiryMilliseconds(record) <= readClock(this.#now)) {
-        this.#records.delete(id);
+        this.#deleteBrowserSession(id);
         return null;
       }
       return cloneBrowserSession(record);
@@ -81,33 +150,67 @@ export class InMemoryBrowserSessionStore implements BrowserSessionStore {
       if (current === undefined) return false;
       const now = readClock(this.#now);
       if (expiryMilliseconds(current) <= now) {
-        this.#records.delete(id);
+        this.#deleteBrowserSession(id);
         return false;
       }
       if (expiryMilliseconds(snapshot) <= now || current.revision !== revision) return false;
       this.#records.set(id, snapshot);
+      this.#expirations.set(id, expiryMilliseconds(snapshot));
       return true;
     });
   }
 
   public delete(id: string): Promise<void> {
     return this.#mutex.run(() => {
-      this.#records.delete(id);
+      this.#deleteBrowserSession(id);
     });
   }
 
-  public deleteExpired(now?: Date): Promise<number> {
+  public deleteExpired(now?: Date, limit = Number.MAX_SAFE_INTEGER): Promise<number> {
+    const cleanupLimit = positiveSafeInteger(limit, "Cleanup limit");
     return this.#mutex.run(() => {
       const checkedAt = readDate(now ?? this.#now());
       let deleted = 0;
-      for (const [id, record] of this.#records) {
-        if (expiryMilliseconds(record) <= checkedAt) {
-          this.#records.delete(id);
-          deleted += 1;
-        }
+      while ((this.#expirations.peek()?.expiresAt ?? Number.POSITIVE_INFINITY) <= checkedAt) {
+        const expired = this.#expirations.peek();
+        if (expired === undefined) break;
+        this.#deleteBrowserSession(expired.key);
+        deleted += 1;
+        if (deleted >= cleanupLimit) break;
       }
       return deleted;
     });
+  }
+
+  #deleteBrowserSession(id: string): void {
+    this.#records.delete(id);
+    this.#expirations.delete(id);
+    const subject = this.#admissionSubjects.get(id);
+    this.#admissionSubjects.delete(id);
+    if (subject === undefined) return;
+    const liveSessions = this.#subjectLiveSessionCounts.get(subject);
+    if (liveSessions === undefined || liveSessions <= 1) {
+      this.#subjectLiveSessionCounts.delete(subject);
+    } else {
+      this.#subjectLiveSessionCounts.set(subject, liveSessions - 1);
+    }
+  }
+
+  #deleteExpiredBrowserSessions(now: number): void {
+    while ((this.#expirations.peek()?.expiresAt ?? Number.POSITIVE_INFINITY) <= now) {
+      const expired = this.#expirations.peek();
+      if (expired === undefined) return;
+      this.#deleteBrowserSession(expired.key);
+    }
+  }
+
+  #deleteExpiredCreationTimes(now: number): void {
+    while ((this.#creationExpirations.peek()?.expiresAt ?? Number.POSITIVE_INFINITY) <= now) {
+      const expired = this.#creationExpirations.peek();
+      if (expired === undefined) return;
+      this.#creationExpirations.delete(expired.key);
+      this.#creationTimes.delete(expired.key);
+    }
   }
 }
 
@@ -218,7 +321,8 @@ export class InMemoryOAuthStateStore implements OAuthStateStore {
     });
   }
 
-  public deleteExpired(now?: Date): Promise<number> {
+  public deleteExpired(now?: Date, limit = Number.MAX_SAFE_INTEGER): Promise<number> {
+    const cleanupLimit = positiveSafeInteger(limit, "Cleanup limit");
     return this.#mutex.run(() => {
       const checkedAt = readDate(now ?? this.#now());
       let deleted = 0;
@@ -226,6 +330,7 @@ export class InMemoryOAuthStateStore implements OAuthStateStore {
         if (expiryMilliseconds(stored.record) <= checkedAt) {
           this.#records.delete(stateHash);
           deleted += 1;
+          if (deleted >= cleanupLimit) break;
         }
       }
       return deleted;
@@ -272,7 +377,24 @@ export class InMemoryOAuthClientSecretStore implements OAuthClientSecretStore {
     });
   }
 
-  public deleteExpired(now?: Date): Promise<number> {
+  public get(ref: string): Promise<string | null> {
+    return this.#mutex.run(() => {
+      const stored = this.#records.get(ref);
+      if (stored === undefined) return null;
+      if (expiresAtValue(stored.expiresAt) <= readClock(this.#now)) {
+        this.#records.delete(ref);
+        return null;
+      }
+      return stored.secret;
+    });
+  }
+
+  public delete(ref: string): Promise<boolean> {
+    return this.#mutex.run(() => this.#records.delete(ref));
+  }
+
+  public deleteExpired(now?: Date, limit = Number.MAX_SAFE_INTEGER): Promise<number> {
+    const cleanupLimit = positiveSafeInteger(limit, "Cleanup limit");
     return this.#mutex.run(() => {
       const checkedAt = readDate(now ?? this.#now());
       let deleted = 0;
@@ -280,6 +402,7 @@ export class InMemoryOAuthClientSecretStore implements OAuthClientSecretStore {
         if (expiresAtValue(stored.expiresAt) <= checkedAt) {
           this.#records.delete(ref);
           deleted += 1;
+          if (deleted >= cleanupLimit) break;
         }
       }
       return deleted;
@@ -552,6 +675,22 @@ export class InMemoryShortCacheStore implements ShortCacheStore {
   public delete(key: string): Promise<void> {
     return this.#mutex.run(() => {
       this.#records.delete(key);
+    });
+  }
+
+  public deleteExpired(now: Date = this.#now(), limit = Number.MAX_SAFE_INTEGER): Promise<number> {
+    const cleanupLimit = positiveSafeInteger(limit, "Cleanup limit");
+    return this.#mutex.run(() => {
+      const checkedAt = readDate(now);
+      let deleted = 0;
+      for (const [key, entry] of this.#records) {
+        if (expiresAtValue(entry.expiresAt) > checkedAt) continue;
+        this.#records.delete(key);
+        deleted += 1;
+        if (deleted >= cleanupLimit) break;
+      }
+      this.#nextCleanupAt = checkedAt + opportunisticCleanupIntervalMilliseconds;
+      return deleted;
     });
   }
 

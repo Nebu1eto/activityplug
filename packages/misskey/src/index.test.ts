@@ -1,7 +1,19 @@
-import { createActivityPlugClient, createEntityRef } from "@activityplug/core";
+import {
+  createActivityPlugClient as createActivityPlugClientWithVersion,
+  createEntityRef,
+  createRemoteAuthority,
+  type ActivityPlugClientOptions,
+} from "@activityplug/core";
 import { describe, expect, it, vi } from "vitest";
 
 import { createMisskeyAdapter } from "./index.js";
+
+function createActivityPlugClient(options: ActivityPlugClientOptions) {
+  return createActivityPlugClientWithVersion({
+    detectedSoftware: { name: "misskey", version: "2026.6.0" },
+    ...options,
+  });
+}
 
 describe("Misskey post semantics", () => {
   it("declares every supported post creation input", () => {
@@ -23,7 +35,7 @@ describe("Misskey post semantics", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch,
+      remoteAuthority: createRemoteAuthority({ transport: fetch }),
     });
     const session = await client.auth.injectToken({ accessToken: "viewer-token" });
 
@@ -43,7 +55,7 @@ describe("Misskey post semantics", () => {
     const defaultClient = createActivityPlugClient({
       adapter: defaultAdapter,
       origin: "https://misskey.example",
-      fetch,
+      remoteAuthority: createRemoteAuthority({ transport: fetch }),
     });
     const session = await defaultClient.auth.injectToken({ accessToken: "token" });
 
@@ -80,23 +92,68 @@ describe("Misskey post semantics", () => {
     expect(configuredAdapter.media?.ingestUrl).toBe(configuredAdapter.media?.uploadFromUrl);
   });
 
+  it("rejects URL ingestion before remote work when bearer WebSocket support is unknown", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const webSocket = vi.fn();
+    const client = createActivityPlugClientWithVersion({
+      adapter: createMisskeyAdapter({ webSocket }),
+      origin: "https://misskey.example",
+      remoteAuthority: createRemoteAuthority({ transport: fetch }),
+    });
+    const session = await client.auth.injectToken({ accessToken: "viewer-token" });
+
+    await expect(
+      client.media.ingestUrl({ session, url: "https://cdn.example/image.png" }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "media.urlIngestion", operation: "media.ingestUrl" },
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(webSocket).not.toHaveBeenCalled();
+  });
+
+  it("applies same-origin authorization-header policy to URL ingestion", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const webSocket = vi.fn();
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter({ webSocket }),
+      origin: "https://misskey.example",
+      remoteAuthority: createRemoteAuthority({
+        transport: fetch,
+        sameOriginRepresentations: [],
+      }),
+    });
+    const session = await client.auth.injectToken({ accessToken: "viewer-token" });
+
+    await expect(
+      client.media.ingestUrl({ session, url: "https://cdn.example/image.png" }),
+    ).rejects.toMatchObject({
+      code: "ORIGIN_NOT_ALLOWED",
+      context: { operation: "media.ingestUrl" },
+    });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(webSocket).not.toHaveBeenCalled();
+  });
+
   it("marks a post sensitive when any attached file is sensitive", async () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch: mockFetch(async () =>
-        Response.json({
-          ...misskeyNote("sensitive-media"),
-          files: [
-            {
-              id: "file-1",
-              type: "image/png",
-              url: "https://misskey.example/files/file-1.png",
-              isSensitive: true,
-            },
-          ],
-        }),
-      ),
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async () =>
+          Response.json({
+            ...misskeyNote("sensitive-media"),
+            files: [
+              {
+                id: "file-1",
+                type: "image/png",
+                url: "https://misskey.example/files/file-1.png",
+                isSensitive: true,
+              },
+            ],
+          }),
+        ),
+      }),
     });
 
     const post = await client.posts.get({ id: misskeyPostId("sensitive-media") });
@@ -108,12 +165,14 @@ describe("Misskey post semantics", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch: mockFetch(async (request) => {
-        const { noteId } = (await request.json()) as { readonly noteId: string };
-        return Response.json({
-          ...misskeyNote(noteId),
-          ...(noteId === "null-cw" ? { cw: null } : {}),
-        });
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          const { noteId } = (await request.json()) as { readonly noteId: string };
+          return Response.json({
+            ...misskeyNote(noteId),
+            ...(noteId === "null-cw" ? { cw: null } : {}),
+          });
+        }),
       }),
     });
 
@@ -128,7 +187,9 @@ describe("Misskey post semantics", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch: mockFetch(async () => Response.json({ ...misskeyNote("cw"), cw: "Warning" })),
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async () => Response.json({ ...misskeyNote("cw"), cw: "Warning" })),
+      }),
     });
 
     const post = await client.posts.get({ id: misskeyPostId("cw") });
@@ -161,7 +222,11 @@ describe("Misskey post semantics", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch: mockFetch(async () => Response.json({ ...misskeyNote("malformed"), files: [file] })),
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async () =>
+          Response.json({ ...misskeyNote("malformed"), files: [file] }),
+        ),
+      }),
     });
 
     await expect(client.posts.get({ id: misskeyPostId("malformed") })).rejects.toMatchObject({
@@ -181,15 +246,17 @@ describe("Misskey post semantics", () => {
     const client = createActivityPlugClient({
       adapter: createMisskeyAdapter(),
       origin: "https://misskey.example",
-      fetch: mockFetch(async (request) => {
-        const path = new URL(request.url).pathname;
-        paths.push(path);
-        if (path === mutationPath) return new Response(null, { status: 204 });
-        if (path === "/api/notes/show") {
-          expect(request.headers.get("Authorization")).toBe("Bearer viewer-token");
-          return Response.json(misskeyNote("note-1"));
-        }
-        return Response.json({ error: "unexpected request" }, { status: 404 });
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          const path = new URL(request.url).pathname;
+          paths.push(path);
+          if (path === mutationPath) return new Response(null, { status: 204 });
+          if (path === "/api/notes/show") {
+            expect(request.headers.get("Authorization")).toBe("Bearer viewer-token");
+            return Response.json(misskeyNote("note-1"));
+          }
+          return Response.json({ error: "unexpected request" }, { status: 404 });
+        }),
       }),
     });
     const session = await client.auth.injectToken({ accessToken: "viewer-token" });

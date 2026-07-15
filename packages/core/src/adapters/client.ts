@@ -6,11 +6,13 @@ import {
 } from "../capabilities/capability.js";
 import { ActivityPlugError, unsupportedOperation } from "../errors/error.js";
 import { decodeOpaqueId } from "../ids/opaque-id.js";
+import { createBudgetedFetch } from "../security/request-budget.js";
 import { isIsoDateTimeString } from "../types/datetime.js";
 import { type TimelineStreamInput } from "../types/streaming.js";
 import {
   type ActivityPlugClient,
   type ActivityPlugClientOptions,
+  type ActivityPlugAdapter,
   type AdapterOperationContext,
   type AccountService,
   type BookmarkFolderPostInput,
@@ -66,27 +68,50 @@ export function createActivityPlugClient(options: ActivityPlugClientOptions): Ac
   }
   const origin = normalizeOrigin(options.origin, "client.create", options.adapter.metadata.id);
   const sessionStore = options.sessionStore ?? new InMemoryAuthSessionStore();
-  // Resolve the transport once at the client boundary so adapters cannot
-  // silently choose a different fetch implementation for selected requests.
-  if (options.fetch !== undefined && typeof options.fetch !== "function") {
+  if (options.fetch !== undefined) {
     throw new ActivityPlugError(
       "VALIDATION_FAILED",
-      "ActivityPlug client fetch must be a function.",
+      "Raw fetch transports are not accepted. Provide a scoped remoteAuthority.",
       { adapter: options.adapter.metadata.id, origin, operation: "client.create" },
     );
   }
-  const remoteFetch = options.fetch === undefined ? globalThis.fetch : options.fetch;
-  if (typeof remoteFetch !== "function") {
+  if (
+    options.remoteAuthority !== undefined &&
+    (typeof options.remoteAuthority !== "object" ||
+      options.remoteAuthority === null ||
+      typeof options.remoteAuthority.fetch !== "function")
+  ) {
     throw new ActivityPlugError(
       "VALIDATION_FAILED",
-      "ActivityPlug client fetch must be a function.",
+      "ActivityPlug client remoteAuthority must implement fetch.",
       { adapter: options.adapter.metadata.id, origin, operation: "client.create" },
     );
   }
+  const scopedRemoteFetch = (destination: string, operation: string): typeof globalThis.fetch => {
+    const authority = options.remoteAuthority;
+    if (authority === undefined) {
+      return () => {
+        throw new ActivityPlugError(
+          "ORIGIN_NOT_ALLOWED",
+          "Remote I/O requires an explicit scoped remote authority.",
+          { adapter: options.adapter.metadata.id, origin, operation },
+        );
+      };
+    }
+    return scopedFetch(authority, origin, destination, operation);
+  };
+  const unscopedFetch: typeof globalThis.fetch = () => {
+    throw new ActivityPlugError(
+      "ORIGIN_NOT_ALLOWED",
+      "Remote I/O requires a concrete public operation.",
+      { adapter: options.adapter.metadata.id, origin, operation: "client.create" },
+    );
+  };
   const client = {
-    adapter: options.adapter,
+    adapter: budgetCheckedAdapter(options.adapter),
     origin,
-    fetch: remoteFetch,
+    fetch: unscopedFetch,
+    fetchForOperation: (operation: string) => scopedRemoteFetch(origin, operation),
     capabilities:
       options.capabilities ??
       mergeCapabilityLayers([
@@ -96,9 +121,14 @@ export function createActivityPlugClient(options: ActivityPlugClientOptions): Ac
         },
       ]),
     sessionStore,
+    credentialLeases: options.credentialLeases,
+    remoteAuthority: options.remoteAuthority,
+    createBudgetScope: options.createBudgetScope,
+    detectedSoftware: options.detectedSoftware,
   };
   return {
     ...client,
+    adapter: options.adapter,
     auth: createAuthService(client),
     instances: createInstanceService(client),
     accounts: createAccountService(client),
@@ -140,21 +170,23 @@ function createInstanceService(client: RequiredClientContext): InstanceService {
   return {
     detect: async (input = {}) => {
       const operation = client.adapter.instances?.detect ?? client.adapter.instances?.getProfile;
-      if (operation === undefined) throw unsupportedOperation("instance.detect", context(client));
+      if (operation === undefined)
+        throw unsupportedOperation("instance.detect", context(client, "instance.detect"));
       const origin =
         input.origin === undefined
           ? client.origin
           : normalizeOrigin(input.origin, "instance.detect", client.adapter.metadata.id);
-      return operation({ origin }, context(client, origin));
+      return operation({ origin }, context(client, "instance.detect", origin));
     },
     getProfile: async (input = {}) => {
       const operation = client.adapter.instances?.getProfile;
-      if (operation === undefined) throw unsupportedOperation("instance.get", context(client));
+      if (operation === undefined)
+        throw unsupportedOperation("instance.get", context(client, "instance.get"));
       const origin =
         input.origin === undefined
           ? client.origin
           : normalizeOrigin(input.origin, "instance.get", client.adapter.metadata.id);
-      return operation({ origin }, context(client, origin));
+      return operation({ origin }, context(client, "instance.get", origin));
     },
     oauthMetadata: async (input = {}) => {
       const operation = client.adapter.instances?.oauthMetadata;
@@ -169,7 +201,7 @@ function createInstanceService(client: RequiredClientContext): InstanceService {
         input.origin === undefined
           ? client.origin
           : normalizeOrigin(input.origin, "instance.oauthMetadata", client.adapter.metadata.id);
-      return operation({ origin }, context(client, origin));
+      return operation({ origin }, context(client, "instance.oauthMetadata", origin));
     },
     peers: async (input = {}) => {
       const operation = client.adapter.instances?.peers;
@@ -181,7 +213,7 @@ function createInstanceService(client: RequiredClientContext): InstanceService {
         input.origin === undefined
           ? client.origin
           : normalizeOrigin(input.origin, "instance.peers", client.adapter.metadata.id);
-      const peers = await operation({ origin }, context(client, origin));
+      const peers = await operation({ origin }, context(client, "instance.peers", origin));
       return {
         ...peers,
         origins: peers.origins.map(canonicalizeOrigin),
@@ -194,16 +226,18 @@ function createAccountService(client: RequiredClientContext): AccountService {
   return {
     getById: async (input) => {
       const operation = client.adapter.accounts?.getById;
-      if (operation === undefined) throw unsupportedOperation("account.get", context(client));
+      if (operation === undefined)
+        throw unsupportedOperation("account.get", context(client, "account.get"));
       requireClientCapability(client, "accounts.lookupById", "account.get");
       const rawId = decodeRawRef(input.id, client, "account", "account.get");
-      return operation({ id: rawId }, context(client));
+      return operation({ id: rawId }, context(client, "account.get"));
     },
     getByHandle: async (input) => {
       const operation = client.adapter.accounts?.getByHandle;
-      if (operation === undefined) throw unsupportedOperation("account.lookup", context(client));
+      if (operation === undefined)
+        throw unsupportedOperation("account.lookup", context(client, "account.lookup"));
       requireClientCapability(client, "accounts.lookupByHandle", "account.lookup");
-      return operation(input, context(client));
+      return operation(input, context(client, "account.lookup"));
     },
     updateProfile: async (input) => {
       const operation = client.adapter.accounts?.updateProfile;
@@ -225,7 +259,7 @@ function createAccountService(client: RequiredClientContext): AccountService {
             ? {}
             : { headerId: decodeRawRef(input.headerId, client, "media", "account.updateProfile") }),
         },
-        context(client),
+        context(client, "account.updateProfile"),
       );
     },
     listFollowers: async (input) =>
@@ -240,7 +274,8 @@ function createAccountService(client: RequiredClientContext): AccountService {
       }),
     listPosts: async (input) => {
       const operation = client.adapter.accounts?.listPosts;
-      if (operation === undefined) throw unsupportedOperation("account.posts", context(client));
+      if (operation === undefined)
+        throw unsupportedOperation("account.posts", context(client, "account.posts"));
       requireClientCapability(client, "posts.read", "account.posts");
       const page = normalizePageInput(input.page, "account.posts", client);
       const rawId = decodeRawRef(input.accountId, client, "account", "account.posts");
@@ -250,7 +285,7 @@ function createAccountService(client: RequiredClientContext): AccountService {
           ...(page === undefined ? {} : { page }),
           ...(input.session === undefined ? {} : { session: input.session }),
         },
-        context(client),
+        context(client, "account.posts"),
       );
     },
   };
@@ -277,7 +312,7 @@ async function listAccountFollows(
       ...(page === undefined ? {} : { page }),
       ...(input.session === undefined ? {} : { session: input.session }),
     },
-    context(client),
+    context(client, names.operation),
   );
 }
 
@@ -352,7 +387,7 @@ function createPostService(client: RequiredClientContext): PostService {
         throw unsupportedOperation("post.get", capabilityContext(client, "posts.read"));
       requireClientCapability(client, "posts.read", "post.get");
       const rawId = decodeRawRef(input.id, client, "post", "post.get");
-      return operation({ ...input, id: rawId }, context(client));
+      return operation({ ...input, id: rawId }, context(client, "post.get"));
     },
     create: async (input) => {
       const operation = client.adapter.posts?.create;
@@ -381,7 +416,7 @@ function createPostService(client: RequiredClientContext): PostService {
         ...decodeOptionalPostRef(input.quoteOfId, client, "post.create", "quoteOfId"),
         mediaIds: input.mediaIds?.map((id) => decodeRawRef(id, client, "media", "post.create")),
       };
-      return operation(normalized, context(client));
+      return operation(normalized, context(client, "post.create"));
     },
     update: async (input) => {
       const operation = client.adapter.posts?.update;
@@ -419,7 +454,7 @@ function createPostService(client: RequiredClientContext): PostService {
             }),
         ...(input.poll === undefined ? {} : { poll: input.poll }),
       };
-      return operation(normalized, context(client));
+      return operation(normalized, context(client, "post.update"));
     },
     history: async (input) => {
       const operation = client.adapter.posts?.history;
@@ -429,7 +464,7 @@ function createPostService(client: RequiredClientContext): PostService {
       requireClientCapability(client, "posts.history", "post.history");
       return operation(
         { ...input, id: decodeRawRef(input.id, client, "post", "post.history") },
-        context(client),
+        context(client, "post.history"),
       );
     },
     delete: async (input) => {
@@ -439,7 +474,7 @@ function createPostService(client: RequiredClientContext): PostService {
       }
       requireClientCapability(client, "posts.delete", "post.delete");
       const rawId = decodeRawRef(input.id, client, "post", "post.delete");
-      return operation({ ...input, id: rawId }, context(client));
+      return operation({ ...input, id: rawId }, context(client, "post.delete"));
     },
     context: async (input) => {
       const operation = client.adapter.posts?.context;
@@ -449,7 +484,7 @@ function createPostService(client: RequiredClientContext): PostService {
       requireClientCapability(client, "posts.context", "post.context");
       return operation(
         { id: decodeRawRef(input.id, client, "post", "post.context") },
-        context(client),
+        context(client, "post.context"),
       );
     },
     quotes: async (input) => {
@@ -464,7 +499,7 @@ function createPostService(client: RequiredClientContext): PostService {
           postId: decodeRawRef(input.postId, client, "post", "post.quotes"),
           ...(page === undefined ? {} : { page }),
         },
-        context(client),
+        context(client, "post.quotes"),
       );
     },
     translate: async (input) => {
@@ -487,7 +522,7 @@ function createPostService(client: RequiredClientContext): PostService {
           ...input,
           postId: decodeRawRef(input.postId, client, "post", "post.translate"),
         },
-        context(client),
+        context(client, "post.translate"),
       );
     },
   };
@@ -693,7 +728,7 @@ function createTimelineService(client: RequiredClientContext): TimelineService {
       requireClientCapability(client, "timelines.home", "timeline.home");
       return operation(
         { ...input, page: normalizePageInput(input.page, "timeline.home", client) },
-        context(client),
+        context(client, "timeline.home"),
       );
     },
     public: async (input) => {
@@ -712,7 +747,7 @@ function createTimelineService(client: RequiredClientContext): TimelineService {
       );
       return operation(
         { ...input, page: normalizePageInput(input.page, "timeline.public", client) },
-        context(client),
+        context(client, input.local === true ? "timeline.local" : "timeline.public"),
       );
     },
     local: async (input) => {
@@ -723,7 +758,7 @@ function createTimelineService(client: RequiredClientContext): TimelineService {
       requireClientCapability(client, "timelines.local", "timeline.local");
       return operation(
         { ...input, local: true, page: normalizePageInput(input.page, "timeline.local", client) },
-        context(client),
+        context(client, "timeline.local"),
       );
     },
     hashtag: async (input) => {
@@ -744,7 +779,7 @@ function createTimelineService(client: RequiredClientContext): TimelineService {
       requireClientCapability(client, "timelines.hashtag", "timeline.hashtag");
       return operation(
         { ...input, page: normalizePageInput(input.page, "timeline.hashtag", client) },
-        context(client),
+        context(client, "timeline.hashtag"),
       );
     },
     list: async (input) => {
@@ -759,7 +794,7 @@ function createTimelineService(client: RequiredClientContext): TimelineService {
           listId: decodeRawRef(input.listId, client, "list", "timeline.list"),
           page: normalizePageInput(input.page, "timeline.list", client),
         },
-        context(client),
+        context(client, "timeline.list"),
       );
     },
   };
@@ -772,14 +807,13 @@ function createSearchService(client: RequiredClientContext): SearchService {
       if (operation === undefined) {
         const capability = searchCapability(input.type);
         throw unsupportedOperation("search", {
-          ...context(client),
+          ...context(client, "search"),
           ...(capability === undefined ? {} : { capability }),
         });
       }
       if (typeof input.query !== "string" || input.query.length === 0) {
         throw new ActivityPlugError("VALIDATION_FAILED", "Search query must not be empty.", {
-          ...context(client),
-          operation: "search",
+          ...context(client, "search"),
         });
       }
       if (
@@ -789,8 +823,7 @@ function createSearchService(client: RequiredClientContext): SearchService {
         input.type !== "hashtags"
       ) {
         throw new ActivityPlugError("VALIDATION_FAILED", "Search type is not supported.", {
-          ...context(client),
-          operation: "search",
+          ...context(client, "search"),
         });
       }
       assertOptionalBoolean(input.resolve, "resolve", "search", client);
@@ -800,7 +833,7 @@ function createSearchService(client: RequiredClientContext): SearchService {
       } else {
         requireBroadSearchCapabilities(client);
       }
-      return operation({ ...input, page }, context(client));
+      return operation({ ...input, page }, context(client, "search"));
     },
   };
 }
@@ -821,7 +854,7 @@ function createMediaService(client: RequiredClientContext): MediaService {
     if (!URL.canParse(input.url)) {
       throwValidation("Media URL must be a valid URL.", "media.ingestUrl", client);
     }
-    return operation(input, context(client));
+    return operation(input, context(client, "media.ingestUrl"));
   };
   return {
     get: async (input) => {
@@ -832,7 +865,7 @@ function createMediaService(client: RequiredClientContext): MediaService {
       requireClientCapability(client, "media.get", "media.get");
       return operation(
         { id: decodeRawRef(input.id, client, "media", "media.get") },
-        context(client),
+        context(client, "media.get"),
       );
     },
     upload: async (input) => {
@@ -847,7 +880,7 @@ function createMediaService(client: RequiredClientContext): MediaService {
       assertOptionalString(input.filename, "filename", "media.upload", client);
       assertOptionalString(input.description, "description", "media.upload", client);
       requireClientCapability(client, "media.upload", "media.upload");
-      return operation(input, context(client));
+      return operation(input, context(client, "media.upload"));
     },
     update: async (input) => {
       const operation = client.adapter.media?.update;
@@ -858,7 +891,7 @@ function createMediaService(client: RequiredClientContext): MediaService {
       validateUpdateMediaInput(input, client);
       return operation(
         { ...input, id: decodeRawRef(input.id, client, "media", "media.update") },
-        context(client),
+        context(client, "media.update"),
       );
     },
     delete: async (input) => {
@@ -868,7 +901,7 @@ function createMediaService(client: RequiredClientContext): MediaService {
       }
       requireClientCapability(client, "media.delete", "media.delete");
       const id = decodeRawRef(input.id, client, "media", "media.delete");
-      return operation({ ...input, id }, context(client));
+      return operation({ ...input, id }, context(client, "media.delete"));
     },
     ingestUrl,
     uploadFromUrl: ingestUrl,
@@ -891,7 +924,7 @@ function createPollService(client: RequiredClientContext): PollService {
       }
       requireClientCapability(client, "polls.read", "poll.get");
       const id = decodeRawRef(input.id, client, "poll", "poll.get");
-      return operation({ ...input, id }, context(client));
+      return operation({ ...input, id }, context(client, "poll.get"));
     },
     vote: async (input) => {
       const operation = client.adapter.polls?.vote;
@@ -911,7 +944,7 @@ function createPollService(client: RequiredClientContext): PollService {
         );
       }
       const pollId = decodeRawRef(input.pollId, client, "poll", "poll.vote");
-      return operation({ ...input, pollId }, context(client));
+      return operation({ ...input, pollId }, context(client, "poll.vote"));
     },
   };
 }
@@ -924,13 +957,16 @@ function createSocialService(client: RequiredClientContext): SocialService {
     operation: ((input: Input, context: AdapterOperationContext) => Promise<Output>) | undefined,
   ) => {
     if (operation === undefined) {
-      throw unsupportedOperation(operationName, { ...context(client), capability: capabilityName });
+      throw unsupportedOperation(operationName, {
+        ...context(client, operationName),
+        capability: capabilityName,
+      });
     }
     requireClientCapability(client, capabilityName, operationName);
-    if (operationName === "social.mute") validateMuteInput(input as MuteAccountInput, client);
+    if (operationName === "social.mute") validateMuteInput(input, client);
     return operation(
       { ...input, accountId: decodeRawRef(input.accountId, client, "account", operationName) },
-      context(client),
+      context(client, operationName),
     );
   };
   const postAction = <Input extends PostActionInput, Output>(
@@ -940,16 +976,19 @@ function createSocialService(client: RequiredClientContext): SocialService {
     operation: ((input: Input, context: AdapterOperationContext) => Promise<Output>) | undefined,
   ) => {
     if (operation === undefined) {
-      throw unsupportedOperation(operationName, { ...context(client), capability: capabilityName });
+      throw unsupportedOperation(operationName, {
+        ...context(client, operationName),
+        capability: capabilityName,
+      });
     }
     requireClientCapability(client, capabilityName, operationName);
-    if (operationName === "social.boost") validateBoostInput(input as BoostPostInput, client);
+    if (operationName === "social.boost") validateBoostInput(input, client);
     if (operationName === "social.reaction" || operationName === "social.unreaction") {
       validateReactInput(input as unknown as ReactPostInput, operationName, client);
     }
     return operation(
       { ...input, postId: decodeRawRef(input.postId, client, "post", operationName) },
-      context(client),
+      context(client, operationName),
     );
   };
   return {
@@ -1013,7 +1052,7 @@ function createNotificationService(client: RequiredClientContext): NotificationS
       validateNotificationTypes(input.types, client, "notification.list");
       return operation(
         { ...input, page: normalizePageInput(input.page, "notification.list", client) },
-        context(client),
+        context(client, "notification.list"),
       );
     },
     unreadCount: async (input) => {
@@ -1025,7 +1064,7 @@ function createNotificationService(client: RequiredClientContext): NotificationS
         );
       }
       requireClientCapability(client, "notifications.unreadCount", "notification.unreadCount");
-      return operation(input, context(client));
+      return operation(input, context(client, "notification.unreadCount"));
     },
     dismiss: async (input) => {
       const operation = client.adapter.notifications?.dismiss;
@@ -1038,7 +1077,7 @@ function createNotificationService(client: RequiredClientContext): NotificationS
       requireClientCapability(client, "notifications.dismiss", "notification.dismiss");
       return operation(
         { ...input, id: decodeRawRef(input.id, client, "notification", "notification.dismiss") },
-        context(client),
+        context(client, "notification.dismiss"),
       );
     },
     clear: async (input) => {
@@ -1050,7 +1089,7 @@ function createNotificationService(client: RequiredClientContext): NotificationS
         );
       }
       requireClientCapability(client, "notifications.clear", "notification.clear");
-      await operation(input, context(client));
+      await operation(input, context(client, "notification.clear"));
     },
     groups: async (input) => {
       const operation = client.adapter.notifications?.groups;
@@ -1067,7 +1106,7 @@ function createNotificationService(client: RequiredClientContext): NotificationS
       validateNotificationTypes(input.types, client, "notification.groups");
       return operation(
         { ...input, page: normalizePageInput(input.page, "notification.groups", client) },
-        context(client),
+        context(client, "notification.groups"),
       );
     },
   };
@@ -1083,7 +1122,7 @@ function createListService(client: RequiredClientContext): ListService {
       requireClientCapability(client, "lists.read", "list.list");
       return operation(
         { ...input, page: normalizePageInput(input.page, "list.list", client) },
-        context(client),
+        context(client, "list.list"),
       );
     },
     get: async (input) => {
@@ -1094,7 +1133,7 @@ function createListService(client: RequiredClientContext): ListService {
       requireClientCapability(client, "lists.read", "list.get");
       return operation(
         { ...input, id: decodeRawRef(input.id, client, "list", "list.get") },
-        context(client),
+        context(client, "list.get"),
       );
     },
     create: async (input) => {
@@ -1104,7 +1143,7 @@ function createListService(client: RequiredClientContext): ListService {
       }
       requireClientCapability(client, "lists.create", "list.create");
       validateListInput(input, "list.create", client);
-      return operation(input, context(client));
+      return operation(input, context(client, "list.create"));
     },
     update: async (input) => {
       const operation = client.adapter.lists?.update;
@@ -1115,7 +1154,7 @@ function createListService(client: RequiredClientContext): ListService {
       validateListInput(input, "list.update", client);
       return operation(
         { ...input, id: decodeRawRef(input.id, client, "list", "list.update") },
-        context(client),
+        context(client, "list.update"),
       );
     },
     delete: async (input) => {
@@ -1126,7 +1165,7 @@ function createListService(client: RequiredClientContext): ListService {
       requireClientCapability(client, "lists.delete", "list.delete");
       return operation(
         { ...input, id: decodeRawRef(input.id, client, "list", "list.delete") },
-        context(client),
+        context(client, "list.delete"),
       );
     },
     listAccounts: async (input) => {
@@ -1135,7 +1174,10 @@ function createListService(client: RequiredClientContext): ListService {
         throw unsupportedOperation("list.accounts", capabilityContext(client, "lists.members"));
       }
       requireClientCapability(client, "lists.members", "list.accounts");
-      return operation(decodeListAccountInput(input, client, "list.accounts"), context(client));
+      return operation(
+        decodeListAccountInput(input, client, "list.accounts"),
+        context(client, "list.accounts"),
+      );
     },
     addAccount: async (input) =>
       listAccountAction(input, "list.account.add", client, client.adapter.lists?.addAccount),
@@ -1209,7 +1251,7 @@ function createFollowRequestService(client: RequiredClientContext): FollowReques
       requireClientCapability(client, "followRequests.list", "followRequest.list");
       return operation(
         { ...input, page: normalizePageInput(input.page, "followRequest.list", client) },
-        context(client),
+        context(client, "followRequest.list"),
       );
     },
     accept: async (input) =>
@@ -1241,7 +1283,7 @@ function createFilterService(client: RequiredClientContext): FilterService {
       requireClientCapability(client, "filters.read", "filter.list");
       return operation(
         { ...input, page: normalizePageInput(input.page, "filter.list", client) },
-        context(client),
+        context(client, "filter.list"),
       );
     },
     get: async (input) => {
@@ -1252,7 +1294,7 @@ function createFilterService(client: RequiredClientContext): FilterService {
       requireClientCapability(client, "filters.read", "filter.get");
       return operation(
         { ...input, id: decodeRawRef(input.id, client, "filter", "filter.get") },
-        context(client),
+        context(client, "filter.get"),
       );
     },
     create: async (input) => {
@@ -1262,7 +1304,7 @@ function createFilterService(client: RequiredClientContext): FilterService {
       }
       requireClientCapability(client, "filters.create", "filter.create");
       validateFilterInput(input, "filter.create", client);
-      return operation(input, context(client));
+      return operation(input, context(client, "filter.create"));
     },
     update: async (input) => {
       const operation = client.adapter.filters?.update;
@@ -1273,7 +1315,7 @@ function createFilterService(client: RequiredClientContext): FilterService {
       validateFilterInput(input, "filter.update", client);
       return operation(
         { ...input, id: decodeRawRef(input.id, client, "filter", "filter.update") },
-        context(client),
+        context(client, "filter.update"),
       );
     },
     delete: async (input) => {
@@ -1284,7 +1326,7 @@ function createFilterService(client: RequiredClientContext): FilterService {
       requireClientCapability(client, "filters.delete", "filter.delete");
       return operation(
         { ...input, id: decodeRawRef(input.id, client, "filter", "filter.delete") },
-        context(client),
+        context(client, "filter.delete"),
       );
     },
   };
@@ -1303,7 +1345,7 @@ function createScheduledPostService(client: RequiredClientContext): ScheduledPos
       requireClientCapability(client, "scheduledPosts.read", "scheduledPost.list");
       return operation(
         { ...input, page: normalizePageInput(input.page, "scheduledPost.list", client) },
-        context(client),
+        context(client, "scheduledPost.list"),
       );
     },
     get: async (input) => {
@@ -1317,7 +1359,7 @@ function createScheduledPostService(client: RequiredClientContext): ScheduledPos
       requireClientCapability(client, "scheduledPosts.read", "scheduledPost.get");
       return operation(
         { ...input, id: decodeRawRef(input.id, client, "scheduledPost", "scheduledPost.get") },
-        context(client),
+        context(client, "scheduledPost.get"),
       );
     },
     create: async (input) => {
@@ -1341,7 +1383,7 @@ function createScheduledPostService(client: RequiredClientContext): ScheduledPos
             decodeRawRef(id, client, "media", "scheduledPost.create"),
           ),
         },
-        context(client),
+        context(client, "scheduledPost.create"),
       );
     },
     update: async (input) => {
@@ -1359,7 +1401,7 @@ function createScheduledPostService(client: RequiredClientContext): ScheduledPos
           ...input,
           id: decodeRawRef(input.id, client, "scheduledPost", "scheduledPost.update"),
         },
-        context(client),
+        context(client, "scheduledPost.update"),
       );
     },
     delete: async (input) => {
@@ -1376,7 +1418,7 @@ function createScheduledPostService(client: RequiredClientContext): ScheduledPos
           ...input,
           id: decodeRawRef(input.id, client, "scheduledPost", "scheduledPost.delete"),
         },
-        context(client),
+        context(client, "scheduledPost.delete"),
       );
     },
   };
@@ -1419,7 +1461,7 @@ function createBookmarkFolderService(client: RequiredClientContext): BookmarkFol
         folderId: decodeRawRef(input.folderId, client, "bookmarkFolder", operationName),
         postId: decodeRawRef(input.postId, client, "post", operationName),
       },
-      context(client),
+      context(client, operationName),
     );
   };
   return {
@@ -1430,7 +1472,7 @@ function createBookmarkFolderService(client: RequiredClientContext): BookmarkFol
       );
       return operation(
         { ...input, page: normalizePageInput(input.page, "bookmarkFolder.list", client) },
-        context(client),
+        context(client, "bookmarkFolder.list"),
       );
     },
     create: async (input) => {
@@ -1439,7 +1481,7 @@ function createBookmarkFolderService(client: RequiredClientContext): BookmarkFol
         client.adapter.bookmarkFolders?.create,
       );
       validateName(input, "bookmarkFolder.create");
-      return operation(input, context(client));
+      return operation(input, context(client, "bookmarkFolder.create"));
     },
     update: async (input) => {
       const operation = requireOperation(
@@ -1452,7 +1494,7 @@ function createBookmarkFolderService(client: RequiredClientContext): BookmarkFol
           ...input,
           id: decodeRawRef(input.id, client, "bookmarkFolder", "bookmarkFolder.update"),
         },
-        context(client),
+        context(client, "bookmarkFolder.update"),
       );
     },
     delete: async (input) => {
@@ -1465,7 +1507,7 @@ function createBookmarkFolderService(client: RequiredClientContext): BookmarkFol
           ...input,
           id: decodeRawRef(input.id, client, "bookmarkFolder", "bookmarkFolder.delete"),
         },
-        context(client),
+        context(client, "bookmarkFolder.delete"),
       );
     },
     addPost: (input) =>
@@ -1486,7 +1528,10 @@ function createStreamService(client: RequiredClientContext): StreamService {
         );
       }
       requireTimelineStreamCapability(client, input);
-      return operation(normalizeTimelineStreamInput(input, client), context(client));
+      return operation(
+        normalizeTimelineStreamInput(input, client),
+        context(client, "stream.timeline"),
+      );
     },
     notifications: async (input) => {
       const operation = client.adapter.streams?.notifications;
@@ -1497,7 +1542,7 @@ function createStreamService(client: RequiredClientContext): StreamService {
         );
       }
       requireClientCapability(client, "streaming.notifications", "stream.notifications");
-      return operation(input, context(client));
+      return operation(input, context(client, "stream.notifications"));
     },
     conversations: async (input) => {
       const operation = client.adapter.streams?.conversations;
@@ -1508,7 +1553,7 @@ function createStreamService(client: RequiredClientContext): StreamService {
         );
       }
       requireClientCapability(client, "streaming.conversations", "stream.conversations");
-      return operation(input, context(client));
+      return operation(input, context(client, "stream.conversations"));
     },
   };
 }
@@ -1622,7 +1667,7 @@ function listAccountAction<Output>(
       listId: decodeRawRef(input.listId, client, "list", operationName),
       accountId: decodeRawRef(input.accountId, client, "account", operationName),
     },
-    context(client),
+    context(client, operationName),
   );
 }
 
@@ -1641,7 +1686,7 @@ function followRequestAction<Output>(
   requireClientCapability(client, capabilityName, operationName);
   return operation(
     { ...input, accountId: decodeRawRef(input.accountId, client, "account", operationName) },
-    context(client),
+    context(client, operationName),
   );
 }
 
@@ -1797,26 +1842,173 @@ export function canonicalizeOrigin(input: string): string {
   return url.origin.toLowerCase();
 }
 
-type RequiredClientContext = Omit<ActivityPlugClientOptions, "capabilities" | "fetch"> & {
+type RequiredClientContext = Omit<
+  ActivityPlugClientOptions,
+  "capabilities" | "fetch" | "remoteAuthority"
+> & {
   readonly capabilities: CapabilitySet;
   readonly fetch: typeof globalThis.fetch;
+  readonly remoteAuthority?: ActivityPlugClientOptions["remoteAuthority"];
 };
 
 function context(
   client: RequiredClientContext,
+  operation: string,
   origin: string = client.origin,
 ): AdapterOperationContext {
+  const budget = client.createBudgetScope?.({
+    adapterId: client.adapter.metadata.id,
+    origin,
+    operation,
+  });
+  assertBudgetOperation(budget, operation, client.adapter.metadata.id, origin);
+  budget?.checkDeadline();
+  const fetch =
+    origin === client.origin || client.remoteAuthority === undefined
+      ? scopedFetchForOperation(client, operation)
+      : scopedFetch(client.remoteAuthority, client.origin, origin, operation);
   return {
     adapterId: client.adapter.metadata.id,
     origin,
+    operation,
     capabilities: client.capabilities,
-    fetch: client.fetch,
+    fetch: budget === undefined ? fetch : createBudgetedFetch(fetch, budget),
     ...(client.sessionStore === undefined ? {} : { sessionStore: client.sessionStore }),
+    ...(budget === undefined ? {} : { budget }),
+    ...(client.detectedSoftware === undefined ? {} : { detectedSoftware: client.detectedSoftware }),
+    ...(client.remoteAuthority?.assertCredentialAllowed === undefined
+      ? {}
+      : {
+          assertCredentialAllowed: (input: {
+            readonly recipient: string;
+            readonly operation: string;
+            readonly credentialClass: string;
+            readonly representation: import("../http/remote-authority.js").RemoteCredentialRepresentation;
+          }) =>
+            client.remoteAuthority?.assertCredentialAllowed?.({
+              destination: input.recipient,
+              credentialIssuer: client.origin,
+              recipient: input.recipient,
+              operation: input.operation,
+              credentialClass: input.credentialClass,
+              representation: input.representation,
+            }),
+        }),
   };
 }
 
-function capabilityContext(client: RequiredClientContext, capability: CapabilityName) {
-  return { ...context(client), capability };
+function budgetCheckedAdapter(adapter: ActivityPlugAdapter): ActivityPlugAdapter {
+  return new Proxy(adapter, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (
+        property === "auth" ||
+        property === "metadata" ||
+        typeof value !== "object" ||
+        value === null
+      ) {
+        return value;
+      }
+      return new Proxy(value, {
+        get(operationTarget, operationProperty, operationReceiver) {
+          const operation = Reflect.get(operationTarget, operationProperty, operationReceiver);
+          if (typeof operation !== "function") return operation;
+          return (...args: unknown[]) => {
+            const result = Reflect.apply(operation, operationTarget, args) as unknown;
+            const operationContext = args.at(-1) as AdapterOperationContext | undefined;
+            return checkBudgetOnCompletion(result, operationContext?.budget);
+          };
+        },
+      });
+    },
+  });
+}
+
+function checkBudgetOnCompletion(
+  result: unknown,
+  budget: AdapterOperationContext["budget"],
+): unknown {
+  if (result instanceof Promise) {
+    return result.then((value) => {
+      budget?.checkDeadline();
+      return value;
+    });
+  }
+  budget?.checkDeadline();
+  return result;
+}
+
+function assertBudgetOperation(
+  budget: AdapterOperationContext["budget"],
+  operation: string,
+  adapter: string,
+  origin: string,
+): void {
+  if (budget === undefined || budget.operation === operation) return;
+  throw new ActivityPlugError(
+    "VALIDATION_FAILED",
+    "Budget scope operation does not match the admitted operation.",
+    { adapter, origin, operation, raw: { budgetOperation: budget.operation } },
+  );
+}
+
+function scopedFetch(
+  authority: NonNullable<ActivityPlugClientOptions["remoteAuthority"]>,
+  issuer: string,
+  destination: string,
+  operation: string,
+): typeof globalThis.fetch {
+  const cached = scopedFetches.get(authority);
+  if (
+    cached?.issuer === issuer &&
+    cached.destination === destination &&
+    cached.operation === operation
+  ) {
+    return cached.fetch;
+  }
+  const fetch: typeof globalThis.fetch = (input, init) =>
+    authority.fetch(input, init, {
+      destination,
+      credentialIssuer: issuer,
+      operation,
+      credentialClass: "oauth-access-token",
+    });
+  scopedFetches.set(authority, { issuer, destination, operation, fetch });
+  return fetch;
+}
+
+function scopedFetchForOperation(
+  client: RequiredClientContext,
+  operation: string,
+): typeof globalThis.fetch {
+  if (client.remoteAuthority !== undefined) {
+    return scopedFetch(client.remoteAuthority, client.origin, client.origin, operation);
+  }
+  return () => {
+    throw new ActivityPlugError(
+      "ORIGIN_NOT_ALLOWED",
+      "Remote I/O requires an explicit scoped remote authority.",
+      { adapter: client.adapter.metadata.id, origin: client.origin, operation },
+    );
+  };
+}
+
+const scopedFetches = new WeakMap<
+  NonNullable<ActivityPlugClientOptions["remoteAuthority"]>,
+  {
+    readonly issuer: string;
+    readonly destination: string;
+    readonly operation: string;
+    readonly fetch: typeof globalThis.fetch;
+  }
+>();
+
+function capabilityContext(
+  client: RequiredClientContext,
+  capability: CapabilityName,
+  operation = "capability.check",
+) {
+  return { ...context(client, operation), capability };
 }
 
 function requireClientCapability(
@@ -1827,7 +2019,7 @@ function requireClientCapability(
   const decision = client.capabilities[capability];
   if (decision.status !== "supported") {
     throw unsupportedOperation(operation, {
-      ...context(client),
+      ...context(client, operation),
       capability,
       raw: decision,
     });
@@ -1846,7 +2038,7 @@ function requireBroadSearchCapabilities(client: RequiredClientContext): void {
   if (unsupportedDecisions.length > 0) {
     const onlyCapability = unsupportedDecisions.length === 1 ? unsupportedDecisions[0] : undefined;
     throw unsupportedOperation("search", {
-      ...context(client),
+      ...context(client, "search"),
       ...(onlyCapability === undefined ? {} : { capability: onlyCapability }),
       raw: {
         unsupportedCapabilities: unsupportedDecisions.map(

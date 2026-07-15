@@ -1,6 +1,8 @@
 import {
   createActivityPlugClient,
+  BudgetScope,
   createCapabilitySet,
+  createRemoteAuthority,
   type AdapterOperationContext,
 } from "@activityplug/core";
 import { accountMappingFixtures } from "@activityplug/test-fixtures";
@@ -91,7 +93,7 @@ describe("HackersPub transport", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackers.pub",
-      fetch,
+      remoteAuthority: createRemoteAuthority({ transport: fetch }),
     });
 
     await expect(client.instances.detect()).rejects.toMatchObject({ code: "REMOTE_ERROR" });
@@ -99,11 +101,16 @@ describe("HackersPub transport", () => {
   });
 
   it("maps upstream video MIME types without discarding attachment metadata", () => {
+    const budget = new BudgetScope({
+      operation: "post.get",
+      limits: { depth: 2, nodes: 3 },
+    });
     const context: AdapterOperationContext = {
       adapterId: "hackerspub",
       origin: "https://hackers.pub",
       capabilities: createCapabilitySet(),
       fetch: vi.fn<typeof globalThis.fetch>(),
+      budget,
     };
     const post = {
       ...accountMappingFixtures.hackerspub.post,
@@ -122,5 +129,66 @@ describe("HackersPub transport", () => {
       width: 640,
       height: 480,
     });
+    expect(budget.snapshot().used).toMatchObject({ depth: 0, nodes: 3 });
+  });
+
+  it("releases mapping depth after a malformed top-level response", () => {
+    const budget = new BudgetScope({
+      operation: "post.get",
+      limits: { depth: 2 },
+    });
+    const context: AdapterOperationContext = {
+      adapterId: "hackerspub",
+      origin: "https://hackers.pub",
+      capabilities: createCapabilitySet(),
+      fetch: vi.fn<typeof globalThis.fetch>(),
+      budget,
+    };
+    const malformed = {
+      ...accountMappingFixtures.hackerspub.post,
+      published: undefined,
+    } as unknown as Parameters<typeof postFromResponse>[0];
+
+    expect(() => postFromResponse(malformed, context, "post.get")).toThrow();
+    expect(budget.snapshot().used.depth).toBe(0);
+    expect(() =>
+      postFromResponse(accountMappingFixtures.hackerspub.post, context, "post.get"),
+    ).not.toThrow();
+    expect(budget.snapshot().used.depth).toBe(0);
+  });
+
+  it("releases all mapping depth after nested and array mapping failures", () => {
+    const budget = new BudgetScope({
+      operation: "post.get",
+      limits: { depth: 3 },
+    });
+    const context: AdapterOperationContext = {
+      adapterId: "hackerspub",
+      origin: "https://hackers.pub",
+      capabilities: createCapabilitySet(),
+      fetch: vi.fn<typeof globalThis.fetch>(),
+      budget,
+    };
+    const malformedMedium = {
+      ...accountMappingFixtures.hackerspub.post,
+      media: [{ ...accountMappingFixtures.hackerspub.post.media[0], width: -1 }],
+    } as unknown as Parameters<typeof postFromResponse>[0];
+    const malformedPollOption = {
+      ...accountMappingFixtures.hackerspub.post,
+      poll: {
+        postId: accountMappingFixtures.hackerspub.post.uuid,
+        multiple: false,
+        options: [{ title: "valid" }, { title: 42 }],
+      },
+    } as unknown as Parameters<typeof postFromResponse>[0];
+
+    expect(() => postFromResponse(malformedMedium, context, "post.get")).toThrow();
+    expect(budget.snapshot().used.depth).toBe(0);
+    expect(() => postFromResponse(malformedPollOption, context, "post.get")).toThrow();
+    expect(budget.snapshot().used.depth).toBe(0);
+    expect(() =>
+      postFromResponse(accountMappingFixtures.hackerspub.post, context, "post.get"),
+    ).not.toThrow();
+    expect(budget.snapshot().used.depth).toBe(0);
   });
 });

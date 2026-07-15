@@ -5,7 +5,7 @@ import {
 
 export type WebSocketFactory = CoreWebSocketFactory;
 
-export type MastodonStreamingAuthentication = "authorization-header" | "legacy-query";
+export type MastodonStreamingAuthentication = "authorization-header" | "websocket-subprotocol";
 
 export type MastodonStreamingEndpoint =
   | { readonly status: "absent" }

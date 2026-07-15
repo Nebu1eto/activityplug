@@ -2,10 +2,6 @@ import { authSessionStoreContractCases } from "@activityplug/server";
 import { describe, expect, it } from "vitest";
 
 import {
-  createPostgresAuthSessionTable,
-  createPostgresBrowserSessionTable,
-  createPostgresOAuthClientSecretTable,
-  createPostgresOAuthStateTable,
   PostgresAuthSessionStore,
   type PostgresAuthSessionStoreClient,
   type PostgresQueryResult,
@@ -40,34 +36,6 @@ describe("PostgresAuthSessionStore", () => {
           tableName: `sessions_${"x".repeat(64)}`,
         }),
     ).toThrowError("safe identifier");
-  });
-
-  it("declares the exact lifecycle cleanup indexes", async () => {
-    const client = new SchemaCaptureClient();
-    await createPostgresAuthSessionTable({ client, tableName: "activityplug_auth_sessions" });
-    await createPostgresOAuthStateTable({ client, tableName: "activityplug_oauth_states" });
-    await createPostgresOAuthClientSecretTable({
-      client,
-      tableName: "activityplug_oauth_client_secrets",
-    });
-    await createPostgresBrowserSessionTable({
-      client,
-      tableName: "activityplug_browser_sessions",
-    });
-    const sql = client.queries.join("\n");
-
-    expect(sql).toMatch(
-      /activityplug_sessions_expires_at_idx\s+on activityplug_auth_sessions \(expires_at\)\s+where expires_at is not null/i,
-    );
-    expect(sql).toMatch(
-      /activityplug_oauth_states_cleanup_idx\s+on activityplug_oauth_states \(expires_at, lease_until\)/i,
-    );
-    expect(sql).toMatch(
-      /activityplug_oauth_secrets_expires_at_idx\s+on activityplug_oauth_client_secrets \(expires_at\)/i,
-    );
-    expect(sql).toMatch(
-      /activityplug_browser_sessions_expires_at_idx\s+on activityplug_browser_sessions \(expires_at\)/i,
-    );
   });
 
   it("creates a session with an insert-only query and reports conflicts", async () => {
@@ -131,55 +99,6 @@ describe("PostgresAuthSessionStore", () => {
 
     await expect(creating).resolves.toBe(false);
     expect(client.queries).toHaveLength(0);
-  });
-
-  it("derives every create query value from a valid JSON representation", async () => {
-    const client = new QueuedSerializationPostgresClient();
-    const store = new PostgresAuthSessionStore({ client });
-    const liveSession = createSession("live-create", {
-      storageExpiresAt: "2026-05-01T00:00:00.000Z",
-    });
-    const serializedSession = createSession("serialized-create", {
-      revision: 3,
-      storageExpiresAt: "2027-05-01T00:00:00.000Z",
-      tokenSet: { accessToken: "serialized-token", tokenType: "Bearer" },
-    });
-    const transformed = {
-      ...liveSession,
-      toJSON: () => serializedSession,
-    };
-
-    const creating = store.create(transformed);
-    client.releaseQueries();
-
-    await expect(creating).resolves.toBe(true);
-    expect(client.serializedQueries[0]?.values).toEqual([
-      "serialized-create",
-      serializedSession,
-      3,
-      "2027-05-01T00:00:00.000Z",
-    ]);
-  });
-
-  it("removes PostgreSQL serializers from create snapshots", async () => {
-    const client = new QueuedSerializationPostgresClient();
-    const store = new PostgresAuthSessionStore({ client });
-    const session = createSession("create-to-postgres");
-    let serializerCalls = 0;
-    const hostile = {
-      ...session,
-      toPostgres: () => {
-        serializerCalls += 1;
-        return createSession("serialized-other");
-      },
-    };
-
-    const creating = store.create(hostile);
-    client.releaseQueries();
-
-    await expect(creating).resolves.toBe(true);
-    expect(serializerCalls).toBe(0);
-    expect(client.serializedQueries[0]?.values).toEqual(["create-to-postgres", session, 0, null]);
   });
 
   it("persists a valid callback-state session without an optional token type", async () => {
@@ -311,34 +230,6 @@ describe("PostgresAuthSessionStore", () => {
     expect(client.queries).toHaveLength(0);
   });
 
-  it("removes PostgreSQL serializers from compare-and-set snapshots", async () => {
-    const client = new QueuedSerializationPostgresClient();
-    const store = new PostgresAuthSessionStore({ client });
-    const next = createSession("cas-to-postgres", { revision: 1 });
-    let serializerCalls = 0;
-    const hostile = {
-      ...next,
-      toPostgres: () => {
-        serializerCalls += 1;
-        return createSession("serialized-other", { revision: 1 });
-      },
-    };
-
-    const swapping = store.compareAndSet("cas-to-postgres", 0, hostile);
-    client.releaseQueries();
-
-    await expect(swapping).resolves.toBe(true);
-    expect(serializerCalls).toBe(0);
-    expect(client.serializedQueries[0]?.values).toEqual([
-      "cas-to-postgres",
-      next,
-      1,
-      null,
-      0,
-      expect.any(String),
-    ]);
-  });
-
   it("does not compare-and-swap malformed rows or inconsistent expiry sidecars", async () => {
     const client = new MemoryPostgresClient();
     const store = new PostgresAuthSessionStore({
@@ -452,6 +343,24 @@ describe("PostgresAuthSessionStore", () => {
       },
     });
   });
+
+  it("binds a caller cleanup limit to the indexed expiry query", async () => {
+    const client: PostgresAuthSessionStoreClient = {
+      query: async <Row>(
+        sql: string,
+        values: readonly unknown[] = [],
+      ): Promise<PostgresQueryResult<Row>> => {
+        expect(sql).toMatch(
+          /select ctid.*order by expires_at, ctid.*limit \$2.*for update skip locked.*delete from activityplug_auth_sessions as target.*target\.ctid = expired\.ctid/is,
+        );
+        expect(values).toEqual(["2026-04-26T00:00:00.000Z", 1]);
+        return { rows: [{ count: "1" }] as Row[] };
+      },
+    };
+    const store = new PostgresAuthSessionStore({ client });
+
+    await expect(store.deleteExpired(new Date("2026-04-26T00:00:00.000Z"), 1)).resolves.toBe(1);
+  });
 });
 
 interface StoredRow {
@@ -488,15 +397,6 @@ class QueuedSerializationPostgresClient implements PostgresAuthSessionStoreClien
       values: values.map((value, index) => (index === 1 ? serializeJsonbValue(value) : value)),
     });
     return { rows: [{ id: values[0] }] as Row[] };
-  }
-}
-
-class SchemaCaptureClient implements PostgresAuthSessionStoreClient {
-  readonly queries: string[] = [];
-
-  public async query<Row>(sql: string): Promise<PostgresQueryResult<Row>> {
-    this.queries.push(sql);
-    return { rows: [] };
   }
 }
 

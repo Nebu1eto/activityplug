@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import {
   ActivityPlugError,
+  BudgetScope,
   capability,
   createEntityRef,
   createCapabilitySet,
@@ -24,7 +25,7 @@ const publicOrigin = "https://client.test";
 const cookieSigningKey = new Uint8Array(32).fill(7);
 
 describe("browser boundary sessions", () => {
-  it("uses durable opaque anonymous sessions by default", async () => {
+  it("keeps anonymous sessions stateless by default", async () => {
     const browserSessions = new InMemoryBrowserSessionStore();
     const create = vi.spyOn(browserSessions, "create");
     const boundary = createDefaultModeBoundary({ browserSessions });
@@ -36,11 +37,11 @@ describe("browser boundary sessions", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(create).toHaveBeenCalledTimes(1);
-    await expect(browserSessions.get(context.browserSession.id)).resolves.toEqual(
-      context.browserSession,
-    );
-    expect(decodeCookiePayload(cookie)).toBe(context.browserSession.id);
+    expect(create).not.toHaveBeenCalled();
+    await expect(browserSessions.get(context.browserSession.id)).resolves.toBeNull();
+    expect(JSON.parse(decodeCookiePayload(cookie))).toMatchObject({
+      id: context.browserSession.id,
+    });
   });
 
   it("keeps repeated cookieless anonymous sessions out of durable storage in stateless mode", async () => {
@@ -69,7 +70,266 @@ describe("browser boundary sessions", () => {
     ).resolves.toMatchObject({ browserSession: { authenticated: false } });
   });
 
-  it("runs durable-session expiry cleanup without delaying normal requests", async () => {
+  it("returns a typed capacity denial for stored anonymous sessions", async () => {
+    const boundary = createStoredModeBoundary({ storedSessionCapacity: 1 });
+
+    const admitted = await boundary.app.request(`${publicOrigin}/v1/browser/session`);
+    const denied = await boundary.app.request(`${publicOrigin}/v1/browser/session`);
+
+    expect(admitted.status).toBe(200);
+    expect(denied.status).toBe(429);
+    await expect(denied.json()).resolves.toMatchObject({
+      error: { code: "RATE_LIMITED", message: "Browser session capacity is exhausted." },
+    });
+  });
+
+  it("limits stored live sessions per client without blocking another client", async () => {
+    const boundary = createStoredModeBoundary({
+      clientIp: (request) => request.headers.get("x-test-client") ?? "missing",
+      storedSessionCapacity: 10,
+      storedSessionCapacityPerClient: 1,
+    });
+
+    const first = await boundary.app.request(`${publicOrigin}/v1/browser/session`, {
+      headers: { "x-test-client": "client-a" },
+    });
+    const sameClient = await boundary.app.request(`${publicOrigin}/v1/browser/session`, {
+      headers: { "x-test-client": "client-a" },
+    });
+    const otherClient = await boundary.app.request(`${publicOrigin}/v1/browser/session`, {
+      headers: { "x-test-client": "client-b" },
+    });
+
+    expect(first.status).toBe(200);
+    expect(sameClient.status).toBe(429);
+    expect(otherClient.status).toBe(200);
+  });
+
+  it("rate-limits stored session creation before allocating another record", async () => {
+    const browserSessions = new InMemoryBrowserSessionStore();
+    const boundary = createStoredModeBoundary({
+      browserSessions,
+      clientIp: () => "client-a",
+      storedSessionCapacityPerClient: 10,
+      storedSessionCreationLimit: 1,
+      storedSessionCreationWindowMilliseconds: 60_000,
+    });
+    const first = await boundary.app.request(`${publicOrigin}/v1/browser/session`);
+    const firstContext = await boundary.resolveRequest(
+      new Request(`${publicOrigin}/`, {
+        headers: { cookie: cookiePair(requiredCookie(first)) },
+      }),
+    );
+    await browserSessions.delete(firstContext.browserSession.id);
+
+    const denied = await boundary.app.request(`${publicOrigin}/v1/browser/session`);
+
+    expect(denied.status).toBe(429);
+    expect(denied.headers.get("retry-after")).toBe("60");
+    await expect(denied.json()).resolves.toMatchObject({
+      error: { code: "RATE_LIMITED", retryAfterSeconds: 60 },
+    });
+  });
+
+  it("retains one allocation budget until a stored browser session is gone", async () => {
+    const browserSessions = new InMemoryBrowserSessionStore();
+    const budget = new BudgetScope({
+      operation: "browser.session.admit",
+      limits: { activeAllocations: 1 },
+    });
+    const createBudgetScope = vi.fn(() => budget);
+    const boundary = createStoredModeBoundary({ browserSessions, createBudgetScope });
+
+    const admitted = await boundary.app.request(`${publicOrigin}/v1/browser/session`);
+    const cookie = cookiePair(requiredCookie(admitted));
+    const context = await boundary.resolveRequest(
+      new Request(`${publicOrigin}/`, { headers: { cookie } }),
+    );
+
+    expect(admitted.status).toBe(200);
+    expect(createBudgetScope).toHaveBeenCalledWith({
+      adapterId: "browser",
+      origin: publicOrigin,
+      operation: "browser.session.admit",
+    });
+    expect(budget.snapshot().used.activeAllocations).toBe(1);
+
+    const exhausted = await boundary.app.request(`${publicOrigin}/v1/browser/session`);
+    expect(exhausted.status).not.toBe(200);
+    await expect(browserSessions.get(context.browserSession.id)).resolves.not.toBeNull();
+    expect(budget.snapshot().used.activeAllocations).toBe(1);
+
+    await browserSessions.delete(context.browserSession.id);
+    await expect(
+      boundary.resolveRequest(new Request(`${publicOrigin}/`, { headers: { cookie } })),
+    ).rejects.toMatchObject({ code: "UNAUTHENTICATED" });
+    expect(budget.snapshot().used.activeAllocations).toBe(0);
+    await boundary.close();
+  });
+
+  it("releases failed and closed stored browser allocation reservations", async () => {
+    const budget = new BudgetScope({
+      operation: "browser.session.admit",
+      limits: { activeAllocations: 2 },
+    });
+    const boundary = createStoredModeBoundary({
+      storedSessionCapacity: 1,
+      createBudgetScope: () => budget,
+    });
+
+    expect((await boundary.app.request(`${publicOrigin}/v1/browser/session`)).status).toBe(200);
+    expect((await boundary.app.request(`${publicOrigin}/v1/browser/session`)).status).toBe(429);
+    expect(budget.snapshot().used.activeAllocations).toBe(1);
+
+    await boundary.close();
+    expect(budget.snapshot().used.activeAllocations).toBe(0);
+  });
+
+  it("rolls back an admission that completes while the boundary closes", async () => {
+    const browserSessions = new InMemoryBrowserSessionStore();
+    const budget = new BudgetScope({
+      operation: "browser.session.admit",
+      limits: { activeAllocations: 1 },
+    });
+    const originalAdmit = browserSessions.admit.bind(browserSessions);
+    let continueAdmission: (() => void) | undefined;
+    let admissionStarted: (() => void) | undefined;
+    const admissionGate = new Promise<void>((resolve) => {
+      continueAdmission = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      admissionStarted = resolve;
+    });
+    let admittedId: string | undefined;
+    const admit = vi.spyOn(browserSessions, "admit").mockImplementation(async (record, limits) => {
+      admittedId = record.id;
+      admissionStarted?.();
+      await admissionGate;
+      return originalAdmit(record, limits);
+    });
+    const boundary = createStoredModeBoundary({
+      browserSessions,
+      createBudgetScope: () => budget,
+    });
+
+    const responsePromise = boundary.app.request(`${publicOrigin}/v1/browser/session`);
+    await started;
+    const closing = boundary.close();
+    let closed = false;
+    void closing.then(() => {
+      closed = true;
+    });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+    continueAdmission?.();
+
+    const response = await responsePromise;
+    await closing;
+    expect(closed).toBe(true);
+    expect(response.status).toBe(502);
+    expect(admittedId).toBeDefined();
+    await expect(browserSessions.get(admittedId ?? "missing")).resolves.toBeNull();
+    expect(budget.snapshot().used.activeAllocations).toBe(0);
+
+    expect((await boundary.app.request(`${publicOrigin}/v1/browser/session`)).status).toBe(502);
+    expect(admit).toHaveBeenCalledOnce();
+  });
+
+  it("rejects close and retains accounting when admission rollback fails", async () => {
+    const browserSessions = new InMemoryBrowserSessionStore();
+    const budget = new BudgetScope({
+      operation: "browser.session.admit",
+      limits: { activeAllocations: 1 },
+    });
+    const originalAdmit = browserSessions.admit.bind(browserSessions);
+    const rollbackError = new Error("durable session rollback failed");
+    let continueAdmission: (() => void) | undefined;
+    let admissionStarted: (() => void) | undefined;
+    const admissionGate = new Promise<void>((resolve) => {
+      continueAdmission = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      admissionStarted = resolve;
+    });
+    const admit = vi.spyOn(browserSessions, "admit").mockImplementation(async (record, limits) => {
+      admissionStarted?.();
+      await admissionGate;
+      return originalAdmit(record, limits);
+    });
+    const rollback = vi.spyOn(browserSessions, "delete").mockRejectedValue(rollbackError);
+    const get = vi.spyOn(browserSessions, "get");
+    const boundary = createStoredModeBoundary({
+      browserSessions,
+      createBudgetScope: () => budget,
+    });
+
+    const responsePromise = boundary.app.request(`${publicOrigin}/v1/browser/session`);
+    await started;
+    const closing = boundary.close();
+    const closeResult = closing.then(
+      () => ({ resolved: true as const }),
+      (error: unknown) => ({ resolved: false as const, error }),
+    );
+    continueAdmission?.();
+
+    expect((await responsePromise).status).not.toBe(200);
+    await expect(closeResult).resolves.toEqual({ resolved: false, error: rollbackError });
+    expect(budget.snapshot().used.activeAllocations).toBe(1);
+    expect(rollback).toHaveBeenCalledOnce();
+
+    const callsAfterClose = {
+      admit: admit.mock.calls.length,
+      delete: rollback.mock.calls.length,
+      get: get.mock.calls.length,
+    };
+    expect((await boundary.app.request(`${publicOrigin}/v1/browser/session`)).status).toBe(502);
+    expect(admit).toHaveBeenCalledTimes(callsAfterClose.admit);
+    expect(rollback).toHaveBeenCalledTimes(callsAfterClose.delete);
+    expect(get).toHaveBeenCalledTimes(callsAfterClose.get);
+    expect(boundary.close()).toBe(closing);
+  });
+
+  it("releases a stored browser allocation after passive expiry", async () => {
+    let current = new Date("2026-07-12T00:00:00.000Z");
+    const budget = new BudgetScope({
+      operation: "browser.session.admit",
+      limits: { activeAllocations: 1 },
+    });
+    const browserSessions = new InMemoryBrowserSessionStore({ now: () => current });
+    const boundary = createStoredModeBoundary({
+      browserSessions,
+      now: () => current,
+      sessionTtlMilliseconds: 1_000,
+      createBudgetScope: () => budget,
+    });
+    const response = await boundary.app.request(`${publicOrigin}/v1/browser/session`);
+    const cookie = cookiePair(requiredCookie(response));
+    expect(budget.snapshot().used.activeAllocations).toBe(1);
+
+    current = new Date("2026-07-12T00:00:01.000Z");
+    await expect(
+      boundary.resolveRequest(new Request(`${publicOrigin}/`, { headers: { cookie } })),
+    ).rejects.toMatchObject({ code: "UNAUTHENTICATED" });
+    expect(budget.snapshot().used.activeAllocations).toBe(0);
+    await boundary.close();
+  });
+
+  it("rejects a mismatched stored browser admission budget before allocation", async () => {
+    const browserSessions = new InMemoryBrowserSessionStore();
+    const admit = vi.spyOn(browserSessions, "admit");
+    const boundary = createStoredModeBoundary({
+      browserSessions,
+      createBudgetScope: () => new BudgetScope({ operation: "browser.session.other" }),
+    });
+
+    const response = await boundary.app.request(`${publicOrigin}/v1/browser/session`);
+
+    expect(response.status).not.toBe(200);
+    expect(admit).not.toHaveBeenCalled();
+    await boundary.close();
+  });
+
+  it("gates readiness on the startup expiry cleanup", async () => {
     const browserSessions = new InMemoryBrowserSessionStore();
     let finishCleanup: (() => void) | undefined;
     const deleteExpired = vi.spyOn(browserSessions, "deleteExpired").mockImplementation(
@@ -80,47 +340,34 @@ describe("browser boundary sessions", () => {
     );
     const boundary = createBoundary({ browserSessions });
 
-    const response = await boundary.app.request(`${publicOrigin}/v1/browser/session`);
-
-    expect(response.status).toBe(200);
-    expect(deleteExpired).toHaveBeenCalledTimes(1);
+    const response = boundary.app.request(`${publicOrigin}/v1/browser/session`);
+    await vi.waitFor(() => expect(deleteExpired).toHaveBeenCalledTimes(1));
     finishCleanup?.();
+    await expect(response).resolves.toMatchObject({ status: 200 });
+    await boundary.close();
   });
 
-  it("backs off failed durable-session expiry cleanup for at least one minute", async () => {
-    let current = new Date("2026-07-12T00:00:00.000Z");
-    const browserSessions = new InMemoryBrowserSessionStore({ now: () => current });
-    const deleteExpired = vi
-      .spyOn(browserSessions, "deleteExpired")
-      .mockRejectedValue(new Error("session cleanup unavailable"));
-    const boundary = createBoundary({ browserSessions, now: () => current });
+  it("does not sweep stores that declare native expiry", async () => {
+    const browserSessions = Object.assign(new InMemoryBrowserSessionStore(), {
+      expiryMode: "native" as const,
+    });
+    const oauthStates = Object.assign(new InMemoryOAuthStateStore(), {
+      expiryMode: "native" as const,
+    });
+    const authChallenges = Object.assign(new InMemoryShortCacheStore(), {
+      expiryMode: "native" as const,
+    });
+    const deleteExpiredSessions = vi.spyOn(browserSessions, "deleteExpired");
+    const deleteExpiredStates = vi.spyOn(oauthStates, "deleteExpired");
+    const deleteExpiredChallenges = vi.spyOn(authChallenges, "deleteExpired");
+    const boundary = createBoundary({ browserSessions, oauthStates, authChallenges });
 
-    expect((await boundary.app.request(`${publicOrigin}/v1/browser/session`)).status).toBe(200);
-    await vi.waitFor(() => expect(deleteExpired).toHaveBeenCalledTimes(1));
-    current = new Date("2026-07-12T00:00:59.999Z");
-    expect((await boundary.app.request(`${publicOrigin}/v1/browser/session`)).status).toBe(200);
-    expect(deleteExpired).toHaveBeenCalledTimes(1);
-    current = new Date("2026-07-12T00:01:00.000Z");
-    expect((await boundary.app.request(`${publicOrigin}/v1/browser/session`)).status).toBe(200);
-    await vi.waitFor(() => expect(deleteExpired).toHaveBeenCalledTimes(2));
-  });
+    await boundary.ready;
 
-  it("runs durable-session expiry cleanup at deterministic intervals", async () => {
-    let current = new Date("2026-07-12T00:00:00.000Z");
-    const browserSessions = new InMemoryBrowserSessionStore({ now: () => current });
-    const deleteExpired = vi.spyOn(browserSessions, "deleteExpired");
-    const boundary = createBoundary({ browserSessions, now: () => current });
-
-    await boundary.app.request(`${publicOrigin}/v1/browser/session`);
-    await vi.waitFor(() => expect(deleteExpired).toHaveBeenCalledTimes(1));
-    current = new Date("2026-07-12T00:00:59.999Z");
-    await boundary.app.request(`${publicOrigin}/v1/browser/session`);
-    current = new Date("2026-07-12T00:01:00.000Z");
-    await boundary.app.request(`${publicOrigin}/v1/browser/session`);
-
-    await vi.waitFor(() => expect(deleteExpired).toHaveBeenCalledTimes(2));
-    expect(deleteExpired).toHaveBeenNthCalledWith(1, new Date("2026-07-12T00:00:00.000Z"));
-    expect(deleteExpired).toHaveBeenNthCalledWith(2, new Date("2026-07-12T00:01:00.000Z"));
+    expect(deleteExpiredSessions).not.toHaveBeenCalled();
+    expect(deleteExpiredStates).not.toHaveBeenCalled();
+    expect(deleteExpiredChallenges).not.toHaveBeenCalled();
+    await boundary.close();
   });
 
   it("creates a stateless anonymous session with a signed host cookie and hashed CSRF", async () => {
@@ -171,7 +418,7 @@ describe("browser boundary sessions", () => {
     ).rejects.toMatchObject({ code: "UNAUTHENTICATED" });
   });
 
-  it("adopts a signed stateless anonymous cookie when returning to stored mode", async () => {
+  it("reissues a signed stateless cookie through stored admission during rollback", async () => {
     const browserSessions = new InMemoryBrowserSessionStore();
     const stateless = createBoundary({ browserSessions });
     const anonymous = await anonymousSession(stateless);
@@ -180,26 +427,24 @@ describe("browser boundary sessions", () => {
     );
     await expect(browserSessions.get(statelessContext.browserSession.id)).resolves.toBeNull();
 
-    const stored = createDefaultModeBoundary({ browserSessions });
+    const stored = createStoredModeBoundary({ browserSessions });
     const response = await stored.app.request(`${publicOrigin}/v1/browser/session`, {
       headers: { cookie: anonymous.cookie },
     });
     const storedCookie = cookiePair(requiredCookie(response));
 
     expect(response.status).toBe(200);
-    await expect(browserSessions.get(statelessContext.browserSession.id)).resolves.toEqual(
-      statelessContext.browserSession,
-    );
-    expect(decodeCookiePayload(storedCookie)).toBe(statelessContext.browserSession.id);
+    await expect(browserSessions.get(statelessContext.browserSession.id)).resolves.toBeNull();
+    expect(decodeCookiePayload(storedCookie)).not.toBe(statelessContext.browserSession.id);
     await expect(
       stored.resolveRequest(new Request(`${publicOrigin}/`, { headers: { cookie: storedCookie } })),
-    ).resolves.toMatchObject({ browserSession: { id: statelessContext.browserSession.id } });
+    ).resolves.toMatchObject({ browserSession: { authenticated: false } });
   });
 
   it("recovers an authenticated session from a legacy stored opaque cookie in stateless mode", async () => {
     const authSessions = new InMemoryAuthSessionStore();
     const browserSessions = new InMemoryBrowserSessionStore();
-    const stored = createDefaultModeBoundary({ authSessions, browserSessions });
+    const stored = createStoredModeBoundary({ authSessions, browserSessions });
     const anonymous = await anonymousSession(stored);
     const context = await stored.resolveRequest(
       new Request(`${publicOrigin}/`, { headers: { cookie: anonymous.cookie } }),
@@ -388,7 +633,7 @@ describe("browser boundary sessions", () => {
 describe("browser boundary authentication", () => {
   it("promotes a stateless anonymous session only when authentication starts", async () => {
     const browserSessions = new InMemoryBrowserSessionStore();
-    const create = vi.spyOn(browserSessions, "create");
+    const admit = vi.spyOn(browserSessions, "admit");
     const start = vi.fn(async ({ state }: { readonly state: string }) => oauthStartPayload(state));
     const base = createTestService();
     const boundary = createBoundary({
@@ -397,7 +642,7 @@ describe("browser boundary authentication", () => {
     });
     const anonymous = await anonymousSession(boundary);
 
-    expect(create).not.toHaveBeenCalled();
+    expect(admit).not.toHaveBeenCalled();
     const response = await boundary.app.request(`${publicOrigin}/v1/browser/auth/start`, {
       method: "POST",
       headers: jsonHeaders(anonymous),
@@ -410,8 +655,8 @@ describe("browser boundary authentication", () => {
     });
 
     expect(response.status).toBe(200);
-    expect(create).toHaveBeenCalledTimes(1);
-    expect(create.mock.calls[0]?.[0]).toMatchObject({ authenticated: false });
+    expect(admit).toHaveBeenCalledTimes(1);
+    expect(admit.mock.calls[0]?.[0]).toMatchObject({ authenticated: false });
   });
 
   it.each([
@@ -794,6 +1039,13 @@ describe("browser boundary authentication", () => {
     expect(callback.headers.get("location")).toBe(`${publicOrigin}/home?tab=local`);
     expect(exchange).toHaveBeenCalledTimes(1);
     expect(deleteChallenge).toHaveBeenCalledWith(expect.stringMatching(/^browser-oauth:/u));
+    await expect(authSessions.get("upstream-session-secret")).resolves.toMatchObject({
+      storageExpiresAt: expect.any(String),
+      owner: {
+        kind: "browser-session",
+        id: expect.any(String),
+      },
+    });
 
     const replay = await boundary.app.request(
       `${publicOrigin}/v1/browser/auth/callback?code=code-1&state=${encodeURIComponent(state)}`,
@@ -1282,17 +1534,23 @@ describe("browser boundary authenticated routes", () => {
   it("revokes and deletes both server-side sessions before expiring the cookie", async () => {
     const authSessions = new InMemoryAuthSessionStore();
     const browserSessions = new InMemoryBrowserSessionStore();
+    const budget = new BudgetScope({
+      operation: "browser.session.admit",
+      limits: { activeAllocations: 1 },
+    });
     const revokeSession = vi.fn(async ({ sessionId }: { readonly sessionId: string }) => {
       const stored = await authSessions.get(sessionId);
       if (stored !== null) await authSessions.compareAndDelete(sessionId, stored.revision);
     });
     const base = createTestService();
-    const boundary = createBoundary({
+    const boundary = createStoredModeBoundary({
       authSessions,
       browserSessions,
+      createBudgetScope: () => budget,
       service: createTestService({ auth: { ...base.auth, revokeSession } }),
     });
     const session = await authenticateBrowser(boundary, authSessions, browserSessions);
+    expect(budget.snapshot().used.activeAllocations).toBe(1);
     const before = await boundary.resolveRequest(
       new Request(`${publicOrigin}/`, { headers: { cookie: session.cookie } }),
     );
@@ -1313,6 +1571,7 @@ describe("browser boundary authenticated routes", () => {
     );
     await expect(authSessions.get("upstream-session-secret")).resolves.toBeNull();
     await expect(browserSessions.get(before.browserSession.id)).resolves.toBeNull();
+    expect(budget.snapshot().used.activeAllocations).toBe(0);
     expect(response.headers.get("set-cookie")).toContain("Max-Age=0");
   });
 
@@ -1585,6 +1844,15 @@ function createDefaultModeBoundary(
   return createBrowserBoundary(boundaryOptions(overrides));
 }
 
+function createStoredModeBoundary(
+  overrides: Partial<Parameters<typeof createBrowserBoundary>[0]> = {},
+) {
+  return createBrowserBoundary({
+    anonymousSessionMode: "stored",
+    ...boundaryOptions(overrides),
+  });
+}
+
 function boundaryOptions(
   overrides: Partial<Parameters<typeof createBrowserBoundary>[0]> = {},
 ): Parameters<typeof createBrowserBoundary>[0] {
@@ -1630,7 +1898,10 @@ async function authenticateBrowser(
   const context = await boundary.resolveRequest(
     new Request(`${publicOrigin}/`, { headers: { cookie: anonymous.cookie } }),
   );
-  if (!(await browserSessions.create(context.browserSession))) {
+  if (
+    (await browserSessions.get(context.browserSession.id)) === null &&
+    !(await browserSessions.create(context.browserSession))
+  ) {
     throw new Error("failed to promote browser test session");
   }
   await authSessions.create(storedSession());

@@ -323,79 +323,84 @@ export function pollFromResponse(
   context: AdapterOperationContext,
   operation: string,
 ): Poll {
-  if (!isRecord(response) || typeof response.multiple !== "boolean") {
-    throw activityPlugError(
-      "REMOTE_ERROR",
-      "HackersPub poll response is missing required fields.",
+  const depth = beginMapping(context);
+  try {
+    if (!isRecord(response) || typeof response.multiple !== "boolean") {
+      throw activityPlugError(
+        "REMOTE_ERROR",
+        "HackersPub poll response is missing required fields.",
+        context,
+        operation,
+        response,
+      );
+    }
+    const responsePostId = optionalString(response.postId, "postId", response, context, operation);
+    if (responsePostId !== undefined && responsePostId !== fallbackId) {
+      throw activityPlugError(
+        "REMOTE_ERROR",
+        "HackersPub poll response belongs to a different post.",
+        context,
+        operation,
+        response,
+      );
+    }
+    const rawId = validatedRemoteId(
+      undefined,
+      responsePostId ?? fallbackId,
+      response,
       context,
       operation,
-      response,
     );
+    if (rawId === undefined) {
+      throw activityPlugError(
+        "REMOTE_ERROR",
+        "HackersPub poll response is missing a valid UUID.",
+        context,
+        operation,
+        response,
+      );
+    }
+    const ends = optionalDateTimeString(response.ends, "ends", response, context, operation);
+    const options = response.options;
+    if (!Array.isArray(options)) {
+      throw activityPlugError(
+        "REMOTE_ERROR",
+        "HackersPub poll options response is malformed.",
+        context,
+        operation,
+        response,
+      );
+    }
+    return {
+      ref: createEntityRef({
+        adapter: context.adapterId,
+        origin: context.origin,
+        type: "poll",
+        id: rawId,
+      }),
+      ...(ends === undefined ? {} : { expiresAt: ends }),
+      expired: ends === undefined ? false : Date.parse(ends) <= Date.now(),
+      multiple: response.multiple,
+      ...optionalCount(
+        response.votesCount ?? totalCount(response.votes),
+        "votesCount",
+        response,
+        context,
+        operation,
+      ),
+      ...optionalCount(
+        response.votersCount ?? totalCount(response.voters),
+        "votersCount",
+        response,
+        context,
+        operation,
+      ),
+      options: options.map((option) => pollOptionFromResponse(option, context, operation)),
+      raw: response,
+    };
+  } finally {
+    depth?.release();
   }
-  const responsePostId = optionalString(response.postId, "postId", response, context, operation);
-  if (responsePostId !== undefined && responsePostId !== fallbackId) {
-    throw activityPlugError(
-      "REMOTE_ERROR",
-      "HackersPub poll response belongs to a different post.",
-      context,
-      operation,
-      response,
-    );
-  }
-  const rawId = validatedRemoteId(
-    undefined,
-    responsePostId ?? fallbackId,
-    response,
-    context,
-    operation,
-  );
-  if (rawId === undefined) {
-    throw activityPlugError(
-      "REMOTE_ERROR",
-      "HackersPub poll response is missing a valid UUID.",
-      context,
-      operation,
-      response,
-    );
-  }
-  const ends = optionalDateTimeString(response.ends, "ends", response, context, operation);
-  const options = response.options;
-  if (!Array.isArray(options)) {
-    throw activityPlugError(
-      "REMOTE_ERROR",
-      "HackersPub poll options response is malformed.",
-      context,
-      operation,
-      response,
-    );
-  }
-  return {
-    ref: createEntityRef({
-      adapter: context.adapterId,
-      origin: context.origin,
-      type: "poll",
-      id: rawId,
-    }),
-    ...(ends === undefined ? {} : { expiresAt: ends }),
-    expired: ends === undefined ? false : Date.parse(ends) <= Date.now(),
-    multiple: response.multiple,
-    ...optionalCount(
-      response.votesCount ?? totalCount(response.votes),
-      "votesCount",
-      response,
-      context,
-      operation,
-    ),
-    ...optionalCount(
-      response.votersCount ?? totalCount(response.voters),
-      "votersCount",
-      response,
-      context,
-      operation,
-    ),
-    options: options.map((option) => pollOptionFromResponse(option, context, operation)),
-    raw: response,
-  };
 }
 
 function optionalDateTimeString(
@@ -422,25 +427,30 @@ export function pollOptionFromResponse(
   context: AdapterOperationContext,
   operation: string,
 ): Poll["options"][number] {
-  if (!isRecord(response) || typeof response.title !== "string") {
-    throw activityPlugError(
-      "REMOTE_ERROR",
-      "HackersPub poll option response is missing required fields.",
-      context,
-      operation,
-      response,
-    );
+  const depth = beginMapping(context);
+  try {
+    if (!isRecord(response) || typeof response.title !== "string") {
+      throw activityPlugError(
+        "REMOTE_ERROR",
+        "HackersPub poll option response is missing required fields.",
+        context,
+        operation,
+        response,
+      );
+    }
+    return {
+      title: response.title,
+      ...optionalCount(
+        response.votesCount ?? totalCount(response.votes),
+        "votesCount",
+        response,
+        context,
+        operation,
+      ),
+    };
+  } finally {
+    depth?.release();
   }
-  return {
-    title: response.title,
-    ...optionalCount(
-      response.votesCount ?? totalCount(response.votes),
-      "votesCount",
-      response,
-      context,
-      operation,
-    ),
-  };
 }
 
 export function totalCount(value: unknown): unknown {
@@ -557,81 +567,98 @@ export function actorFromResponse(
   context: AdapterOperationContext,
   operation: string,
 ): Account {
-  if (
-    !isRecord(response) ||
-    validatedRemoteId(response.id, response.uuid, response, context, operation) === undefined ||
-    !nonEmptyString(response.username) ||
-    !nonEmptyString(response.handle)
-  ) {
-    throw activityPlugError(
-      "REMOTE_ERROR",
-      "HackersPub actor response is missing required fields.",
-      context,
-      operation,
-      response,
-    );
+  const depth = beginMapping(context);
+  try {
+    if (
+      !isRecord(response) ||
+      validatedRemoteId(response.id, response.uuid, response, context, operation) === undefined ||
+      !nonEmptyString(response.username) ||
+      !nonEmptyString(response.handle)
+    ) {
+      throw activityPlugError(
+        "REMOTE_ERROR",
+        "HackersPub actor response is missing required fields.",
+        context,
+        operation,
+        response,
+      );
+    }
+    const actor = response as unknown as HackersPubActor & {
+      readonly username: string;
+      readonly handle: string;
+    };
+    const rawId = validatedRemoteId(actor.id, actor.uuid, actor, context, operation);
+    if (rawId === undefined) {
+      throw activityPlugError(
+        "REMOTE_ERROR",
+        "HackersPub actor response is missing required fields.",
+        context,
+        operation,
+        response,
+      );
+    }
+    if (
+      actor.automaticallyApprovesFollowers !== undefined &&
+      typeof actor.automaticallyApprovesFollowers !== "boolean"
+    ) {
+      throw activityPlugError(
+        "REMOTE_ERROR",
+        "HackersPub actor response includes a malformed boolean field.",
+        context,
+        operation,
+        response,
+      );
+    }
+    const iri = optionalString(actor.iri, "iri", actor, context, operation);
+    const actorUrl = optionalString(actor.url, "url", actor, context, operation);
+    const rawName = optionalString(actor.rawName, "rawName", actor, context, operation);
+    const name = optionalString(actor.name, "name", actor, context, operation);
+    const acct = actor.handle.startsWith("@") ? actor.handle.slice(1) : actor.handle;
+    if (acct.length === 0) {
+      throw activityPlugError(
+        "REMOTE_ERROR",
+        "HackersPub actor handle is malformed.",
+        context,
+        operation,
+        actor,
+      );
+    }
+    return {
+      ref: createEntityRef({
+        adapter: context.adapterId,
+        origin: context.origin,
+        type: "account",
+        id: rawId,
+        rawUrl: iri ?? actorUrl,
+      }),
+      username: actor.username,
+      acct,
+      displayName: rawName ?? name ?? actor.username,
+      ...(actorUrl === undefined ? {} : { url: actorUrl }),
+      ...optionalStringField(actor.avatarUrl, "avatarUrl", actor, context, operation),
+      ...optionalStringAsField(
+        actor.headerUrl,
+        "headerUrl",
+        "headerUrl",
+        actor,
+        context,
+        operation,
+      ),
+      bot: false,
+      locked: !(actor.automaticallyApprovesFollowers ?? true),
+      ...optionalStringAsField(actor.created, "created", "createdAt", actor, context, operation),
+      ...optionalStringAsField(actor.bio, "bio", "note", actor, context, operation),
+      fields: actorFieldsFromResponse(actor.fields, context, operation),
+      raw: actor,
+    };
+  } finally {
+    depth?.release();
   }
-  const actor = response as unknown as HackersPubActor & {
-    readonly username: string;
-    readonly handle: string;
-  };
-  const rawId = validatedRemoteId(actor.id, actor.uuid, actor, context, operation);
-  if (rawId === undefined) {
-    throw activityPlugError(
-      "REMOTE_ERROR",
-      "HackersPub actor response is missing required fields.",
-      context,
-      operation,
-      response,
-    );
-  }
-  if (
-    actor.automaticallyApprovesFollowers !== undefined &&
-    typeof actor.automaticallyApprovesFollowers !== "boolean"
-  ) {
-    throw activityPlugError(
-      "REMOTE_ERROR",
-      "HackersPub actor response includes a malformed boolean field.",
-      context,
-      operation,
-      response,
-    );
-  }
-  const iri = optionalString(actor.iri, "iri", actor, context, operation);
-  const actorUrl = optionalString(actor.url, "url", actor, context, operation);
-  const rawName = optionalString(actor.rawName, "rawName", actor, context, operation);
-  const name = optionalString(actor.name, "name", actor, context, operation);
-  const acct = actor.handle.startsWith("@") ? actor.handle.slice(1) : actor.handle;
-  if (acct.length === 0) {
-    throw activityPlugError(
-      "REMOTE_ERROR",
-      "HackersPub actor handle is malformed.",
-      context,
-      operation,
-      actor,
-    );
-  }
-  return {
-    ref: createEntityRef({
-      adapter: context.adapterId,
-      origin: context.origin,
-      type: "account",
-      id: rawId,
-      rawUrl: iri ?? actorUrl,
-    }),
-    username: actor.username,
-    acct,
-    displayName: rawName ?? name ?? actor.username,
-    ...(actorUrl === undefined ? {} : { url: actorUrl }),
-    ...optionalStringField(actor.avatarUrl, "avatarUrl", actor, context, operation),
-    ...optionalStringAsField(actor.headerUrl, "headerUrl", "headerUrl", actor, context, operation),
-    bot: false,
-    locked: !(actor.automaticallyApprovesFollowers ?? true),
-    ...optionalStringAsField(actor.created, "created", "createdAt", actor, context, operation),
-    ...optionalStringAsField(actor.bio, "bio", "note", actor, context, operation),
-    fields: actorFieldsFromResponse(actor.fields, context, operation),
-    raw: actor,
-  };
+}
+
+function beginMapping(context: AdapterOperationContext) {
+  context.budget?.charge("nodes");
+  return context.budget?.reserve("depth");
 }
 
 export function viewerAccountFromResponse(

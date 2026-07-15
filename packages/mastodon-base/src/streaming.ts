@@ -39,6 +39,7 @@ interface ResolvedStreamingTarget {
   readonly url: string;
   readonly remoteOrigin: string;
   readonly authorization?: string;
+  readonly protocols?: readonly string[];
 }
 
 export async function connectMastodonTimelineStream(
@@ -104,6 +105,7 @@ async function mastodonTimelineTarget(
   return authenticatedTarget(
     { ...target, url: url.toString() },
     input.session,
+    discovery,
     context,
     options,
     "stream.timeline",
@@ -123,6 +125,7 @@ async function mastodonNotificationTarget(
   return authenticatedTarget(
     { ...target, url: url.toString() },
     input.session,
+    discovery,
     context,
     options,
     "stream.notifications",
@@ -132,19 +135,80 @@ async function mastodonNotificationTarget(
 async function authenticatedTarget(
   target: ResolvedStreamingTarget,
   session: NotificationStreamInput["session"] | undefined,
+  discovery: MastodonStreamingDiscovery,
   context: AdapterOperationContext,
   options: MastodonStreamingOptions,
   operation: "stream.timeline" | "stream.notifications",
 ): Promise<ResolvedStreamingTarget> {
   if (session === undefined) return target;
   assertEncryptedWebSocket(target, context, operation);
+  assertCredentialRecipient(target, context, operation, options.authentication);
+  assertStreamingAuthenticationSupported(discovery, options.authentication, context, operation);
   const authorization = (await tokenHeader(session, context, operation)).Authorization;
-  if (options.authentication === "legacy-query") {
-    const url = new URL(target.url);
-    url.searchParams.set("access_token", authorization.replace(/^Bearer\s+/u, ""));
-    return { ...target, url: url.toString() };
+  if (options.authentication === "websocket-subprotocol") {
+    return {
+      ...target,
+      protocols: [authorization.replace(/^Bearer\s+/u, "")],
+    };
   }
   return { ...target, authorization };
+}
+
+function assertCredentialRecipient(
+  target: ResolvedStreamingTarget,
+  context: AdapterOperationContext,
+  operation: "stream.timeline" | "stream.notifications",
+  authentication: MastodonStreamingAuthentication,
+): void {
+  if (context.assertCredentialAllowed === undefined) {
+    throw new ActivityPlugError(
+      "ORIGIN_NOT_ALLOWED",
+      "Authenticated WebSocket discovery requires an explicit credential authority.",
+      { adapter: context.adapterId, origin: target.remoteOrigin, operation },
+    );
+  }
+  context.assertCredentialAllowed({
+    recipient: httpOriginForWebSocket(target.url),
+    operation,
+    credentialClass: "oauth-access-token",
+    representation:
+      authentication === "websocket-subprotocol" ? "websocket-subprotocol" : "authorization-header",
+  });
+}
+
+function httpOriginForWebSocket(value: string): string {
+  const url = new URL(value);
+  if (url.protocol === "wss:") url.protocol = "https:";
+  if (url.protocol === "ws:") url.protocol = "http:";
+  return url.origin;
+}
+
+function assertStreamingAuthenticationSupported(
+  discovery: MastodonStreamingDiscovery,
+  authentication: MastodonStreamingAuthentication,
+  context: AdapterOperationContext,
+  operation: "stream.timeline" | "stream.notifications",
+): void {
+  if (authentication !== "websocket-subprotocol") return;
+  const family = discovery.softwareName.toLowerCase();
+  if (family === "akkoma") return;
+  const version = parseStableVersion(discovery.softwareVersion);
+  if (family === "pleroma" && version !== undefined && versionAtLeast(version, [2, 7, 1])) {
+    return;
+  }
+  throw new ActivityPlugError(
+    "UNSUPPORTED_OPERATION",
+    family === "pleroma" && version !== undefined
+      ? "This Pleroma version does not support verified WebSocket subprotocol authentication."
+      : "WebSocket subprotocol authentication cannot be verified for this server version.",
+    {
+      adapter: context.adapterId,
+      origin: context.origin,
+      operation,
+      capability:
+        operation === "stream.timeline" ? "streaming.timeline" : "streaming.notifications",
+    },
+  );
 }
 
 function assertEncryptedWebSocket(
@@ -181,9 +245,7 @@ function resolvedStreamingTarget(
   }
   const base = new URL(endpoint.status === "advertised" ? endpoint.url : context.origin);
   const remoteOrigin = base.origin;
-  // Modern factories receive credentials through call options, never an
-  // instance-advertised query parameter. Legacy adapters add their own token later.
-  base.searchParams.delete("access_token");
+  assertCredentialFreeStreamingUrl(base, context, capability);
   if (!/\/api\/v1\/streaming\/?$/u.test(base.pathname)) {
     base.pathname = `${base.pathname.endsWith("/") ? base.pathname : `${base.pathname}/`}api/v1/streaming/`;
   } else if (!base.pathname.endsWith("/")) {
@@ -192,6 +254,46 @@ function resolvedStreamingTarget(
   if (base.protocol === "https:") base.protocol = "wss:";
   if (base.protocol === "http:") base.protocol = "ws:";
   return { url: base.toString(), remoteOrigin };
+}
+
+const STREAMING_URL_CREDENTIAL_KEYS = new Set([
+  "access_token",
+  "api_key",
+  "authorization",
+  "client_secret",
+  "code",
+  "code_verifier",
+  "i",
+  "refresh_token",
+  "state",
+  "ticket",
+  "token",
+]);
+
+function assertCredentialFreeStreamingUrl(
+  url: URL,
+  context: AdapterOperationContext,
+  capability: "streaming.timeline" | "streaming.notifications",
+): void {
+  if (
+    url.username === "" &&
+    url.password === "" &&
+    [...url.searchParams.keys()].every(
+      (key) => !STREAMING_URL_CREDENTIAL_KEYS.has(key.toLowerCase()),
+    )
+  ) {
+    return;
+  }
+  throw new ActivityPlugError(
+    "ORIGIN_NOT_ALLOWED",
+    "Advertised WebSocket credentials must not be represented in a URL.",
+    {
+      adapter: context.adapterId,
+      origin: url.origin,
+      operation: capability === "streaming.timeline" ? "stream.timeline" : "stream.notifications",
+      capability,
+    },
+  );
 }
 
 function connectMastodonStream(
@@ -290,10 +392,15 @@ async function* websocketEvents(
   let socket: WebSocket;
   try {
     const candidate = resolveWebSocketFactoryResult(
-      factory(target.url, undefined, signal, {
-        operation,
-        ...(target.authorization === undefined ? {} : { authorization: target.authorization }),
-      }),
+      factory(
+        target.url,
+        target.protocols === undefined ? undefined : [...target.protocols],
+        signal,
+        {
+          operation,
+          ...(target.authorization === undefined ? {} : { authorization: target.authorization }),
+        },
+      ),
       signal,
     );
     socket = isWebSocketPromise(candidate) ? await candidate : candidate;

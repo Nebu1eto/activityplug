@@ -22,6 +22,7 @@ import {
   type PostgresQueryResult,
   type PostgresTransactionPool,
   readClock,
+  resolvePostgresCleanupLimit,
   snapshotOAuthClaim,
   snapshotOAuthState,
   timestampMilliseconds,
@@ -278,10 +279,11 @@ export class PostgresOAuthStateStore implements OAuthStateStore {
     });
   }
 
-  public async deleteExpired(now?: Date): Promise<number> {
+  public async deleteExpired(now?: Date, limit?: number): Promise<number> {
+    const cleanupLimit = resolvePostgresCleanupLimit(limit);
     return await withConnection(this.#pool, async (client) => {
       const checkedAt = readClock(() => now ?? this.#now());
-      return await deleteExpiredRows(client, this.#tableName, checkedAt.iso);
+      return await deleteExpiredRows(client, this.#tableName, checkedAt.iso, cleanupLimit);
     });
   }
 }
@@ -339,10 +341,36 @@ export class PostgresOAuthClientSecretStore implements OAuthClientSecretStore {
     });
   }
 
-  public async deleteExpired(now?: Date): Promise<number> {
+  public async get(ref: string): Promise<string | null> {
+    if (!isNonEmptyString(ref)) return null;
+    return await withConnection(this.#client, async (client) => {
+      const now = readClock(this.#now);
+      const result = await client.query<SecretRow>(
+        `select payload, expires_at > $2 as active
+         from ${this.#tableName}
+         where id = $1`,
+        [ref, now.iso],
+      );
+      const row = result.rows[0];
+      if (row === undefined || !row.active || !isSecretPayload(row.payload)) return null;
+      return row.payload.secret;
+    });
+  }
+
+  public async delete(ref: string): Promise<boolean> {
+    if (!isNonEmptyString(ref)) return false;
+    const result = await this.#client.query<IdentifierRow>(
+      `delete from ${this.#tableName} where id = $1 returning id`,
+      [ref],
+    );
+    return result.rows.length === 1;
+  }
+
+  public async deleteExpired(now?: Date, limit?: number): Promise<number> {
+    const cleanupLimit = resolvePostgresCleanupLimit(limit);
     return await withConnection(this.#client, async (client) => {
       const checkedAt = readClock(() => now ?? this.#now());
-      return await deleteExpiredRows(client, this.#tableName, checkedAt.iso);
+      return await deleteExpiredRows(client, this.#tableName, checkedAt.iso, cleanupLimit);
     });
   }
 }

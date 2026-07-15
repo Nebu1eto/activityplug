@@ -1,4 +1,9 @@
-import { ActivityPlugError, canonicalizeOrigin, isActivityPlugError } from "@activityplug/core";
+import {
+  ActivityPlugError,
+  canonicalizeOrigin,
+  isActivityPlugError,
+  type OriginPolicy,
+} from "@activityplug/core";
 import { upgradeWebSocket } from "@hono/node-server";
 import { execute, GraphQLError, validate } from "graphql";
 import { Hono, type Context } from "hono";
@@ -117,6 +122,7 @@ export interface CreateActivityPlugAppOptions {
   readonly requestLimits?: Partial<RequestLimits>;
   readonly graphqlLimits?: Partial<GraphQLLimits>;
   readonly oauthClientRegistrationLimiter?: OAuthStartLimiter;
+  readonly oauthClientRegistrationOriginPolicy?: OriginPolicy;
   readonly clientIp?: ClientIpResolver;
 }
 
@@ -377,6 +383,7 @@ export function createActivityPlugApp(options: CreateActivityPlugAppOptions): Ho
     const body = requireObjectBody(await parseJsonBody(context.req.json()));
     const selector = instanceSelectorRequest(body);
     const origin = await assertOAuthClientRegistrationAllowed(
+      options.oauthClientRegistrationOriginPolicy,
       options.oauthClientRegistrationLimiter,
       context.req.raw,
       context,
@@ -1519,6 +1526,7 @@ export function createActivityPlugApp(options: CreateActivityPlugAppOptions): Ho
       tokenImport: options.tokenImport,
       assertOAuthClientRegistrationAllowed: (origin) =>
         assertOAuthClientRegistrationAllowed(
+          options.oauthClientRegistrationOriginPolicy,
           options.oauthClientRegistrationLimiter,
           context.req.raw,
           context,
@@ -1547,6 +1555,7 @@ function retryAfterSecondsFor(error: ActivityPlugError): number | undefined {
 }
 
 async function assertOAuthClientRegistrationAllowed(
+  originPolicy: OriginPolicy | undefined,
   limiter: OAuthStartLimiter | undefined,
   request: Request,
   context: Context,
@@ -1554,6 +1563,7 @@ async function assertOAuthClientRegistrationAllowed(
   resolver: CreateActivityPlugAppOptions["clientIp"],
 ): Promise<string> {
   const canonicalOrigin = canonicalizeOrigin(origin);
+  await originPolicy?.assertAllowed(canonicalOrigin, "auth.registerClient", request.signal);
   if (limiter === undefined) return canonicalOrigin;
   const result = await limiter.take({
     clientIp: requiredClientIp(request, resolver, context),

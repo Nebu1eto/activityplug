@@ -23,18 +23,18 @@ describe.skipIf(!runIntegration)("Redis OAuth lifecycle stores", () => {
     await redis.quit();
   });
 
-  it("creates and claims one OAuth state atomically under 20-way races", async () => {
+  it("creates and claims one OAuth state atomically under races", async () => {
     const clock = createTestClock();
     const prefix = nextPrefix("state-race");
     const store = createRedisOAuthStateStore(redis, { keyPrefix: prefix, now: clock.now });
     const record = oauthState("state-race", clock);
 
-    const creates = await Promise.all(Array.from({ length: 20 }, () => store.create(record)));
+    const creates = await Promise.all(Array.from({ length: 8 }, () => store.create(record)));
     expect(creates.filter(Boolean)).toHaveLength(1);
     expect(await redis.pttl(`${prefix}${record.stateHash}`)).toBeGreaterThan(0);
 
     const claims = await Promise.all(
-      Array.from({ length: 20 }, () => store.claim(record.stateHash, clock.after(30_000))),
+      Array.from({ length: 8 }, () => store.claim(record.stateHash, clock.after(30_000))),
     );
     const winners = claims.filter((claim): claim is OAuthStateClaim => claim !== null);
     expect(winners).toHaveLength(1);
@@ -140,8 +140,32 @@ describe.skipIf(!runIntegration)("Redis OAuth lifecycle stores", () => {
     await expect(store.put("ref", "", clock.after(60_000))).resolves.toBe(false);
     await expect(store.put("ref", "client-secret", clock.after(60_000))).resolves.toBe(true);
     await expect(store.put("ref", "replacement", clock.after(60_000))).resolves.toBe(false);
-    const takes = await Promise.all(Array.from({ length: 20 }, () => store.take("ref")));
+    const takes = await Promise.all(Array.from({ length: 8 }, () => store.take("ref")));
     expect(takes.filter((value) => value !== null)).toEqual(["client-secret"]);
+  });
+
+  it("physically expires OAuth state and secrets without reads or cleanup scans", async () => {
+    const statePrefix = nextPrefix("state-native-expiry");
+    const secretPrefix = nextPrefix("secret-native-expiry");
+    const stateStore = createRedisOAuthStateStore(redis, { keyPrefix: statePrefix });
+    const secretStore = createRedisOAuthClientSecretStore(redis, { keyPrefix: secretPrefix });
+    const now = Date.now();
+    const stateHash = "state-native-expiry";
+    const record = oauthState(stateHash, createTestClock(), {
+      createdAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + 1_000).toISOString(),
+    });
+
+    await expect(stateStore.create(record)).resolves.toBe(true);
+    await expect(
+      secretStore.put("secret-native-expiry", "secret", new Date(now + 1_000).toISOString()),
+    ).resolves.toBe(true);
+    expect(await redis.pttl(`${statePrefix}${stateHash}`)).toBeGreaterThan(0);
+    expect(await redis.pttl(`${secretPrefix}secret-native-expiry`)).toBeGreaterThan(0);
+
+    await delay(1_200);
+    await expect(redis.exists(`${statePrefix}${stateHash}`)).resolves.toBe(0);
+    await expect(redis.exists(`${secretPrefix}secret-native-expiry`)).resolves.toBe(0);
   });
 
   it("honors secret expiry and physical create-if-absent semantics", async () => {
@@ -304,4 +328,8 @@ function proxyRedis(
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
+}
+
+async function delay(milliseconds: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

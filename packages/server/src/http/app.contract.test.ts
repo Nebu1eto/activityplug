@@ -412,6 +412,56 @@ describe("ActivityPlug HTTP and GraphQL contract edges", () => {
     expect(registerClient).not.toHaveBeenCalled();
   });
 
+  it("authorizes canonical registration origins before HTTP or GraphQL admission", async () => {
+    const registerClient = vi.fn(createTestService().auth.registerClient);
+    const take = vi.fn(async () => ({ allowed: true as const }));
+    const assertAllowed = vi.fn(async (origin: string) => {
+      if (origin === "https://blocked.example") {
+        throw new ActivityPlugError("ORIGIN_NOT_ALLOWED", "Blocked origin.");
+      }
+    });
+    const app = createActivityPlugApp({
+      service: createTestService({ auth: { ...createTestService().auth, registerClient } }),
+      oauthClientRegistrationLimiter: { take },
+      oauthClientRegistrationOriginPolicy: { assertAllowed },
+    });
+    const client = {
+      clientName: "ActivityPlug",
+      redirectUris: ["https://client.example/callback"],
+    };
+
+    const httpResponse = await app.request("/api/v1/auth/clients", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ origin: "HTTPS://BLOCKED.EXAMPLE:443/", client }),
+    });
+    const graphQLResponse = await jsonRequest(
+      app.request("/graphql", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query: `mutation($input: RegisterOAuthClientInput!) {
+            registerOAuthClient(input: $input) { clientId }
+          }`,
+          variables: { input: { origin: "HTTPS://BLOCKED.EXAMPLE:443/", client } },
+        }),
+      }),
+    );
+
+    expect(httpResponse.status).toBe(403);
+    expect(getFirstGraphQLError(graphQLResponse).extensions.activityplug).toEqual(
+      expect.objectContaining({ code: "ORIGIN_NOT_ALLOWED" }),
+    );
+    expect(assertAllowed).toHaveBeenCalledTimes(2);
+    expect(assertAllowed).toHaveBeenCalledWith(
+      "https://blocked.example",
+      "auth.registerClient",
+      expect.any(AbortSignal),
+    );
+    expect(take).not.toHaveBeenCalled();
+    expect(registerClient).not.toHaveBeenCalled();
+  });
+
   it("exposes typed email and passkey auth without returning upstream secrets", async () => {
     const baseService = createTestService();
     const emailStartOperation = vi.fn(
@@ -815,8 +865,8 @@ describe("ActivityPlug HTTP and GraphQL contract edges", () => {
       expect(httpOperation).toBeDefined();
       const fields =
         operation.graphqlType === "query"
-          ? introspection.data.__schema.queryType.fields
-          : introspection.data.__schema.mutationType.fields;
+          ? introspection.data["__schema"].queryType.fields
+          : introspection.data["__schema"].mutationType.fields;
       const field = fields.find((candidate) => candidate.name === operation.graphqlField);
       expect(field).toBeDefined();
       expect(field?.args.map((arg) => arg.name).toSorted()).toEqual(operation.graphqlArgs);
@@ -858,8 +908,8 @@ describe("ActivityPlug HTTP and GraphQL contract edges", () => {
       expect(hasBearerSecurity(httpOperation)).toBe(operation.requiresAuth);
       const fields =
         operation.graphqlType === "query"
-          ? introspection.data.__schema.queryType.fields
-          : introspection.data.__schema.mutationType.fields;
+          ? introspection.data["__schema"].queryType.fields
+          : introspection.data["__schema"].mutationType.fields;
       const field = fields.find((candidate) => candidate.name === operation.graphqlField);
       expect(field).toBeDefined();
       expect(typeName(field?.type)).toBe(operation.graphqlReturnType);
@@ -967,7 +1017,7 @@ describe("ActivityPlug HTTP and GraphQL contract edges", () => {
           };
         };
       }
-    ).data.__schema.subscriptionType;
+    ).data["__schema"].subscriptionType;
     expect(
       subscriptionType.fields
         .map((field) => ({
@@ -1019,7 +1069,7 @@ describe("ActivityPlug HTTP and GraphQL contract edges", () => {
         (response as { readonly data?: unknown }).data as {
           readonly __type?: { readonly fields?: readonly { readonly name: string }[] };
         }
-      ).__type?.fields ?? []
+      )["__type"]?.fields ?? []
     )
       .map((field) => field.name)
       .toSorted();

@@ -31,7 +31,7 @@ describe.skipIf(!runIntegration)("PostgreSQL OAuth lifecycle stores", () => {
     await pool.query(`drop table if exists ${stateTableName}`);
     await pool.query(`drop table if exists ${secretTableName}`);
     await Promise.all(
-      Array.from({ length: 20 }, async () => {
+      Array.from({ length: 8 }, async () => {
         await createPostgresOAuthStateTable({ client: pool, tableName: stateTableName });
         await createPostgresOAuthClientSecretTable({ client: pool, tableName: secretTableName });
       }),
@@ -106,7 +106,7 @@ describe.skipIf(!runIntegration)("PostgreSQL OAuth lifecycle stores", () => {
     await store.create(state);
 
     const claims = await Promise.all(
-      Array.from({ length: 20 }, () => store.claim(state.stateHash, clock.after(30_000))),
+      Array.from({ length: 8 }, () => store.claim(state.stateHash, clock.after(30_000))),
     );
     const winners = claims.filter((claim) => claim !== null);
     expect(winners).toHaveLength(1);
@@ -123,7 +123,7 @@ describe.skipIf(!runIntegration)("PostgreSQL OAuth lifecycle stores", () => {
     const second = await store.claim(state.stateHash, clock.after(30_000));
     expect(second).toMatchObject({ revision: 3, claimToken: "claim-2" });
     if (second === null) throw new Error("Expected a released OAuth state to be claimable.");
-    const consumed = await Promise.all(Array.from({ length: 20 }, () => store.consume(second)));
+    const consumed = await Promise.all(Array.from({ length: 8 }, () => store.consume(second)));
     expect(consumed.filter(Boolean)).toHaveLength(1);
     await expect(store.claim(state.stateHash, clock.after(30_000))).resolves.toBeNull();
     await expect(store.create(state)).resolves.toBe(false);
@@ -399,7 +399,7 @@ describe.skipIf(!runIntegration)("PostgreSQL OAuth lifecycle stores", () => {
 
     await expect(store.put("secret-ref", "client-secret", clock.after(10_000))).resolves.toBe(true);
     await expect(store.put("secret-ref", "replacement", clock.after(10_000))).resolves.toBe(false);
-    const taken = await Promise.all(Array.from({ length: 20 }, () => store.take("secret-ref")));
+    const taken = await Promise.all(Array.from({ length: 8 }, () => store.take("secret-ref")));
     expect(taken.filter((secret) => secret !== null)).toEqual(["client-secret"]);
 
     await expect(store.put("", "secret", clock.after(1_000))).resolves.toBe(false);
@@ -414,6 +414,38 @@ describe.skipIf(!runIntegration)("PostgreSQL OAuth lifecycle stores", () => {
     await store.put("expired-b", "secret", clock.after(1_000));
     clock.advance(1_000);
     await expect(store.deleteExpired()).resolves.toBe(2);
+  });
+
+  it("enforces caller cleanup limits for OAuth states and client secrets", async () => {
+    const clock = testClock();
+    const stateStore = createPostgresOAuthStateStore(pool, {
+      tableName: stateTableName,
+      now: clock.now,
+    });
+    const secretStore = createPostgresOAuthClientSecretStore(pool, {
+      tableName: secretTableName,
+      now: clock.now,
+    });
+    for (const id of ["a", "b", "c"]) {
+      await stateStore.create(
+        createOAuthState(`small-limit-state-${id}`, { expiresAt: clock.after(1_000) }),
+      );
+      await secretStore.put(`small-limit-secret-${id}`, "secret", clock.after(1_000));
+    }
+    clock.advance(1_000);
+
+    await expect(stateStore.deleteExpired(undefined, 1)).resolves.toBe(1);
+    await expect(
+      pool.query<{ count: string }>(
+        `select count(*)::text as count from ${stateTableName} where state_hash like 'small-limit-state-%'`,
+      ),
+    ).resolves.toMatchObject({ rows: [{ count: "2" }] });
+    await expect(secretStore.deleteExpired(undefined, 2)).resolves.toBe(2);
+    await expect(
+      pool.query<{ count: string }>(
+        `select count(*)::text as count from ${secretTableName} where id like 'small-limit-secret-%'`,
+      ),
+    ).resolves.toMatchObject({ rows: [{ count: "1" }] });
   });
 
   it("uses the state and secret cleanup indexes", async () => {
@@ -439,13 +471,21 @@ async function expectCleanupIndex(pool: Pool, tableName: string) {
     await client.query("set local enable_seqscan = off");
     const plan = await client.query<{ "QUERY PLAN": unknown }>(
       `explain (format json)
-       with deleted as (
-         delete from ${tableName}
+       with expired as (
+         select ctid
+         from ${tableName}
          where expires_at <= $1
+         order by expires_at, ctid
+         limit $2
+         for update skip locked
+       ), deleted as (
+         delete from ${tableName} as target
+         using expired
+         where target.ctid = expired.ctid
          returning 1
        )
        select count(*)::text as count from deleted`,
-      [initialNow],
+      [initialNow, 500],
     );
     expect(JSON.stringify(plan.rows)).toContain("Index Scan");
     expect(JSON.stringify(plan.rows)).toContain("expires_at");

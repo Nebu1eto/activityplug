@@ -11,6 +11,7 @@ import {
 
 export * from "./ephemeral.js";
 export * from "./oauth.js";
+export * from "./browser.js";
 
 export interface RedisAuthSessionStoreClient {
   readonly get: (key: string) => Promise<string | null>;
@@ -57,8 +58,17 @@ export interface RedisStoreOptions {
   readonly now?: () => Date;
 }
 
+export interface RedisNativeExpiryMetadata {
+  readonly expiryMode: "native";
+}
+
 const storageTtlValidationLua = `
 local ttlToleranceMs = 5000
+
+local function redisTimeMs()
+  local redisTime = redis.call('TIME')
+  return tonumber(redisTime[1]) * 1000 + math.floor(tonumber(redisTime[2]) / 1000)
+end
 
 local function hasConsistentStorageTtl(expiresAtArgument, nowMs, ttlMs)
   if expiresAtArgument == '' then return ttlMs == -1 end
@@ -80,8 +90,8 @@ ${storageTtlValidationLua}
 local currentRaw = redis.call('GET', KEYS[1])
 if not currentRaw or currentRaw ~= ARGV[1] then return 0 end
 
-local nowMs = tonumber(ARGV[5])
-if not nowMs or not hasConsistentStorageTtl(ARGV[2], nowMs, redis.call('PTTL', KEYS[1])) then
+local nowMs = redisTimeMs()
+if not hasConsistentStorageTtl(ARGV[2], nowMs, redis.call('PTTL', KEYS[1])) then
   return 0
 end
 
@@ -106,8 +116,8 @@ ${storageTtlValidationLua}
 local currentRaw = redis.call('GET', KEYS[1])
 if not currentRaw or currentRaw ~= ARGV[1] then return 0 end
 
-local nowMs = tonumber(ARGV[3])
-if not nowMs or not hasConsistentStorageTtl(ARGV[2], nowMs, redis.call('PTTL', KEYS[1])) then
+local nowMs = redisTimeMs()
+if not hasConsistentStorageTtl(ARGV[2], nowMs, redis.call('PTTL', KEYS[1])) then
   return 0
 end
 
@@ -127,7 +137,8 @@ return redis.call('DEL', KEYS[1])
 
 const invalidStorageExpirationSentinel = '{"activityplugInvalidStorageExpiration":true}';
 
-export class RedisAuthSessionStore implements AuthSessionStore {
+export class RedisAuthSessionStore implements AuthSessionStore, RedisNativeExpiryMetadata {
+  public readonly expiryMode = "native" as const;
   readonly #client: RedisAuthSessionStoreClient;
   readonly #keyPrefix: string;
   readonly #now: () => Date;
@@ -218,7 +229,6 @@ export class RedisAuthSessionStore implements AuthSessionStore {
         expirationTimestampArgument(current.storageExpiresAt),
         serializedNext.raw,
         expirationTimestampArgument(serializedNext.session.storageExpiresAt),
-        String(now.getTime()),
       ],
     );
     return result === 1;
@@ -242,7 +252,7 @@ export class RedisAuthSessionStore implements AuthSessionStore {
     const result = await this.#client.eval(
       compareAndDeleteScript,
       [key],
-      [currentRaw, expirationTimestampArgument(current.storageExpiresAt), String(now.getTime())],
+      [currentRaw, expirationTimestampArgument(current.storageExpiresAt)],
     );
     return result === 1;
   }
@@ -283,7 +293,7 @@ export class RedisAuthSessionStore implements AuthSessionStore {
 export function createRedisAuthSessionStore(
   client: Redis,
   options: RedisStoreOptions = {},
-): AuthSessionStore {
+): AuthSessionStore & RedisNativeExpiryMetadata {
   assertDirectRedisClient(client, options);
   return new RedisAuthSessionStore({
     client: redisAuthSessionStoreClient(client),
@@ -319,6 +329,11 @@ const accountReferenceSchema = z.looseObject({
   rawUrl: z.string().optional(),
 });
 
+const authSessionOwnerSchema = z.looseObject({
+  kind: z.literal("browser-session"),
+  id: z.string().min(1),
+});
+
 const storedAuthSessionSchema = z.looseObject({
   id: z.string(),
   adapter: z.string(),
@@ -333,6 +348,7 @@ const storedAuthSessionSchema = z.looseObject({
   account: accountReferenceSchema.optional(),
   expiresAt: z.string().optional(),
   storageExpiresAt: z.string().optional(),
+  owner: authSessionOwnerSchema.optional(),
   metadata: jsonRecordSchema.optional(),
 });
 

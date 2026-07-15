@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   type BrowserSessionRecord,
@@ -19,6 +19,165 @@ const initialNow = "2026-07-12T00:00:00.000Z";
 const later = "2026-07-12T00:10:00.000Z";
 
 describe("InMemoryBrowserSessionStore", () => {
+  it("admits exactly up to the live capacity under contention", async () => {
+    const store = new InMemoryBrowserSessionStore({ now: testClock().now });
+    const results = await Promise.all(
+      Array.from({ length: 1_024 }, (_, index) =>
+        store.admit(browserSession(`browser-capacity-${index}`), {
+          ...browserAdmissionLimits(),
+          maximumLiveSessions: 37,
+        }),
+      ),
+    );
+
+    expect(results.filter((result) => result.admitted)).toHaveLength(37);
+    expect(
+      results.filter((result) => !result.admitted && result.reason === "capacity_exceeded"),
+    ).toHaveLength(987);
+  });
+
+  it("distinguishes collisions and recovers capacity after expiry", async () => {
+    const clock = testClock();
+    const store = new InMemoryBrowserSessionStore({ now: clock.now });
+    const first = browserSession("browser-capacity-first");
+
+    await expect(
+      store.admit(first, browserAdmissionLimits({ maximumLiveSessions: 1 })),
+    ).resolves.toEqual({
+      admitted: true,
+    });
+    await expect(
+      store.admit(first, browserAdmissionLimits({ maximumLiveSessions: 1 })),
+    ).resolves.toEqual({
+      admitted: false,
+      reason: "conflict",
+    });
+    await expect(
+      store.admit(
+        browserSession("browser-capacity-blocked"),
+        browserAdmissionLimits({ maximumLiveSessions: 1 }),
+      ),
+    ).resolves.toEqual({ admitted: false, reason: "capacity_exceeded" });
+
+    clock.set(later);
+    await expect(
+      store.admit(
+        browserSession("browser-capacity-recovered", {
+          createdAt: later,
+          expiresAt: "2026-07-12T00:20:00.000Z",
+        }),
+        browserAdmissionLimits({ maximumLiveSessions: 1 }),
+      ),
+    ).resolves.toEqual({ admitted: true });
+  });
+
+  it("enforces per-subject live quota without blocking other subjects", async () => {
+    const store = new InMemoryBrowserSessionStore({ now: testClock().now });
+    const limits = browserAdmissionLimits({ maximumLiveSessionsPerSubject: 1 });
+
+    await expect(store.admit(browserSession("subject-a-1"), limits)).resolves.toEqual({
+      admitted: true,
+    });
+    await expect(store.admit(browserSession("subject-a-2"), limits)).resolves.toEqual({
+      admitted: false,
+      reason: "subject_capacity_exceeded",
+    });
+    await expect(
+      store.admit(browserSession("subject-b-1"), { ...limits, subject: "subject-b" }),
+    ).resolves.toEqual({ admitted: true });
+
+    await store.delete("subject-a-1");
+    await expect(store.admit(browserSession("subject-a-3"), limits)).resolves.toEqual({
+      admitted: true,
+    });
+  });
+
+  it("does not inspect unrelated live records while admitting a session", async () => {
+    const store = new InMemoryBrowserSessionStore({ now: testClock().now });
+    const limits = browserAdmissionLimits({
+      maximumLiveSessions: 1_024,
+      maximumLiveSessionsPerSubject: 1,
+      maximumCreationsPerWindow: 1,
+    });
+    for (let index = 0; index < 512; index += 1) {
+      await expect(
+        store.admit(browserSession(`unrelated-${index}`), {
+          ...limits,
+          subject: `unrelated-subject-${index}`,
+        }),
+      ).resolves.toEqual({ admitted: true });
+    }
+
+    const parseTimestamp = vi.spyOn(Date, "parse");
+    parseTimestamp.mockClear();
+    try {
+      await expect(
+        store.admit(browserSession("bounded-admission"), {
+          ...limits,
+          subject: "bounded-subject",
+        }),
+      ).resolves.toEqual({ admitted: true });
+      expect(parseTimestamp.mock.calls.length).toBeLessThan(20);
+    } finally {
+      parseTimestamp.mockRestore();
+    }
+  });
+
+  it("updates the expiry index when CAS extends a session lifetime", async () => {
+    const clock = testClock();
+    const store = new InMemoryBrowserSessionStore({ now: clock.now });
+    const current = browserSession("extended-expiry", { expiresAt: clock.after(1_000) });
+    await expect(store.create(current)).resolves.toBe(true);
+    await expect(
+      store.compareAndSet(
+        current.id,
+        0,
+        browserSession(current.id, { expiresAt: clock.after(60_000), revision: 1 }),
+      ),
+    ).resolves.toBe(true);
+
+    clock.advance(1_000);
+    await expect(
+      store.admit(
+        browserSession("expiry-index-trigger", {
+          createdAt: clock.after(0),
+          expiresAt: clock.after(60_000),
+        }),
+        browserAdmissionLimits(),
+      ),
+    ).resolves.toEqual({ admitted: true });
+    await expect(store.get(current.id)).resolves.toMatchObject({ revision: 1 });
+  });
+
+  it("rate-limits successful creations per subject and recovers after the window", async () => {
+    const clock = testClock();
+    const store = new InMemoryBrowserSessionStore({ now: clock.now });
+    const limits = browserAdmissionLimits({
+      maximumCreationsPerWindow: 1,
+      windowMilliseconds: 1_000,
+    });
+
+    await expect(store.admit(browserSession("rate-1"), limits)).resolves.toEqual({
+      admitted: true,
+    });
+    await store.delete("rate-1");
+    await expect(store.admit(browserSession("rate-2"), limits)).resolves.toEqual({
+      admitted: false,
+      reason: "rate_limited",
+      retryAfterSeconds: 1,
+    });
+    clock.advance(1_000);
+    await expect(
+      store.admit(
+        browserSession("rate-3", {
+          createdAt: clock.now().toISOString(),
+          expiresAt: clock.after(60_000),
+        }),
+        limits,
+      ),
+    ).resolves.toEqual({ admitted: true });
+  });
+
   it("keeps anonymous and authenticated records structurally distinct", async () => {
     const clock = testClock();
     const store = new InMemoryBrowserSessionStore({ now: clock.now });
@@ -181,7 +340,8 @@ describe("InMemoryBrowserSessionStore", () => {
     await store.create(browserSession("expired-b"));
     clock.set(later);
 
-    await expect(store.deleteExpired()).resolves.toBe(2);
+    await expect(store.deleteExpired(undefined, 1)).resolves.toBe(1);
+    await expect(store.deleteExpired(undefined, 1)).resolves.toBe(1);
     await expect(store.deleteExpired(new Date(Number.NaN))).rejects.toThrow(TypeError);
     clock.set(initialNow);
     await expect(store.create(browserSession("recovered"))).resolves.toBe(true);
@@ -367,6 +527,16 @@ describe("InMemoryOAuthClientSecretStore", () => {
     const results = await Promise.all(Array.from({ length: 20 }, () => store.take("secret-ref")));
     expect(results.filter((value) => value !== null)).toEqual(["client-secret"]);
     await expect(store.take("secret-ref")).resolves.toBeNull();
+  });
+
+  it("resolves without consuming and deletes explicitly", async () => {
+    const store = new InMemoryOAuthClientSecretStore({ now: testClock().now });
+    await store.put("lease-ref", "client-secret", later);
+
+    await expect(store.get("lease-ref")).resolves.toBe("client-secret");
+    await expect(store.get("lease-ref")).resolves.toBe("client-secret");
+    await expect(store.delete("lease-ref")).resolves.toBe(true);
+    await expect(store.get("lease-ref")).resolves.toBeNull();
   });
 
   it("rejects invalid expiry and never returns expired secrets", async () => {
@@ -685,6 +855,26 @@ describe("InMemoryShortCacheStore", () => {
   });
 });
 
+describe("in-memory expiring stores", () => {
+  it.each([0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects the invalid cleanup limit %s consistently",
+    (limit) => {
+      const stores = [
+        new InMemoryBrowserSessionStore(),
+        new InMemoryOAuthStateStore(),
+        new InMemoryOAuthClientSecretStore(),
+        new InMemoryShortCacheStore(),
+      ];
+
+      for (const store of stores) {
+        expect(() => store.deleteExpired(undefined, limit)).toThrow(
+          "Cleanup limit must be a positive safe integer.",
+        );
+      }
+    },
+  );
+});
+
 function browserSession(
   id: string,
   overrides: Partial<BrowserSessionRecord> = {},
@@ -698,6 +888,19 @@ function browserSession(
     revision: 0,
   };
   return { ...base, ...overrides } as BrowserSessionRecord;
+}
+
+function browserAdmissionLimits(
+  overrides: Partial<Parameters<InMemoryBrowserSessionStore["admit"]>[1]> = {},
+): Parameters<InMemoryBrowserSessionStore["admit"]>[1] {
+  return {
+    subject: "subject-a",
+    maximumLiveSessions: 100,
+    maximumLiveSessionsPerSubject: 100,
+    maximumCreationsPerWindow: 100,
+    windowMilliseconds: 60_000,
+    ...overrides,
+  };
 }
 
 function oauthState(

@@ -1,5 +1,7 @@
 import {
   type AuthStrategyKind,
+  type BudgetScope,
+  type BudgetScopeFactoryContext,
   type CapabilitySourceKind,
   type CapabilityStatus,
   type PasskeyAuthenticationResponse,
@@ -12,6 +14,7 @@ import { type Hono } from "hono";
 import { type ActivityPlugApiService } from "../api/service.js";
 import { type AuthSessionStore } from "../auth/session-store.js";
 import { type ClientIpResolver } from "../http/client-ip.js";
+import { type SecurityStateLifecycle } from "../runtime/security-state-lifecycle.js";
 import { type RequestLimits } from "../security/request-limits.js";
 import {
   type BrowserSessionRecord,
@@ -39,9 +42,15 @@ export interface BrowserBoundaryOptions {
   readonly requestLimits?: Partial<RequestLimits>;
   readonly sessionTtlMilliseconds?: number;
   readonly anonymousSessionMode?: BrowserAnonymousSessionMode;
+  readonly storedSessionCapacity?: number;
+  readonly storedSessionCapacityPerClient?: number;
+  readonly storedSessionCreationLimit?: number;
+  readonly storedSessionCreationWindowMilliseconds?: number;
   readonly now?: () => Date;
   readonly randomBytes?: (length: number) => Uint8Array;
   readonly clientIp?: ClientIpResolver;
+  readonly securityStateLifecycle?: SecurityStateLifecycle;
+  readonly createBudgetScope?: (context: BudgetScopeFactoryContext) => BudgetScope;
 }
 
 export interface BrowserBoundaryDependencies {
@@ -59,6 +68,9 @@ export interface BrowserRequestContext {
 export interface BrowserBoundary {
   readonly app: Hono;
   readonly resolveRequest: (request: Request) => Promise<BrowserRequestContext>;
+  readonly ready: Promise<void>;
+  readonly close: () => Promise<void>;
+  readonly [Symbol.asyncDispose]: () => Promise<void>;
 }
 
 export type BrowserAuthStartRequest =

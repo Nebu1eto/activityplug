@@ -2,6 +2,7 @@ import {
   createActivityPlugClient,
   createCapabilitySet,
   createEntityRef,
+  createRemoteAuthority,
   MAX_PROFILE_FIELDS,
   mergeCapabilityLayers,
   type ActivityPlugAdapter,
@@ -113,7 +114,7 @@ describe("Mastodon auth adapter", () => {
     );
     const client = createActivityPlugClient({
       adapter: createMastodonAdapter(),
-      fetch,
+      remoteAuthority: createRemoteAuthority({ transport: fetch }),
       origin: "https://mastodon.example",
     });
 
@@ -172,17 +173,19 @@ describe("Mastodon auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMastodonAdapter(),
       origin: "https://mastodon.example",
-      fetch: mockFetch(async (request) => {
-        expect(new URL(request.url).pathname).toBe("/api/v1/accounts/verify_credentials");
-        expect(request.headers.get("Authorization")).toBe("Bearer bot-token");
-        return jsonResponse({
-          id: "bot-1",
-          username: "buildbot",
-          acct: "buildbot",
-          display_name: "Build Bot",
-          bot: true,
-          locked: false,
-        });
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          expect(new URL(request.url).pathname).toBe("/api/v1/accounts/verify_credentials");
+          expect(request.headers.get("Authorization")).toBe("Bearer bot-token");
+          return jsonResponse({
+            id: "bot-1",
+            username: "buildbot",
+            acct: "buildbot",
+            display_name: "Build Bot",
+            bot: true,
+            locked: false,
+          });
+        }),
       }),
     });
 
@@ -206,8 +209,10 @@ describe("Mastodon auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMastodonAdapter(),
       origin: "https://mastodon.example",
-      fetch: mockFetch(async () => {
-        throw new Error("expired token must be rejected before a remote request");
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async () => {
+          throw new Error("expired token must be rejected before a remote request");
+        }),
       }),
     });
     const session = await client.auth.injectToken({
@@ -226,66 +231,68 @@ describe("Mastodon auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMastodonAdapter(),
       origin: "https://mastodon.example",
-      fetch: mockFetch(async (request) => {
-        const url = new URL(request.url);
-        requests.push(`${request.method} ${url.pathname}`);
-        if (url.pathname === "/.well-known/nodeinfo") {
-          return jsonResponse({
-            links: [
-              {
-                rel: "http://nodeinfo.diaspora.software/ns/schema/2.0",
-                href: "https://mastodon.example/nodeinfo/2.0",
-              },
-              {
-                rel: "http://nodeinfo.diaspora.software/ns/schema/2.1",
-                href: "https://mastodon.example/nodeinfo/2.1",
-              },
-            ],
-          });
-        }
-        if (url.pathname === "/nodeinfo/2.1") {
-          return jsonResponse({ software: { name: "mastodon", version: "4.3.0" } });
-        }
-        if (url.pathname === "/api/v2/instance") {
-          return jsonResponse({
-            domain: "mastodon.example",
-            title: "Mastodon Example",
-            version: "4.3.0",
-            languages: ["en"],
-            registrations: { enabled: true, approval_required: false },
-          });
-        }
-        if (url.pathname === "/api/v1/accounts/109") {
-          return mastodonAccount();
-        }
-        if (url.pathname === "/api/v1/accounts/lookup") {
-          expect(url.searchParams.get("acct")).toBe("alice@mastodon.example");
-          return mastodonAccount();
-        }
-        if (url.pathname === "/api/v1/accounts/109/statuses") {
-          expect(url.searchParams.get("limit")).toBe("1");
-          return jsonResponse(
-            [
-              {
-                id: "status-1",
-                url: "https://mastodon.example/@alice/1",
-                account: {
-                  id: "109",
-                  username: "alice",
-                  acct: "alice",
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          const url = new URL(request.url);
+          requests.push(`${request.method} ${url.pathname}`);
+          if (url.pathname === "/.well-known/nodeinfo") {
+            return jsonResponse({
+              links: [
+                {
+                  rel: "http://nodeinfo.diaspora.software/ns/schema/2.0",
+                  href: "https://mastodon.example/nodeinfo/2.0",
                 },
-                content: "<p>Hello</p>",
-                created_at: "2026-04-27T00:00:00.000Z",
-                visibility: "public",
+                {
+                  rel: "http://nodeinfo.diaspora.software/ns/schema/2.1",
+                  href: "https://mastodon.example/nodeinfo/2.1",
+                },
+              ],
+            });
+          }
+          if (url.pathname === "/nodeinfo/2.1") {
+            return jsonResponse({ software: { name: "mastodon", version: "4.3.0" } });
+          }
+          if (url.pathname === "/api/v2/instance") {
+            return jsonResponse({
+              domain: "mastodon.example",
+              title: "Mastodon Example",
+              version: "4.3.0",
+              languages: ["en"],
+              registrations: { enabled: true, approval_required: false },
+            });
+          }
+          if (url.pathname === "/api/v1/accounts/109") {
+            return mastodonAccount();
+          }
+          if (url.pathname === "/api/v1/accounts/lookup") {
+            expect(url.searchParams.get("acct")).toBe("alice@mastodon.example");
+            return mastodonAccount();
+          }
+          if (url.pathname === "/api/v1/accounts/109/statuses") {
+            expect(url.searchParams.get("limit")).toBe("1");
+            return jsonResponse(
+              [
+                {
+                  id: "status-1",
+                  url: "https://mastodon.example/@alice/1",
+                  account: {
+                    id: "109",
+                    username: "alice",
+                    acct: "alice",
+                  },
+                  content: "<p>Hello</p>",
+                  created_at: "2026-04-27T00:00:00.000Z",
+                  visibility: "public",
+                },
+              ],
+              200,
+              {
+                link: '<https://mastodon.example/api/v1/accounts/109/statuses?max_id=status-2>; rel="next"',
               },
-            ],
-            200,
-            {
-              link: '<https://mastodon.example/api/v1/accounts/109/statuses?max_id=status-2>; rel="next"',
-            },
-          );
-        }
-        return jsonResponse({ error: "unexpected request" }, 404);
+            );
+          }
+          return jsonResponse({ error: "unexpected request" }, 404);
+        }),
       }),
     });
     const accountRef = (await client.accounts.getByHandle({ handle: "@alice@mastodon.example" }))
@@ -344,7 +351,7 @@ describe("Mastodon auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMastodonAdapter(),
       origin: "https://mastodon.example",
-      fetch,
+      remoteAuthority: createRemoteAuthority({ transport: fetch }),
     });
 
     await expect(client.instances.getProfile()).rejects.toMatchObject({
@@ -360,56 +367,58 @@ describe("Mastodon auth adapter", () => {
       adapter,
       capabilities: mastodon439Capabilities(adapter),
       origin: "https://mastodon.example",
-      fetch: mockFetch(async (request) => {
-        const url = new URL(request.url);
-        requests.push(`${request.method} ${url.pathname}`);
-        if (url.pathname === "/api/v1/timelines/home") {
-          expect(request.headers.get("Authorization")).toBe("Bearer token-1");
-          return jsonResponse([mastodonStatus()]);
-        }
-        if (url.pathname === "/api/v1/timelines/public") {
-          expect(url.searchParams.get("local")).toBe("true");
-          return jsonResponse([mastodonStatus()]);
-        }
-        if (url.pathname === "/api/v1/timelines/tag/activitypub") {
-          return jsonResponse([mastodonStatus()]);
-        }
-        if (url.pathname === "/api/v2/search") {
-          expect(request.headers.get("Authorization")).toBe("Bearer token-1");
-          expect(url.searchParams.get("q")).toBe("alice");
-          return jsonResponse({
-            accounts: [mastodonAccountBody()],
-            statuses: [mastodonStatus()],
-          });
-        }
-        if (url.pathname === "/api/v1/statuses" && request.method === "POST") {
-          expect(request.headers.get("Authorization")).toBe("Bearer token-1");
-          expect(await request.json()).toMatchObject({ status: "Hello", visibility: "public" });
-          return jsonResponse(mastodonStatus("created-1"));
-        }
-        if (url.pathname === "/api/v1/statuses/status-1/favourite") {
-          expect(request.headers.get("Authorization")).toBe("Bearer token-1");
-          return jsonResponse(mastodonStatus());
-        }
-        if (url.pathname === "/api/v1/accounts/109/follow") {
-          return jsonResponse({
-            id: "109",
-            following: true,
-            followed_by: false,
-            requested: false,
-            blocking: false,
-            muting: false,
-          });
-        }
-        if (url.pathname === "/api/v2/media") {
-          expect(request.headers.get("Authorization")).toBe("Bearer token-1");
-          return jsonResponse({
-            id: "media-1",
-            type: "image",
-            url: "https://mastodon.example/m.png",
-          });
-        }
-        return jsonResponse({ error: "unexpected request" }, 404);
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          const url = new URL(request.url);
+          requests.push(`${request.method} ${url.pathname}`);
+          if (url.pathname === "/api/v1/timelines/home") {
+            expect(request.headers.get("Authorization")).toBe("Bearer token-1");
+            return jsonResponse([mastodonStatus()]);
+          }
+          if (url.pathname === "/api/v1/timelines/public") {
+            expect(url.searchParams.get("local")).toBe("true");
+            return jsonResponse([mastodonStatus()]);
+          }
+          if (url.pathname === "/api/v1/timelines/tag/activitypub") {
+            return jsonResponse([mastodonStatus()]);
+          }
+          if (url.pathname === "/api/v2/search") {
+            expect(request.headers.get("Authorization")).toBe("Bearer token-1");
+            expect(url.searchParams.get("q")).toBe("alice");
+            return jsonResponse({
+              accounts: [mastodonAccountBody()],
+              statuses: [mastodonStatus()],
+            });
+          }
+          if (url.pathname === "/api/v1/statuses" && request.method === "POST") {
+            expect(request.headers.get("Authorization")).toBe("Bearer token-1");
+            expect(await request.json()).toMatchObject({ status: "Hello", visibility: "public" });
+            return jsonResponse(mastodonStatus("created-1"));
+          }
+          if (url.pathname === "/api/v1/statuses/status-1/favourite") {
+            expect(request.headers.get("Authorization")).toBe("Bearer token-1");
+            return jsonResponse(mastodonStatus());
+          }
+          if (url.pathname === "/api/v1/accounts/109/follow") {
+            return jsonResponse({
+              id: "109",
+              following: true,
+              followed_by: false,
+              requested: false,
+              blocking: false,
+              muting: false,
+            });
+          }
+          if (url.pathname === "/api/v2/media") {
+            expect(request.headers.get("Authorization")).toBe("Bearer token-1");
+            return jsonResponse({
+              id: "media-1",
+              type: "image",
+              url: "https://mastodon.example/m.png",
+            });
+          }
+          return jsonResponse({ error: "unexpected request" }, 404);
+        }),
       }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
@@ -471,16 +480,18 @@ describe("Mastodon auth adapter", () => {
       adapter,
       capabilities: mastodon439Capabilities(adapter),
       origin: "https://mastodon.example",
-      fetch: mockFetch(async (request) => {
-        expect(new URL(request.url).pathname).toBe("/api/v1/statuses");
-        expect(await request.json()).toMatchObject({
-          status: "Reply with media",
-          visibility: "public",
-          spoiler_text: "Summary",
-          in_reply_to_id: "reply-1",
-          media_ids: ["media-1"],
-        });
-        return jsonResponse(mastodonStatus("created-1"));
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          expect(new URL(request.url).pathname).toBe("/api/v1/statuses");
+          expect(await request.json()).toMatchObject({
+            status: "Reply with media",
+            visibility: "public",
+            spoiler_text: "Summary",
+            in_reply_to_id: "reply-1",
+            media_ids: ["media-1"],
+          });
+          return jsonResponse(mastodonStatus("created-1"));
+        }),
       }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
@@ -527,9 +538,11 @@ describe("Mastodon auth adapter", () => {
     const client = createActivityPlugClient({
       adapter: createMastodonAdapter(),
       origin: "https://mastodon.example",
-      fetch: mockFetch(async () => {
-        remoteCalls += 1;
-        throw new Error("visibility edits must fail before remote I/O");
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async () => {
+          remoteCalls += 1;
+          throw new Error("visibility edits must fail before remote I/O");
+        }),
       }),
     });
     const session = await client.auth.token.importToken({ accessToken: "token-1" });
@@ -600,51 +613,53 @@ describe("Mastodon auth adapter", () => {
       adapter,
       capabilities: mastodon439Capabilities(adapter),
       origin: "https://mastodon.example",
-      fetch: mockFetch(async (request) => {
-        const url = new URL(request.url);
-        if (url.pathname === "/api/v1/lists") {
-          return jsonResponse([{ id: "list-1", title: "Friends", exclusive: "yes" }]);
-        }
-        if (url.pathname === "/api/v1/notifications") {
-          return jsonResponse([
-            {
-              id: "notification-1",
-              type: "mention",
-              created_at: "2026-04-31T00:00:00Z",
-              account: mastodonAccountBody(),
-            },
-          ]);
-        }
-        if (url.pathname === "/api/v2/filters") {
-          return jsonResponse([
-            {
-              id: "filter-1",
-              title: "Muted words",
-              context: ["home"],
-              filter_action: "warn",
-              expires_at: 12,
-            },
-          ]);
-        }
-        if (url.pathname === "/api/v1/scheduled_statuses") {
-          return jsonResponse([
-            {
-              id: "scheduled-1",
-              scheduled_at: "2026-05-03T00:00:00.000Z",
-              params: { text: "", poll: { options: ["yes", " "], multiple: false } },
-            },
-          ]);
-        }
-        if (url.pathname === "/api/v1/polls/poll-1") {
-          return jsonResponse({
-            id: "poll-1",
-            expired: false,
-            multiple: false,
-            expires_at: "not-a-date",
-            options: [{ title: "Yes" }, { title: "No" }],
-          });
-        }
-        return jsonResponse({ error: "unexpected request" }, 404);
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          const url = new URL(request.url);
+          if (url.pathname === "/api/v1/lists") {
+            return jsonResponse([{ id: "list-1", title: "Friends", exclusive: "yes" }]);
+          }
+          if (url.pathname === "/api/v1/notifications") {
+            return jsonResponse([
+              {
+                id: "notification-1",
+                type: "mention",
+                created_at: "2026-04-31T00:00:00Z",
+                account: mastodonAccountBody(),
+              },
+            ]);
+          }
+          if (url.pathname === "/api/v2/filters") {
+            return jsonResponse([
+              {
+                id: "filter-1",
+                title: "Muted words",
+                context: ["home"],
+                filter_action: "warn",
+                expires_at: 12,
+              },
+            ]);
+          }
+          if (url.pathname === "/api/v1/scheduled_statuses") {
+            return jsonResponse([
+              {
+                id: "scheduled-1",
+                scheduled_at: "2026-05-03T00:00:00.000Z",
+                params: { text: "", poll: { options: ["yes", " "], multiple: false } },
+              },
+            ]);
+          }
+          if (url.pathname === "/api/v1/polls/poll-1") {
+            return jsonResponse({
+              id: "poll-1",
+              expired: false,
+              multiple: false,
+              expires_at: "not-a-date",
+              options: [{ title: "Yes" }, { title: "No" }],
+            });
+          }
+          return jsonResponse({ error: "unexpected request" }, 404);
+        }),
       }),
     });
     const session = await client.auth.injectToken({ accessToken: "token", scopes: ["read"] });

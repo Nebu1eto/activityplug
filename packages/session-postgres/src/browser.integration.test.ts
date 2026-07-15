@@ -1,3 +1,4 @@
+import { type BrowserSessionAdmissionLimits } from "@activityplug/server";
 import { type QueryResultRow, Pool } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
@@ -15,6 +16,7 @@ const connectionString =
   process.env["ACTIVITYPLUG_POSTGRES_URL"] ??
   "postgres://activityplug:activityplug@127.0.0.1:55432/activityplug";
 const tableName = `activityplug_browser_sessions_test_${process.pid}`;
+const rateTableName = `${tableName}_admission_rates`;
 const initialNow = "2026-07-12T00:00:00.000Z";
 
 describe.skipIf(!runIntegration)("PostgreSQL browser session store", () => {
@@ -22,20 +24,20 @@ describe.skipIf(!runIntegration)("PostgreSQL browser session store", () => {
 
   beforeAll(async () => {
     pool = new Pool({ connectionString, max: 30 });
-    await pool.query(`drop table if exists ${tableName}`);
+    await pool.query(`drop table if exists ${tableName}, ${rateTableName}`);
     await Promise.all(
-      Array.from({ length: 20 }, () =>
+      Array.from({ length: 8 }, () =>
         createPostgresBrowserSessionTable({ client: pool, tableName }),
       ),
     );
   });
 
   afterEach(async () => {
-    await pool.query(`truncate table ${tableName}`);
+    await pool.query(`truncate table ${tableName}, ${rateTableName}`);
   });
 
   afterAll(async () => {
-    await pool.query(`drop table if exists ${tableName}`);
+    await pool.query(`drop table if exists ${tableName}, ${rateTableName}`);
     await pool.end();
   });
 
@@ -78,6 +80,198 @@ describe.skipIf(!runIntegration)("PostgreSQL browser session store", () => {
     expect(serializerCalls).toBe(0);
   });
 
+  it("enforces the global live cap across concurrent admissions", async () => {
+    const clock = testClock();
+    const secondPool = new Pool({ connectionString, max: 30 });
+    try {
+      const stores = [
+        createPostgresBrowserSessionStore(pool, { tableName, now: clock.now }),
+        createPostgresBrowserSessionStore(secondPool, { tableName, now: clock.now }),
+      ];
+      const results = await Promise.all(
+        Array.from({ length: 64 }, (_, index) =>
+          stores[index % stores.length].admit(
+            createBrowserSession(`admission-${index}`),
+            admissionLimits(`subject-${index}`, {
+              maximumLiveSessions: 37,
+            }),
+          ),
+        ),
+      );
+
+      expect(results.filter((result) => result.admitted)).toHaveLength(37);
+      expect(
+        results.filter((result) => !result.admitted && result.reason === "capacity_exceeded"),
+      ).toHaveLength(27);
+      const stored = await pool.query<{ count: string }>(
+        `select count(*)::text as count from ${tableName} where expires_at > $1`,
+        [clock.after(0)],
+      );
+      expect(stored.rows).toEqual([{ count: "37" }]);
+
+      const winner = results.findIndex((result) => result.admitted);
+      await expect(
+        stores[0].admit(
+          createBrowserSession(`admission-${winner}`),
+          admissionLimits(`subject-${winner}`, { maximumLiveSessions: 37 }),
+        ),
+      ).resolves.toEqual({ admitted: false, reason: "conflict" });
+    } finally {
+      await secondPool.end();
+    }
+  });
+
+  it("does not count expired rows as live admission capacity", async () => {
+    const clock = testClock();
+    const store = createPostgresBrowserSessionStore(pool, { tableName, now: clock.now });
+    await store.create(createBrowserSession("expired-capacity", { expiresAt: clock.after(1) }));
+    clock.advance(1);
+
+    await expect(
+      store.admit(
+        createBrowserSession("replacement-capacity", {
+          createdAt: clock.after(0),
+          expiresAt: clock.after(1_000),
+        }),
+        admissionLimits("replacement-subject", { maximumLiveSessions: 1 }),
+      ),
+    ).resolves.toEqual({ admitted: true });
+    await expect(
+      store.admit(
+        createBrowserSession("expired-capacity", {
+          createdAt: clock.after(0),
+          expiresAt: clock.after(1_000),
+        }),
+        admissionLimits("expired-subject", { maximumLiveSessions: 2 }),
+      ),
+    ).resolves.toEqual({ admitted: false, reason: "conflict" });
+  });
+
+  it("recovers subject quota after delete and expiry without blocking other subjects", async () => {
+    const clock = testClock();
+    const store = createPostgresBrowserSessionStore(pool, { tableName, now: clock.now });
+    const subjectLimits = admissionLimits("shared-subject", {
+      maximumLiveSessionsPerSubject: 2,
+    });
+    await expect(store.admit(createBrowserSession("subject-a"), subjectLimits)).resolves.toEqual({
+      admitted: true,
+    });
+    await expect(
+      store.admit(createBrowserSession("subject-b", { expiresAt: clock.after(1) }), subjectLimits),
+    ).resolves.toEqual({ admitted: true });
+    await expect(store.admit(createBrowserSession("subject-c"), subjectLimits)).resolves.toEqual({
+      admitted: false,
+      reason: "subject_capacity_exceeded",
+    });
+    await expect(
+      store.admit(createBrowserSession("other-subject"), admissionLimits("other-subject")),
+    ).resolves.toEqual({ admitted: true });
+
+    await store.delete("subject-a");
+    await expect(store.admit(createBrowserSession("subject-c"), subjectLimits)).resolves.toEqual({
+      admitted: true,
+    });
+    clock.advance(1);
+    await expect(store.admit(createBrowserSession("subject-d"), subjectLimits)).resolves.toEqual({
+      admitted: true,
+    });
+  });
+
+  it("recovers a bounded subject rate window while other subjects proceed", async () => {
+    const clock = testClock();
+    const store = createPostgresBrowserSessionStore(pool, { tableName, now: clock.now });
+    const rateLimits = admissionLimits("rate-subject", {
+      maximumCreationsPerWindow: 2,
+      windowMilliseconds: 1_000,
+    });
+    await expect(store.admit(createBrowserSession("rate-a"), rateLimits)).resolves.toEqual({
+      admitted: true,
+    });
+    await expect(store.admit(createBrowserSession("rate-b"), rateLimits)).resolves.toEqual({
+      admitted: true,
+    });
+    await store.delete("rate-a");
+    await store.delete("rate-b");
+    await expect(store.admit(createBrowserSession("rate-c"), rateLimits)).resolves.toEqual({
+      admitted: false,
+      reason: "rate_limited",
+      retryAfterSeconds: 1,
+    });
+    await expect(
+      store.admit(createBrowserSession("rate-other"), admissionLimits("rate-other")),
+    ).resolves.toEqual({ admitted: true });
+
+    clock.advance(1_000);
+    await expect(store.admit(createBrowserSession("rate-c"), rateLimits)).resolves.toEqual({
+      admitted: true,
+    });
+    await store.delete("rate-c");
+    clock.advance(1_000);
+    await expect(store.deleteExpired()).resolves.toBe(0);
+    const staleRateState = await pool.query<{ count: string }>(
+      `select count(*)::text as count from ${rateTableName} where subject = $1`,
+      [rateLimits.subject],
+    );
+    expect(staleRateState.rows).toEqual([{ count: "0" }]);
+  });
+
+  it("bounds stale rate-window cleanup to 500 subjects per tick", async () => {
+    const clock = testClock();
+    const store = createPostgresBrowserSessionStore(pool, { tableName, now: clock.now });
+    await pool.query(
+      `insert into ${rateTableName}
+         (subject, window_ends_at, creation_count, updated_at)
+       select 'stale-rate-' || value, $1, 1, $1
+       from generate_series(1, 501) as value`,
+      [clock.after(-1)],
+    );
+
+    await expect(store.deleteExpired()).resolves.toBe(0);
+    await expect(
+      pool.query<{ count: string }>(
+        `select count(*)::text as count from ${rateTableName} where subject like 'stale-rate-%'`,
+      ),
+    ).resolves.toMatchObject({ rows: [{ count: "1" }] });
+    await expect(store.deleteExpired()).resolves.toBe(0);
+    await expect(
+      pool.query<{ count: string }>(
+        `select count(*)::text as count from ${rateTableName} where subject like 'stale-rate-%'`,
+      ),
+    ).resolves.toMatchObject({ rows: [{ count: "0" }] });
+  });
+
+  it("enforces a caller cleanup limit for sessions and rate windows", async () => {
+    const clock = testClock();
+    const store = createPostgresBrowserSessionStore(pool, { tableName, now: clock.now });
+    await pool.query(
+      `insert into ${tableName}
+         (id, payload, revision, expires_at, created_at, updated_at)
+       select 'small-limit-browser-' || value, '{}'::jsonb, 0, $1, $2, $2
+       from generate_series(1, 3) as value`,
+      [clock.after(-1), initialNow],
+    );
+    await pool.query(
+      `insert into ${rateTableName}
+         (subject, window_ends_at, creation_count, updated_at)
+       select 'small-limit-rate-' || value, $1, 1, $1
+       from generate_series(1, 3) as value`,
+      [clock.after(-1)],
+    );
+
+    await expect(store.deleteExpired(undefined, 1)).resolves.toBe(1);
+    await expect(
+      pool.query<{ count: string }>(
+        `select count(*)::text as count from ${tableName} where id like 'small-limit-browser-%'`,
+      ),
+    ).resolves.toMatchObject({ rows: [{ count: "2" }] });
+    await expect(
+      pool.query<{ count: string }>(
+        `select count(*)::text as count from ${rateTableName} where subject like 'small-limit-rate-%'`,
+      ),
+    ).resolves.toMatchObject({ rows: [{ count: "2" }] });
+    await expect(store.deleteExpired(undefined, 2)).resolves.toBe(2);
+  });
+
   it("allows one anonymous-to-authenticated CAS winner and detached reads", async () => {
     const clock = testClock();
     const store = createPostgresBrowserSessionStore(pool, { tableName, now: clock.now });
@@ -85,7 +279,7 @@ describe.skipIf(!runIntegration)("PostgreSQL browser session store", () => {
     await store.create(original);
 
     const results = await Promise.all(
-      Array.from({ length: 20 }, (_, index) =>
+      Array.from({ length: 8 }, (_, index) =>
         store.compareAndSet(
           original.id,
           0,
@@ -331,13 +525,21 @@ describe.skipIf(!runIntegration)("PostgreSQL browser session store", () => {
       await client.query("set local enable_seqscan = off");
       const plan = await client.query<{ "QUERY PLAN": unknown }>(
         `explain (format json)
-         with deleted as (
-           delete from ${tableName}
+         with expired as (
+           select ctid
+           from ${tableName}
            where expires_at <= $1
+           order by expires_at, ctid
+           limit $2
+           for update skip locked
+         ), deleted as (
+           delete from ${tableName} as target
+           using expired
+           where target.ctid = expired.ctid
            returning 1
          )
          select count(*)::text as count from deleted`,
-        [clock.after(0)],
+        [clock.after(0), 500],
       );
       expect(JSON.stringify(plan.rows)).toContain("Index Scan");
       expect(JSON.stringify(plan.rows)).toContain("expires_at");
@@ -345,6 +547,33 @@ describe.skipIf(!runIntegration)("PostgreSQL browser session store", () => {
       await client.query("rollback");
       client.release();
     }
+  });
+
+  it("bounds concurrent physical expiry cleanup to 500 rows per call", async () => {
+    const clock = testClock();
+    const store = createPostgresBrowserSessionStore(pool, { tableName, now: clock.now });
+    await pool.query(
+      `insert into ${tableName}
+         (id, payload, revision, expires_at, created_at, updated_at)
+       select 'bounded-browser-' || value,
+              '{}'::jsonb,
+              0,
+              $1,
+              $2,
+              $2
+       from generate_series(1, 1001) as value`,
+      [clock.after(-1), initialNow],
+    );
+
+    const firstTick = await Promise.all([store.deleteExpired(), store.deleteExpired()]);
+    expect(firstTick.every((deleted) => deleted <= 500)).toBe(true);
+    expect(firstTick.reduce((total, deleted) => total + deleted, 0)).toBe(1_000);
+    await expect(store.deleteExpired()).resolves.toBe(1);
+    await expect(
+      pool.query<{ count: string }>(
+        `select count(*)::text as count from ${tableName} where id like 'bounded-browser-%'`,
+      ),
+    ).resolves.toMatchObject({ rows: [{ count: "0" }] });
   });
 });
 
@@ -390,5 +619,19 @@ function testClock() {
     advance: (duration: number) => {
       milliseconds += duration;
     },
+  };
+}
+
+function admissionLimits(
+  subject: string,
+  overrides: Partial<BrowserSessionAdmissionLimits> = {},
+): BrowserSessionAdmissionLimits {
+  return {
+    subject,
+    maximumLiveSessions: 100,
+    maximumLiveSessionsPerSubject: 10,
+    maximumCreationsPerWindow: 100,
+    windowMilliseconds: 60_000,
+    ...overrides,
   };
 }

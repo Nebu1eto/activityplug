@@ -1,11 +1,13 @@
 import {
   ActivityPlugError,
   createActivityPlugClient,
+  createRemoteAuthority,
   type Account,
   type AuthSession,
   type Connection,
   type Post,
   type PostVisibility,
+  type RemoteAuthority,
   type Relationship,
 } from "@activityplug/core";
 import { createMastodonAdapter } from "@activityplug/mastodon";
@@ -18,6 +20,7 @@ export interface CreateBotClientInput {
   readonly origin: string;
   readonly accessToken: string;
   readonly scopes?: readonly string[];
+  readonly remoteAuthority?: RemoteAuthority;
   readonly fetch?: typeof globalThis.fetch;
 }
 
@@ -51,7 +54,11 @@ export async function createBotClient(input: CreateBotClientInput): Promise<BotC
   const client = createActivityPlugClient({
     adapter: input.adapter === "mastodon" ? createMastodonAdapter() : createMisskeyAdapter(),
     origin: input.origin,
-    ...(input.fetch === undefined ? {} : { fetch: input.fetch }),
+    ...(input.remoteAuthority !== undefined
+      ? { remoteAuthority: input.remoteAuthority }
+      : input.fetch === undefined
+        ? {}
+        : { remoteAuthority: createRemoteAuthority({ transport: input.fetch }) }),
   });
   const session = await client.auth.injectToken({
     accessToken: input.accessToken,

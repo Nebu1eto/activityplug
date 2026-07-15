@@ -60,16 +60,20 @@ function connectMisskeyStream(
     async *[Symbol.asyncIterator]() {
       if (inputSignalAborted(signal)) return;
       const operation = channel.mode === "timeline" ? "stream.timeline" : "stream.notifications";
-      const token =
-        session === undefined ? undefined : await requireStoredToken(session, context, operation);
+      if (session !== undefined) assertMisskeyWebSocketBearerSupported(context, operation);
+      const authorization =
+        session === undefined
+          ? undefined
+          : await requireStoredAuthorization(session, context, operation);
       let socket: WebSocket;
       try {
         const candidate = resolveWebSocketFactoryResult(
           createSocket(
             context,
-            token,
+            authorization,
             signal,
             options.webSocket,
+            operation,
             channel.mode === "timeline" ? "streaming.timeline" : "streaming.notifications",
           ),
           signal,
@@ -81,7 +85,7 @@ function connectMisskeyStream(
         throw new ActivityPlugError("NETWORK_ERROR", "Misskey streaming connection failed.", {
           adapter: context.adapterId,
           origin: context.origin,
-          operation: "stream.connect",
+          operation,
         });
       }
       const connect = () => {
@@ -106,13 +110,13 @@ function connectMisskeyStream(
   };
 }
 
-async function requireStoredToken(
+async function requireStoredAuthorization(
   session: AuthSession,
   context: AdapterOperationContext,
   operation: "stream.timeline" | "stream.notifications",
 ): Promise<string> {
   const header = await tokenHeader(session, context, operation);
-  return header.Authorization.replace(/^Bearer\s+/u, "");
+  return header.Authorization;
 }
 
 function misskeyTimelineChannel(input: TimelineStreamInput): {
@@ -128,33 +132,107 @@ function misskeyTimelineChannel(input: TimelineStreamInput): {
 
 function createSocket(
   context: AdapterOperationContext,
-  token: string | undefined,
+  authorization: string | undefined,
   signal: AbortSignal | undefined,
   factory: WebSocketFactory | undefined,
+  operation: "stream.timeline" | "stream.notifications",
   capability: "streaming.timeline" | "streaming.notifications",
 ): WebSocket | Promise<WebSocket> {
   const url = new URL("streaming", context.origin);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  if (token !== undefined) {
-    assertEncryptedWebSocket(url, context);
-    url.searchParams.set("i", token);
+  if (authorization !== undefined) {
+    assertEncryptedWebSocket(url, context, operation);
   }
   if (typeof factory !== "function") {
     throw new ActivityPlugError(
       "UNSUPPORTED_OPERATION",
       "Misskey streaming requires an injected WebSocket factory.",
-      { operation: "stream.connect", capability },
+      { operation, capability },
     );
   }
-  return factory(url.toString(), undefined, signal, { operation: "stream.connect" });
+  return factory(url.toString(), undefined, signal, {
+    operation,
+    ...(authorization === undefined ? {} : { authorization }),
+  });
 }
 
-function assertEncryptedWebSocket(url: URL, context: AdapterOperationContext): void {
+export function assertMisskeyWebSocketBearerSupported(
+  context: AdapterOperationContext,
+  operation: "stream.timeline" | "stream.notifications" | "media.ingestUrl",
+): void {
+  const software = context.detectedSoftware;
+  const version = parseStableVersion(software?.version);
+  if (software?.name.toLowerCase() === "misskey" && versionAtLeast(version, [13, 14, 0])) {
+    assertMisskeyWebSocketCredentialAllowed(context, operation);
+    return;
+  }
+  throw new ActivityPlugError(
+    "UNSUPPORTED_OPERATION",
+    "Authenticated Misskey WebSocket bearer authentication is not verified for this version.",
+    {
+      adapter: context.adapterId,
+      origin: context.origin,
+      operation,
+      capability:
+        operation === "media.ingestUrl"
+          ? "media.urlIngestion"
+          : operation === "stream.timeline"
+            ? "streaming.timeline"
+            : "streaming.notifications",
+    },
+  );
+}
+
+function parseStableVersion(
+  value: string | undefined,
+): readonly [number, number, number] | undefined {
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/u.exec(value ?? "");
+  if (match === null) return undefined;
+  const version = [Number(match[1]), Number(match[2]), Number(match[3])] as const;
+  return version.every(Number.isSafeInteger) ? version : undefined;
+}
+
+function assertMisskeyWebSocketCredentialAllowed(
+  context: AdapterOperationContext,
+  operation: "stream.timeline" | "stream.notifications" | "media.ingestUrl",
+): void {
+  if (context.assertCredentialAllowed === undefined) {
+    throw new ActivityPlugError(
+      "ORIGIN_NOT_ALLOWED",
+      "Authenticated Misskey WebSockets require an explicit credential authority.",
+      { adapter: context.adapterId, origin: context.origin, operation },
+    );
+  }
+  context.assertCredentialAllowed({
+    recipient: context.origin,
+    operation,
+    credentialClass: "oauth-access-token",
+    representation: "authorization-header",
+  });
+}
+
+function versionAtLeast(
+  actual: readonly [number, number, number] | undefined,
+  minimum: readonly [number, number, number],
+): boolean {
+  if (actual === undefined) return false;
+  for (let index = 0; index < actual.length; index += 1) {
+    const difference = (actual[index] ?? 0) - (minimum[index] ?? 0);
+    if (difference !== 0) return difference > 0;
+  }
+  return true;
+}
+
+function assertEncryptedWebSocket(
+  url: URL,
+  context: AdapterOperationContext,
+  operation: "stream.timeline" | "stream.notifications",
+): void {
   if (url.protocol === "wss:") return;
   throw new ActivityPlugError(
     "ORIGIN_NOT_ALLOWED",
     "Authenticated WebSocket connections require HTTPS.",
-    { adapter: context.adapterId, origin: context.origin, operation: "stream.connect" },
+    { adapter: context.adapterId, origin: context.origin, operation },
   );
 }
 

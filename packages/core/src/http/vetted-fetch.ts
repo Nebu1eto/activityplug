@@ -1,5 +1,12 @@
 import { canonicalizeOrigin } from "../adapters/client.js";
 import { ActivityPlugError, isActivityPlugError } from "../errors/error.js";
+import { type BudgetScope } from "../security/budget.js";
+import {
+  chargeBodyChunk,
+  getRequestBudget,
+  inheritRequestBudget,
+  markResponseBudgeted,
+} from "../security/request-budget.js";
 
 export const DEFAULT_REMOTE_STRUCTURED_BYTES = 16 * 1024 * 1024;
 export const DEFAULT_MAX_REDIRECTS = 5;
@@ -89,6 +96,12 @@ interface RequestDeadline {
   readonly cleanup: () => void;
 }
 
+interface BodyReadBudget {
+  used: number;
+  readonly limit: number;
+  readonly operationBudget?: BudgetScope;
+}
+
 export function createVettedFetch(options: VettedFetchOptions): typeof fetch {
   assertVettedFetchOptions(options);
   const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
@@ -113,9 +126,17 @@ export function createVettedFetch(options: VettedFetchOptions): typeof fetch {
     }
     let prepared: PreparedRequest | undefined;
     const visited = new Set<string>();
+    const operationBudget = getRequestBudget(sourceRequest);
+    const bodyReadBudget: BodyReadBudget = {
+      used: 0,
+      limit: maxBodyReads,
+      ...(operationBudget === undefined ? {} : { operationBudget }),
+    };
 
     try {
       for (let redirectCount = 0; ; redirectCount += 1) {
+        operationBudget?.checkDeadline();
+        if (redirectCount > 0) operationBudget?.charge("requests");
         throwIfAborted(deadline.signal);
         const url = validatedRequestUrl(request);
         if (visited.has(url.href)) {
@@ -149,7 +170,13 @@ export function createVettedFetch(options: VettedFetchOptions): typeof fetch {
         }
         const selectedAddress = addresses[0];
 
-        prepared ??= await prepareRequest(request, replayBodyBytes, maxBodyReads, deadline.signal);
+        prepared ??= await prepareRequest(
+          request,
+          replayBodyBytes,
+          bodyReadBudget,
+          deadline.signal,
+        );
+        operationBudget?.checkDeadline();
         request = prepared.request;
         let response: Response;
         try {
@@ -182,7 +209,7 @@ export function createVettedFetch(options: VettedFetchOptions): typeof fetch {
           return limitResponseBody(
             response,
             options.remoteStructuredBytes,
-            maxBodyReads,
+            bodyReadBudget,
             request.url,
             deadline.signal,
             deadline.cleanup,
@@ -389,7 +416,8 @@ function assertByteLimit(limit: number): void {
 
 function createManualRequest(input: RequestInfo | URL, init?: RequestInit): Request {
   try {
-    return new Request(input, { ...init, redirect: "manual" });
+    const request = new Request(input, { ...init, redirect: "manual" });
+    return input instanceof Request ? inheritRequestBudget(request, input) : request;
   } catch (cause) {
     throw new ActivityPlugError(
       "ORIGIN_NOT_ALLOWED",
@@ -432,7 +460,7 @@ function requestWithSignal(request: Request, signal: AbortSignal): Request {
   try {
     // Constructing from Request transfers its body instead of teeing it. The
     // caller-facing Request is consumed exactly as it would be by native fetch.
-    return new Request(request, { redirect: "manual", signal });
+    return inheritRequestBudget(new Request(request, { redirect: "manual", signal }), request);
   } catch (cause) {
     throw new ActivityPlugError(
       "ORIGIN_NOT_ALLOWED",
@@ -446,7 +474,7 @@ function requestWithSignal(request: Request, signal: AbortSignal): Request {
 async function prepareRequest(
   request: Request,
   replayLimit: number,
-  maxReads: number,
+  readBudget: BodyReadBudget,
   signal: AbortSignal,
 ): Promise<PreparedRequest> {
   if (request.body === null) return { request, body: { kind: "none" } };
@@ -454,7 +482,6 @@ async function prepareRequest(
   const reader = request.body.getReader();
   let prefix: Uint8Array<ArrayBufferLike> = new Uint8Array(Math.min(replayLimit, 8 * 1024));
   let total = 0;
-  const readBudget = { used: 0, limit: maxReads };
   try {
     for (;;) {
       const { done, value } = await raceWithAbort(reader.read(), signal);
@@ -473,7 +500,7 @@ async function prepareRequest(
         };
       }
 
-      consumeBodyRead(readBudget, "remote.request");
+      consumeBodyRead(readBudget, "remote.request", value.byteLength);
 
       const remaining = replayLimit - total;
       if (value.byteLength <= remaining) {
@@ -520,7 +547,7 @@ function forwardRequestBody(
   prefix: Uint8Array,
   overflow: Uint8Array,
   reader: ReadableStreamDefaultReader<Uint8Array>,
-  readBudget: { used: number; readonly limit: number },
+  readBudget: BodyReadBudget,
   signal: AbortSignal,
 ): ReadableStream<Uint8Array> {
   const queued = [prefix, overflow].filter((chunk) => chunk.byteLength > 0);
@@ -564,7 +591,7 @@ function forwardRequestBody(
           controller.close();
           return;
         }
-        consumeBodyRead(readBudget, "remote.request");
+        consumeBodyRead(readBudget, "remote.request", value.byteLength);
         controller.enqueue(value);
       } catch (cause) {
         stop(cause, true);
@@ -600,7 +627,7 @@ function recreateRequest(
     init.body = body instanceof Uint8Array ? body.slice() : body;
     init.duplex = "half";
   }
-  return new Request(url, init);
+  return inheritRequestBudget(new Request(url, init), previous);
 }
 
 function validatedRequestUrl(request: Request): URL {
@@ -818,7 +845,7 @@ function createRedirectRequest(
 function limitResponseBody(
   response: Response,
   limit: number,
-  maxReads: number,
+  readBudget: BodyReadBudget,
   requestUrl: string,
   signal: AbortSignal,
   cleanupDeadline: () => void,
@@ -829,7 +856,6 @@ function limitResponseBody(
   }
   const reader = response.body.getReader();
   let total = 0;
-  let reads = 0;
   let finished = false;
   let released = false;
   let controllerRef: ReadableStreamDefaultController<Uint8Array> | undefined;
@@ -866,15 +892,17 @@ function limitResponseBody(
           const { done, value } = await raceWithAbort(reader.read(), signal);
           if (finished) return;
           if (done) {
+            readBudget.operationBudget?.checkDeadline();
             if (blockLength > 0) controller.enqueue(block.slice(0, blockLength));
             finished = true;
             release();
             controller.close();
             return;
           }
-          reads += 1;
-          if (reads > maxReads) {
-            fail(bodyReadLimitError("remote.response", maxReads));
+          try {
+            consumeBodyRead(readBudget, "remote.response", value.byteLength);
+          } catch (cause) {
+            fail(cause);
             return;
           }
           const nextTotal = total + value.byteLength;
@@ -914,7 +942,9 @@ function limitResponseBody(
     enumerable: true,
     value: response.url || requestUrl,
   });
-  return limited;
+  return readBudget.operationBudget === undefined
+    ? limited
+    : markResponseBudgeted(limited, readBudget.operationBudget);
 }
 
 function cancelResponse(response: Response): void {
@@ -1124,11 +1154,13 @@ function bodyReadLimitError(operation: "remote.request" | "remote.response", lim
 }
 
 function consumeBodyRead(
-  budget: { used: number; readonly limit: number },
+  budget: BodyReadBudget,
   operation: "remote.request" | "remote.response",
+  bytes: number,
 ): void {
   budget.used += 1;
   if (budget.used > budget.limit) throw bodyReadLimitError(operation, budget.limit);
+  chargeBodyChunk(budget.operationBudget, bytes);
 }
 
 function ensureBufferCapacity(

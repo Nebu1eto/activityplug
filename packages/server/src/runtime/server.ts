@@ -14,9 +14,15 @@ import {
   type ActivityPlugAdapter,
   type ActivityPlugClient,
   type AuthSession,
+  type BudgetScope,
+  type BudgetScopeFactoryContext,
+  type BudgetSnapshot,
   type CapabilitySet,
+  type CredentialLeaseReference,
+  type CredentialLeaseStore,
   type InstanceProfile,
   type OriginPolicy,
+  type RemoteCredentialGrant,
   type StoredAuthSession,
 } from "@activityplug/core";
 import { serve, type ServerType } from "@hono/node-server";
@@ -41,9 +47,18 @@ import { createActivityPlugApp } from "../http/app.js";
 import { type TokenImportOptions } from "../http/app.js";
 import { type GraphQLLimits } from "../security/graphql-limits.js";
 import { createNodePinnedDispatcher, nodeLookupAddresses } from "../security/node-egress.js";
+import { createServerRemoteAuthority } from "../security/remote-authority.js";
 import { resolveRequestLimits, type RequestLimits } from "../security/request-limits.js";
-import { type OAuthStartLimiter } from "../storage/contracts.js";
-import { InMemoryOAuthStartLimiter } from "../storage/in-memory.js";
+import {
+  type OAuthStartLimiter,
+  type OAuthStateStore,
+  type ShortCacheStore,
+} from "../storage/contracts.js";
+import {
+  InMemoryOAuthStartLimiter,
+  InMemoryOAuthStateStore,
+  InMemoryShortCacheStore,
+} from "../storage/in-memory.js";
 import {
   assertExchangeTarget,
   consumeOAuthCallbackState,
@@ -54,6 +69,11 @@ import {
   sameBinding,
   storeOAuthCallbackState,
 } from "./oauth-state.js";
+import {
+  createSecurityStateDescriptor,
+  SecurityStateLifecycle,
+  type SecurityStateDescriptor,
+} from "./security-state-lifecycle.js";
 
 export interface ActivityPlugServerOptions {
   readonly adapters: readonly ActivityPlugAdapter[];
@@ -68,10 +88,14 @@ export interface ActivityPlugServerOptions {
   readonly originPolicy?: OriginPolicy;
   readonly allowPrivateNetworks?: boolean;
   readonly oauthClientSecrets?: OAuthClientSecretStore;
+  readonly credentialLeases?: CredentialLeaseStore;
   readonly requestLimits?: Partial<RequestLimits>;
   readonly graphqlLimits?: Partial<GraphQLLimits>;
   readonly browser?: BrowserBoundaryOptions;
   readonly authStartLimiter?: OAuthStartLimiter;
+  readonly securityStateLifecycle?: SecurityStateLifecycle;
+  readonly createBudgetScope?: (context: BudgetScopeFactoryContext) => BudgetScope;
+  readonly remoteCredentialGrants?: readonly RemoteCredentialGrant[];
 }
 
 export interface StartServerOptions {
@@ -90,6 +114,9 @@ export interface ActivityPlugServer {
   readonly service: ActivityPlugApiService;
   readonly browser?: BrowserBoundary;
   readonly start: (options: ConstructedServerStartOptions) => StartedServer;
+  readonly ready: Promise<void>;
+  readonly close: () => Promise<void>;
+  readonly [Symbol.asyncDispose]: () => Promise<void>;
 }
 
 export interface ConstructedServerStartOptions {
@@ -113,6 +140,17 @@ export type OriginFetchPolicy = (context: OriginFetchPolicyContext) => Promise<v
 export function createActivityPlugServer(options: ActivityPlugServerOptions): ActivityPlugServer {
   const requestLimits = resolveRequestLimits(options.requestLimits);
   const sessions = options.sessions ?? new InMemoryAuthSessionStore();
+  const oauthClientSecrets = options.oauthClientSecrets ?? new InMemoryOAuthClientSecretStore();
+  const credentialLeases =
+    options.credentialLeases ?? createSecretBackedCredentialLeaseStore(oauthClientSecrets);
+  const browserOAuthStates =
+    options.browser === undefined
+      ? undefined
+      : (options.browser.oauthStates ?? new InMemoryOAuthStateStore());
+  const browserAuthChallenges =
+    options.browser === undefined
+      ? undefined
+      : (options.browser.authChallenges ?? new InMemoryShortCacheStore());
   const authStartLimiter =
     options.authStartLimiter ??
     options.browser?.authStartLimiter ??
@@ -136,7 +174,22 @@ export function createActivityPlugServer(options: ActivityPlugServerOptions): Ac
     authStartLimiter,
     originPolicy,
     operationFetch,
+    oauthClientSecrets,
+    credentialLeases,
   };
+  const ownsSecurityStateLifecycle = options.securityStateLifecycle === undefined;
+  const securityStateLifecycle =
+    options.securityStateLifecycle ??
+    new SecurityStateLifecycle(
+      securityStateDescriptors(
+        sessions,
+        oauthClientSecrets,
+        options,
+        browserOAuthStates,
+        browserAuthChallenges,
+      ),
+    );
+  const ready = securityStateLifecycle.start();
   const service = bindServiceRequestSignals(createAdapterBackedApiService(runtimeOptions));
   const publicApp = createActivityPlugApp({
     service,
@@ -144,6 +197,7 @@ export function createActivityPlugServer(options: ActivityPlugServerOptions): Ac
     tokenImport: options.tokenImport,
     requestLimits,
     graphqlLimits: options.graphqlLimits,
+    oauthClientRegistrationOriginPolicy: configuredOriginPolicy,
     ...(options.browser?.clientIp === undefined ? {} : { clientIp: options.browser.clientIp }),
   });
   const browser =
@@ -156,8 +210,14 @@ export function createActivityPlugServer(options: ActivityPlugServerOptions): Ac
           authSessions: sessions,
           authStartLimiter,
           authStartsAreLimited: true,
+          ...(options.createBudgetScope === undefined
+            ? {}
+            : { createBudgetScope: options.createBudgetScope }),
+          securityStateLifecycle,
+          ...(browserOAuthStates === undefined ? {} : { oauthStates: browserOAuthStates }),
+          ...(browserAuthChallenges === undefined ? {} : { authChallenges: browserAuthChallenges }),
         });
-  const app =
+  const routedApp =
     browser === undefined
       ? publicApp
       : (() => {
@@ -166,20 +226,164 @@ export function createActivityPlugServer(options: ActivityPlugServerOptions): Ac
           combined.route("/", publicApp);
           return combined;
         })();
+  const app = new Hono();
+  app.use("*", async (_context, next) => {
+    await ready;
+    await next();
+  });
+  app.route("/", routedApp);
+  const startedServers = new Set<ServerType>();
+  let closing = false;
+  let closePromise: Promise<void> | undefined;
+  const close = (): Promise<void> => {
+    if (closePromise === undefined) {
+      closing = true;
+      closePromise = (async () => {
+        try {
+          await Promise.all([...startedServers].map(closeNodeServer));
+        } finally {
+          try {
+            await browser?.close();
+          } finally {
+            if (ownsSecurityStateLifecycle) await securityStateLifecycle.close();
+          }
+        }
+      })();
+    }
+    return closePromise;
+  };
   return {
     app,
     service,
     ...(browser === undefined ? {} : { browser }),
-    start: (startOptions) =>
-      startActivityPlugServer({
+    ready,
+    close,
+    [Symbol.asyncDispose]: close,
+    start: (startOptions) => {
+      if (closing) throw new Error("ActivityPlug server is closing or closed.");
+      const started = startActivityPlugServer({
         ...startOptions,
         service,
         cors: options.cors,
         app,
         requestLimits,
         graphqlLimits: options.graphqlLimits,
-      }),
+      });
+      startedServers.add(started.server);
+      started.server.once("close", () => startedServers.delete(started.server));
+      return started;
+    },
   };
+}
+
+function securityStateDescriptors(
+  sessions: AuthSessionStore,
+  oauthClientSecrets: OAuthClientSecretStore,
+  options: ActivityPlugServerOptions,
+  browserOAuthStates: OAuthStateStore | undefined,
+  browserAuthChallenges: ShortCacheStore | undefined,
+): readonly SecurityStateDescriptor[] {
+  const descriptors: SecurityStateDescriptor[] = [
+    createSecurityStateDescriptor("auth-session", sessions, (now, limit) =>
+      sessions.deleteExpired(now, limit),
+    ),
+  ];
+  if (oauthClientSecrets.deleteExpired !== undefined) {
+    const deleteExpired = oauthClientSecrets.deleteExpired.bind(oauthClientSecrets);
+    descriptors.push(
+      createSecurityStateDescriptor("oauth-client-secret", oauthClientSecrets, (now, limit) =>
+        deleteExpired(now, limit),
+      ),
+    );
+  }
+  if (options.browser !== undefined) {
+    descriptors.push(
+      createSecurityStateDescriptor(
+        "browser-session",
+        options.browser.browserSessions,
+        (now, limit) => options.browser!.browserSessions.deleteExpired(now, limit),
+      ),
+    );
+    if (browserOAuthStates !== undefined) {
+      descriptors.push(
+        createSecurityStateDescriptor("browser-oauth-state", browserOAuthStates, (now, limit) =>
+          browserOAuthStates.deleteExpired(now, limit),
+        ),
+      );
+    }
+    if (browserAuthChallenges?.deleteExpired !== undefined) {
+      const deleteExpired = browserAuthChallenges.deleteExpired.bind(browserAuthChallenges);
+      descriptors.push(
+        createSecurityStateDescriptor(
+          "browser-auth-challenge",
+          browserAuthChallenges,
+          (now, limit) => deleteExpired(now, limit),
+        ),
+      );
+    }
+  }
+  return descriptors;
+}
+
+function closeNodeServer(server: ServerType): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let closing = false;
+    const cleanupPendingListeners = (): void => {
+      server.off("listening", beginClose);
+      server.off("error", rejectPendingListen);
+      server.off("close", resolvePendingClose);
+    };
+    const finish = (error?: Error): void => {
+      cleanupPendingListeners();
+      if (
+        error === undefined ||
+        (error as NodeJS.ErrnoException).code === "ERR_SERVER_NOT_RUNNING"
+      ) {
+        resolve();
+      } else {
+        reject(error);
+      }
+    };
+    const beginClose = (): void => {
+      if (closing) return;
+      closing = true;
+      cleanupPendingListeners();
+      server.close(finish);
+    };
+    const rejectPendingListen = (error: Error): void => {
+      cleanupPendingListeners();
+      reject(error);
+    };
+    const resolvePendingClose = (): void => {
+      cleanupPendingListeners();
+      resolve();
+    };
+
+    if (server.listening) {
+      beginClose();
+      return;
+    }
+    server.once("listening", beginClose);
+    server.once("error", rejectPendingListen);
+    server.once("close", resolvePendingClose);
+  });
+}
+
+function createSecretBackedCredentialLeaseStore(
+  secrets: OAuthClientSecretStore,
+): CredentialLeaseStore {
+  return {
+    create: async ({ reference, secret, expiresAt }) => {
+      const stored = await secrets.put(credentialLeaseKey(reference), secret, expiresAt);
+      return stored !== false;
+    },
+    resolve: (reference) => secrets.get(credentialLeaseKey(reference)),
+    delete: (reference) => secrets.delete(credentialLeaseKey(reference)),
+  };
+}
+
+function credentialLeaseKey(reference: CredentialLeaseReference): string {
+  return `${reference.id}:${reference.owner}:${reference.version}`;
 }
 
 export function startActivityPlugServer(options: StartServerOptions): StartedServer {
@@ -236,9 +440,20 @@ interface CachedInstanceProfile {
   readonly expiresAt: number;
 }
 
+interface InstanceProfileResolution {
+  readonly profile: Promise<InstanceProfile>;
+  readonly coldBudget?: Promise<BudgetSnapshot | undefined>;
+}
+
 const DETECTED_PROFILE_TTL_MS = 5 * 60 * 1_000;
 const MAX_DETECTED_ORIGINS_PER_ADAPTER = 128;
 const runtimeClientResolvers = new WeakMap<typeof fetch, RuntimeClientResolver>();
+const runtimeCredentialLeases = new WeakMap<typeof fetch, CredentialLeaseStore>();
+const runtimeCredentialGrants = new WeakMap<typeof fetch, readonly RemoteCredentialGrant[]>();
+const runtimeBudgetScopes = new WeakMap<
+  typeof fetch,
+  (context: BudgetScopeFactoryContext) => BudgetScope
+>();
 const runtimeRequestSignals = new AsyncLocalStorage<AbortSignal>();
 
 function createSignalAwareOperationFetch(vettedFetch: typeof fetch): typeof fetch {
@@ -298,6 +513,8 @@ function createAdapterBackedApiService(
   const sessions = options.sessions ?? new InMemoryAuthSessionStore();
   const originPolicy = options.originPolicy;
   const oauthClientSecrets = options.oauthClientSecrets ?? new InMemoryOAuthClientSecretStore();
+  const credentialLeases =
+    options.credentialLeases ?? createSecretBackedCredentialLeaseStore(oauthClientSecrets);
   if (
     options.sessions !== undefined &&
     (options.oauthClientSecrets === undefined ||
@@ -312,8 +529,22 @@ function createAdapterBackedApiService(
   }
   runtimeClientResolvers.set(
     options.operationFetch,
-    createRuntimeClientResolver(options.adapters, sessions, options.operationFetch),
+    createRuntimeClientResolver(
+      options.adapters,
+      sessions,
+      options.operationFetch,
+      credentialLeases,
+      options.createBudgetScope,
+      options.remoteCredentialGrants,
+    ),
   );
+  runtimeCredentialLeases.set(options.operationFetch, credentialLeases);
+  if (options.remoteCredentialGrants !== undefined) {
+    runtimeCredentialGrants.set(options.operationFetch, options.remoteCredentialGrants);
+  }
+  if (options.createBudgetScope !== undefined) {
+    runtimeBudgetScopes.set(options.operationFetch, options.createBudgetScope);
+  }
   const readiness = options.readiness;
   return {
     health:
@@ -1372,14 +1603,19 @@ function createAdapterBackedApiService(
           input.clientIp,
           selector.origin,
         );
+        const client = resolveClient(selector, options.adapters, sessions, options.operationFetch);
+        let budgetReservation: ReturnType<BudgetScope["reserve"]> | undefined;
         try {
-          return await resolveClient(
-            selector,
-            options.adapters,
-            sessions,
-            options.operationFetch,
-          ).auth.oauth.registerClient(input.client);
+          const budget = options.createBudgetScope?.({
+            adapterId: client.adapter.metadata.id,
+            origin: selector.origin,
+            operation: "auth.registerClient",
+          });
+          assertAdmittedBudgetOperation(budget, "auth.registerClient", selector.origin);
+          budgetReservation = budget?.reserve("activeAllocations");
+          return await client.auth.oauth.registerClient({ ...input.client, budget });
         } finally {
+          budgetReservation?.release();
           await reservation?.release();
         }
       },
@@ -1702,6 +1938,19 @@ async function reserveOAuthClientRegistration(
   return undefined;
 }
 
+function assertAdmittedBudgetOperation(
+  budget: BudgetScope | undefined,
+  operation: string,
+  origin: string,
+): void {
+  if (budget === undefined || budget.operation === operation) return;
+  throw new ActivityPlugError(
+    "VALIDATION_FAILED",
+    "Budget scope operation does not match the admitted operation.",
+    { origin, operation, raw: { budgetOperation: budget.operation } },
+  );
+}
+
 function normalizeServerOrigin(
   origin: string,
   operation: string,
@@ -1749,7 +1998,14 @@ function runtimeClientResolverFor(
 ): RuntimeClientResolver {
   const existing = runtimeClientResolvers.get(operationFetch);
   if (existing !== undefined) return existing;
-  const resolver = createRuntimeClientResolver(adapters, sessions, operationFetch);
+  const resolver = createRuntimeClientResolver(
+    adapters,
+    sessions,
+    operationFetch,
+    runtimeCredentialLeases.get(operationFetch),
+    runtimeBudgetScopes.get(operationFetch),
+    runtimeCredentialGrants.get(operationFetch),
+  );
   runtimeClientResolvers.set(operationFetch, resolver);
   return resolver;
 }
@@ -1758,13 +2014,16 @@ function createRuntimeClientResolver(
   adapters: readonly ActivityPlugAdapter[],
   sessions: AuthSessionStore,
   operationFetch: typeof fetch,
+  credentialLeases?: CredentialLeaseStore,
+  createBudgetScope?: (context: BudgetScopeFactoryContext) => BudgetScope,
+  remoteCredentialGrants?: readonly RemoteCredentialGrant[],
 ): RuntimeClientResolver {
   const detections = new Map<string, Map<string, CachedInstanceProfile>>();
 
   const profileFor = (
     adapter: ActivityPlugAdapter,
     inputOrigin: string,
-  ): Promise<InstanceProfile> => {
+  ): InstanceProfileResolution => {
     const origin = canonicalizeOrigin(inputOrigin);
     let profilesByOrigin = detections.get(adapter.metadata.id);
     if (profilesByOrigin === undefined) {
@@ -1775,15 +2034,33 @@ function createRuntimeClientResolver(
     if (cached !== undefined && cached.expiresAt > Date.now()) {
       profilesByOrigin.delete(origin);
       profilesByOrigin.set(origin, cached);
-      return cached.profile;
+      return { profile: cached.profile };
     }
     if (cached !== undefined) profilesByOrigin.delete(origin);
 
+    let detectionBudget: BudgetScope | undefined;
+    const detectionBudgetFactory =
+      createBudgetScope === undefined
+        ? undefined
+        : (context: BudgetScopeFactoryContext) => {
+            const budget = createBudgetScope(context);
+            detectionBudget = budget;
+            return budget;
+          };
     const pending = createActivityPlugClient({
       adapter,
       origin,
       sessionStore: sessions,
-      fetch: operationFetch,
+      ...(credentialLeases === undefined ? {} : { credentialLeases }),
+      ...(detectionBudgetFactory === undefined
+        ? {}
+        : { createBudgetScope: detectionBudgetFactory }),
+      remoteAuthority: createServerRemoteAuthority({
+        fetch: operationFetch,
+        ...(remoteCredentialGrants === undefined
+          ? {}
+          : { credentialGrants: remoteCredentialGrants }),
+      }),
     }).instances.detect({ origin });
     if (profilesByOrigin.size >= MAX_DETECTED_ORIGINS_PER_ADAPTER) {
       const oldestOrigin = profilesByOrigin.keys().next().value;
@@ -1798,18 +2075,28 @@ function createRuntimeClientResolver(
       profilesByOrigin.delete(origin);
       if (profilesByOrigin.size === 0) detections.delete(adapter.metadata.id);
     });
-    return pending;
+    return {
+      profile: pending,
+      ...(detectionBudgetFactory === undefined
+        ? {}
+        : {
+            coldBudget: pending.then(
+              () => detectionBudget?.snapshot(),
+              () => undefined,
+            ),
+          }),
+    };
   };
 
   return {
     detect: async (input) => {
       if (input.adapter !== undefined) {
-        return profileFor(resolveAdapter(input.adapter, adapters), input.origin);
+        return profileFor(resolveAdapter(input.adapter, adapters), input.origin).profile;
       }
       const failures: unknown[] = [];
       for (const adapter of adapters) {
         try {
-          const profile = await profileFor(adapter, input.origin);
+          const profile = await profileFor(adapter, input.origin).profile;
           if (matchesDetectedSoftware(adapter, profile.software.name)) return profile;
         } catch (error) {
           failures.push(error);
@@ -1834,18 +2121,52 @@ function createRuntimeClientResolver(
           adapter,
           origin,
           sessionStore: sessions,
-          fetch: operationFetch,
+          ...(credentialLeases === undefined ? {} : { credentialLeases }),
+          ...(createBudgetScope === undefined ? {} : { createBudgetScope }),
+          remoteAuthority: createServerRemoteAuthority({
+            fetch: operationFetch,
+            ...(remoteCredentialGrants === undefined
+              ? {}
+              : { credentialGrants: remoteCredentialGrants }),
+          }),
         });
       }
-      const profile = await profileFor(adapter, origin);
+      const resolution = profileFor(adapter, origin);
+      const profile = await resolution.profile;
+      const operationBudgetFactory = budgetFactoryWithCarryover(
+        createBudgetScope,
+        await resolution.coldBudget,
+      );
       return createActivityPlugClient({
         adapter,
         origin,
         capabilities: profile.capabilities,
+        detectedSoftware: profile.software,
         sessionStore: sessions,
-        fetch: operationFetch,
+        ...(credentialLeases === undefined ? {} : { credentialLeases }),
+        ...(operationBudgetFactory === undefined
+          ? {}
+          : { createBudgetScope: operationBudgetFactory }),
+        remoteAuthority: createServerRemoteAuthority({
+          fetch: operationFetch,
+          ...(remoteCredentialGrants === undefined
+            ? {}
+            : { credentialGrants: remoteCredentialGrants }),
+        }),
       });
     },
+  };
+}
+
+function budgetFactoryWithCarryover(
+  createBudgetScope: ((context: BudgetScopeFactoryContext) => BudgetScope) | undefined,
+  coldBudget: BudgetSnapshot | undefined,
+): ((context: BudgetScopeFactoryContext) => BudgetScope) | undefined {
+  if (createBudgetScope === undefined || coldBudget === undefined) return createBudgetScope;
+  return (context) => {
+    const budget = createBudgetScope(context);
+    budget.absorb(coldBudget);
+    return budget;
   };
 }
 
@@ -1962,11 +2283,19 @@ function resolveClient(
 ) {
   const adapter = resolveAdapter(input.adapter, adapters);
   const origin = canonicalizeOrigin(input.origin);
+  const credentialLeases = runtimeCredentialLeases.get(operationFetch);
+  const createBudgetScope = runtimeBudgetScopes.get(operationFetch);
+  const remoteCredentialGrants = runtimeCredentialGrants.get(operationFetch);
   const bootstrap = createActivityPlugClient({
     adapter,
     origin,
     sessionStore: sessions,
-    fetch: operationFetch,
+    ...(credentialLeases === undefined ? {} : { credentialLeases }),
+    ...(createBudgetScope === undefined ? {} : { createBudgetScope }),
+    remoteAuthority: createServerRemoteAuthority({
+      fetch: operationFetch,
+      ...(remoteCredentialGrants === undefined ? {} : { credentialGrants: remoteCredentialGrants }),
+    }),
   });
   const resolver = runtimeClientResolverFor(adapters, sessions, operationFetch);
   let resolved: Promise<ActivityPlugClient> | undefined;

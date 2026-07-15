@@ -4,9 +4,11 @@ import {
 } from "@activityplug/core";
 import { z } from "zod";
 
-export interface AuthSessionStore extends CoreAuthSessionStore {
+import { type SecurityStateExpiryMetadata } from "../storage/contracts.js";
+
+export interface AuthSessionStore extends CoreAuthSessionStore, SecurityStateExpiryMetadata {
   readonly consume: (sessionId: string) => Promise<StoredAuthSession | null>;
-  readonly deleteExpired: (now?: Date) => Promise<number>;
+  readonly deleteExpired: (now?: Date, limit?: number) => Promise<number>;
 }
 
 export type ServerAuthSessionStore = AuthSessionStore;
@@ -118,15 +120,15 @@ export class InMemoryAuthSessionStore implements AuthSessionStore {
     });
   }
 
-  public deleteExpired(now?: Date): Promise<number> {
+  public deleteExpired(now?: Date, limit = Number.MAX_SAFE_INTEGER): Promise<number> {
     return this.#exclusive(() => {
       const checkedAt = now ?? this.#now();
       let deleted = 0;
       for (const [sessionId, session] of this.#sessions) {
-        const snapshot = cloneStoredSession(session);
-        if (snapshot === null || snapshot.id !== sessionId || isExpired(snapshot, checkedAt)) {
+        if (session.id !== sessionId || isExpired(session, checkedAt)) {
           this.#sessions.delete(sessionId);
           deleted += 1;
+          if (deleted >= limit) break;
         }
       }
       return deleted;
@@ -250,6 +252,11 @@ const accountReferenceSchema = z.looseObject({
   rawUrl: z.string().optional(),
 });
 
+const authSessionOwnerSchema = z.looseObject({
+  kind: z.literal("browser-session"),
+  id: z.string().min(1),
+});
+
 const storedSessionSchema = z.looseObject({
   id: z.string(),
   adapter: z.string(),
@@ -264,6 +271,7 @@ const storedSessionSchema = z.looseObject({
   account: accountReferenceSchema.optional(),
   expiresAt: z.string().optional(),
   storageExpiresAt: z.string().optional(),
+  owner: authSessionOwnerSchema.optional(),
   metadata: jsonRecordSchema.optional(),
 });
 

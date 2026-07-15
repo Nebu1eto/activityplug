@@ -11,7 +11,7 @@ import {
 import { type Redis } from "ioredis";
 import { z } from "zod";
 
-import { type RedisStoreOptions } from "./index.js";
+import { type RedisNativeExpiryMetadata, type RedisStoreOptions } from "./index.js";
 import {
   assertDirectRedisClient,
   compareAndDeleteRaw,
@@ -47,7 +47,8 @@ redis.call('SET', KEYS[1], ARGV[2], 'PX', math.min(currentTtlMs, maximumTtlMs))
 return 1
 `;
 
-class RedisOAuthStateStore implements OAuthStateStore {
+class RedisOAuthStateStore implements OAuthStateStore, RedisNativeExpiryMetadata {
+  public readonly expiryMode = "native" as const;
   readonly #client: Redis;
   readonly #keyPrefix: string;
   readonly #now: () => Date;
@@ -220,7 +221,8 @@ class RedisOAuthStateStore implements OAuthStateStore {
   }
 }
 
-class RedisOAuthClientSecretStore implements OAuthClientSecretStore {
+class RedisOAuthClientSecretStore implements OAuthClientSecretStore, RedisNativeExpiryMetadata {
+  public readonly expiryMode = "native" as const;
   readonly #client: Redis;
   readonly #keyPrefix: string;
   readonly #now: () => Date;
@@ -262,6 +264,24 @@ class RedisOAuthClientSecretStore implements OAuthClientSecretStore {
     return (await compareAndDeleteRaw(this.#client, key, currentRaw)) === 1 ? stored.secret : null;
   }
 
+  public async get(ref: string): Promise<string | null> {
+    if (!isNonEmptyString(ref)) return null;
+    const key = this.#key(ref);
+    const currentRaw = await this.#client.get(key);
+    if (currentRaw === null) return null;
+    const stored = parseStoredOAuthClientSecret(currentRaw);
+    if (stored === null || expiresAtValue(stored.expiresAt) <= readClock(this.#now)) {
+      await compareAndDeleteRaw(this.#client, key, currentRaw);
+      return null;
+    }
+    return stored.secret;
+  }
+
+  public async delete(ref: string): Promise<boolean> {
+    if (!isNonEmptyString(ref)) return false;
+    return (await this.#client.del(this.#key(ref))) === 1;
+  }
+
   public async deleteExpired(now: Date = this.#now()): Promise<number> {
     const checkedAt = readDate(now);
     let deleted = 0;
@@ -297,7 +317,7 @@ class RedisOAuthClientSecretStore implements OAuthClientSecretStore {
 export function createRedisOAuthStateStore(
   client: Redis,
   options: RedisStoreOptions = {},
-): OAuthStateStore {
+): OAuthStateStore & RedisNativeExpiryMetadata {
   assertDirectRedisClient(client, options);
   return new RedisOAuthStateStore(client, options);
 }
@@ -306,7 +326,7 @@ export function createRedisOAuthStateStore(
 export function createRedisOAuthClientSecretStore(
   client: Redis,
   options: RedisStoreOptions = {},
-): OAuthClientSecretStore {
+): OAuthClientSecretStore & RedisNativeExpiryMetadata {
   assertDirectRedisClient(client, options);
   return new RedisOAuthClientSecretStore(client, options);
 }

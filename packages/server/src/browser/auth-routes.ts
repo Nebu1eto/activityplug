@@ -1,5 +1,3 @@
-import { createHash, timingSafeEqual } from "node:crypto";
-
 import {
   canonicalizeOrigin,
   isActivityPlugError,
@@ -17,7 +15,13 @@ import {
 } from "../security/request-limits.js";
 import { toBrowserCapabilities, toBrowserProfile } from "./dto.js";
 import { BrowserBoundaryError } from "./errors.js";
-import { csrfTokenForSession, type BrowserSessionManager } from "./session.js";
+import {
+  constantTimeTextEqual,
+  csrfTokenForSession,
+  hashToken,
+  randomToken,
+  type BrowserSessionManager,
+} from "./session.js";
 import {
   type BrowserAuthCompleteRequest,
   type BrowserAuthStartRequest,
@@ -85,7 +89,7 @@ export function registerBrowserAuthRoutes(config: {
         );
       }
     }
-    await sessions.promote(requestContext.browserSession);
+    await sessions.promote(requestContext.browserSession, clientIp);
     const response = await startBrowserAuth({
       input,
       requestContext,
@@ -174,6 +178,7 @@ export function registerBrowserAuthRoutes(config: {
         authSessions: options.authSessions,
         service: options.service,
         signingKey,
+        now,
         signal: requestContext.signal,
       });
       sessions.setCookie(context, requestContext.browserSession);
@@ -261,6 +266,7 @@ export function registerBrowserAuthRoutes(config: {
           authSessions: options.authSessions,
           service: options.service,
           signingKey,
+          now,
           signal: requestContext.signal,
         });
         authenticationCompleted = true;
@@ -329,7 +335,7 @@ export function registerBrowserAuthRoutes(config: {
         }
       }
       try {
-        await options.browserSessions.delete(requestContext.browserSession.id);
+        await sessions.delete(requestContext.browserSession.id);
       } catch (error) {
         cleanupFailure ??= error;
       }
@@ -619,6 +625,7 @@ async function completeBrowserAuthentication(input: {
   readonly authSessions: BrowserBoundaryDependencies["authSessions"];
   readonly service: BrowserBoundaryDependencies["service"];
   readonly signingKey: Uint8Array;
+  readonly now: () => Date;
   readonly signal: AbortSignal;
 }): Promise<{ readonly browserSessionId: string; readonly payload: BrowserSessionPayload }> {
   if (
@@ -652,6 +659,13 @@ async function completeBrowserAuthentication(input: {
     account: toBrowserProfile(viewer.account),
     capabilities: toBrowserCapabilities(capabilities),
   };
+  await bindAuthSessionToBrowserLifetime(
+    input.authSessions,
+    input.session.id,
+    input.browserSession.id,
+    input.browserSession.expiresAt,
+    input.now,
+  );
   const transitioned = await input.browserSessions.compareAndSet(
     input.browserSession.id,
     input.browserSession.revision,
@@ -671,6 +685,35 @@ async function completeBrowserAuthentication(input: {
     browserSessionId: input.browserSession.id,
     payload,
   };
+}
+
+async function bindAuthSessionToBrowserLifetime(
+  store: BrowserBoundaryDependencies["authSessions"],
+  sessionId: string,
+  browserSessionId: string,
+  browserExpiresAt: string,
+  now: () => Date,
+): Promise<void> {
+  const stored = await store.get(sessionId);
+  if (stored === null) {
+    throw new BrowserBoundaryError("UNAUTHENTICATED", "Authentication has expired.", 401);
+  }
+  const currentStorageExpiry =
+    stored.storageExpiresAt === undefined
+      ? Number.POSITIVE_INFINITY
+      : Date.parse(stored.storageExpiresAt);
+  const browserExpiry = Date.parse(browserExpiresAt);
+  const storageExpiresAt = new Date(Math.min(currentStorageExpiry, browserExpiry)).toISOString();
+  const bound = await store.compareAndSet(sessionId, stored.revision, {
+    ...stored,
+    revision: stored.revision + 1,
+    updatedAt: now().toISOString(),
+    storageExpiresAt,
+    owner: { kind: "browser-session", id: browserSessionId },
+  });
+  if (!bound) {
+    throw new BrowserBoundaryError("CONFLICT", "Auth session changed concurrently.", 409);
+  }
 }
 
 async function deleteUnattachedAuthSession(
@@ -1158,24 +1201,6 @@ function rejectDataAuthorityFields(value: Readonly<Record<string, unknown>>): vo
   if (["origin", "adapter"].some((field) => Object.hasOwn(value, field))) {
     throw new BrowserBoundaryError("BAD_REQUEST", "Browser data authority is server-owned.", 400);
   }
-}
-
-function randomToken(randomBytes: (length: number) => Uint8Array, length: number): string {
-  const bytes = randomBytes(length);
-  if (!(bytes instanceof Uint8Array) || bytes.byteLength !== length) {
-    throw new TypeError(`Random source must return exactly ${length} bytes.`);
-  }
-  return Buffer.from(bytes).toString("base64url");
-}
-
-function hashToken(token: string): string {
-  return createHash("sha256").update(token).digest("base64url");
-}
-
-function constantTimeTextEqual(left: string, right: string): boolean {
-  const leftBytes = Buffer.from(left, "utf8");
-  const rightBytes = Buffer.from(right, "utf8");
-  return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
 }
 
 function isOpaqueSessionId(value: string): boolean {

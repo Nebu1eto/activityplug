@@ -2,6 +2,7 @@ import {
   createActivityPlugClient,
   createCapabilitySet,
   createEntityRef,
+  createRemoteAuthority,
   type AdapterOperationContext,
 } from "@activityplug/core";
 import { accountMappingFixtures } from "@activityplug/test-fixtures";
@@ -35,26 +36,28 @@ describe("Hollo adapter", () => {
         ...adapter.metadata.staticCapabilities,
         ...holloDetectedCapabilities({ name: "hollo", version: "0.9.8" }),
       }),
-      fetch: mockFetch(async (request) => {
-        const url = new URL(request.url);
-        expect(url.pathname).toBe("/api/v1/accounts/relationships");
-        expect(url.searchParams.getAll("id[]")).toEqual([accountId]);
-        expect(request.headers.get("Authorization")).toBe("Bearer token-1");
-        return jsonResponse([
-          {
-            id: accountId,
-            following: true,
-            followed_by: true,
-            requested: false,
-            blocking: true,
-            blocked_by: false,
-            muting: true,
-            muting_notifications: true,
-            domain_blocking: false,
-            showing_reblogs: false,
-            notifying: true,
-          },
-        ]);
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          const url = new URL(request.url);
+          expect(url.pathname).toBe("/api/v1/accounts/relationships");
+          expect(url.searchParams.getAll("id[]")).toEqual([accountId]);
+          expect(request.headers.get("Authorization")).toBe("Bearer token-1");
+          return jsonResponse([
+            {
+              id: accountId,
+              following: true,
+              followed_by: true,
+              requested: false,
+              blocking: true,
+              blocked_by: false,
+              muting: true,
+              muting_notifications: true,
+              domain_blocking: false,
+              showing_reblogs: false,
+              notifying: true,
+            },
+          ]);
+        }),
       }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
@@ -94,7 +97,9 @@ describe("Hollo adapter", () => {
         ...adapter.metadata.staticCapabilities,
         ...holloDetectedCapabilities({ name: "hollo", version: "0.9.8" }),
       }),
-      fetch: mockFetch(async () => jsonResponse([{ id: accountId }])),
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async () => jsonResponse([{ id: accountId }])),
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
 
@@ -124,7 +129,9 @@ describe("Hollo adapter", () => {
         ...adapter.metadata.staticCapabilities,
         ...holloDetectedCapabilities({ name: "hollo", version: "0.9.8" }),
       }),
-      fetch: mockFetch(async () => jsonResponse({ error: "Record not found" }, 404)),
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async () => jsonResponse({ error: "Record not found" }, 404)),
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
 
@@ -149,61 +156,63 @@ describe("Hollo adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHolloAdapter(),
       origin: "https://hollo.example",
-      fetch: mockFetch(async (request) => {
-        const url = new URL(request.url);
-        if (url.pathname === "/api/v1/accounts/lookup") return holloAccount();
-        if (url.pathname === "/api/v1/accounts/hollo-109") return holloAccount();
-        if (url.pathname === "/api/v1/accounts/hollo-109/statuses") {
-          return jsonResponse([accountMappingFixtures.hollo.post]);
-        }
-        if (url.pathname === "/api/v1/statuses") {
-          const body = (await request.json()) as Record<string, unknown>;
-          createRequests.push(body);
-          return jsonResponse(
-            body["quoted_status_id"] === "hollo-900"
-              ? { ...accountMappingFixtures.hollo.post, quote_id: "hollo-900" }
-              : accountMappingFixtures.hollo.post,
-          );
-        }
-        if (url.pathname === "/api/v1/statuses/hollo-900/react/like") {
-          expect(request.method).toBe("POST");
-          expect(request.headers.get("Authorization")).toBe("Bearer token-1");
-          return jsonResponse({});
-        }
-        if (url.pathname === "/api/v1/statuses/hollo-900") {
-          return jsonResponse(accountMappingFixtures.hollo.post);
-        }
-        if (url.pathname === "/api/v2/notifications/unread_count") {
-          expect(request.headers.get("Authorization")).toBe("Bearer token-1");
-          return jsonResponse({ count: 3 });
-        }
-        if (url.pathname === "/api/v1/follow_requests") {
-          expect(request.headers.get("Authorization")).toBe("Bearer token-1");
-          return jsonResponse([accountMappingFixtures.hollo.account]);
-        }
-        if (url.pathname === "/api/v1/follow_requests/hollo-109/authorize") {
-          expect(request.headers.get("Authorization")).toBe("Bearer token-1");
-          return jsonResponse({
-            id: "hollo-109",
-            following: false,
-            followed_by: true,
-            requested: false,
-            blocking: false,
-            muting: false,
-          });
-        }
-        if (url.pathname === "/api/v1/follow_requests/hollo-109/reject") {
-          expect(request.headers.get("Authorization")).toBe("Bearer token-1");
-          return jsonResponse({
-            id: "hollo-109",
-            following: false,
-            followed_by: false,
-            requested: false,
-            blocking: false,
-            muting: false,
-          });
-        }
-        return jsonResponse({ error: "unexpected request" }, 404);
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          const url = new URL(request.url);
+          if (url.pathname === "/api/v1/accounts/lookup") return holloAccount();
+          if (url.pathname === "/api/v1/accounts/hollo-109") return holloAccount();
+          if (url.pathname === "/api/v1/accounts/hollo-109/statuses") {
+            return jsonResponse([accountMappingFixtures.hollo.post]);
+          }
+          if (url.pathname === "/api/v1/statuses") {
+            const body = (await request.json()) as Record<string, unknown>;
+            createRequests.push(body);
+            return jsonResponse(
+              body["quoted_status_id"] === "hollo-900"
+                ? { ...accountMappingFixtures.hollo.post, quote_id: "hollo-900" }
+                : accountMappingFixtures.hollo.post,
+            );
+          }
+          if (url.pathname === "/api/v1/statuses/hollo-900/react/like") {
+            expect(request.method).toBe("POST");
+            expect(request.headers.get("Authorization")).toBe("Bearer token-1");
+            return jsonResponse({});
+          }
+          if (url.pathname === "/api/v1/statuses/hollo-900") {
+            return jsonResponse(accountMappingFixtures.hollo.post);
+          }
+          if (url.pathname === "/api/v2/notifications/unread_count") {
+            expect(request.headers.get("Authorization")).toBe("Bearer token-1");
+            return jsonResponse({ count: 3 });
+          }
+          if (url.pathname === "/api/v1/follow_requests") {
+            expect(request.headers.get("Authorization")).toBe("Bearer token-1");
+            return jsonResponse([accountMappingFixtures.hollo.account]);
+          }
+          if (url.pathname === "/api/v1/follow_requests/hollo-109/authorize") {
+            expect(request.headers.get("Authorization")).toBe("Bearer token-1");
+            return jsonResponse({
+              id: "hollo-109",
+              following: false,
+              followed_by: true,
+              requested: false,
+              blocking: false,
+              muting: false,
+            });
+          }
+          if (url.pathname === "/api/v1/follow_requests/hollo-109/reject") {
+            expect(request.headers.get("Authorization")).toBe("Bearer token-1");
+            return jsonResponse({
+              id: "hollo-109",
+              following: false,
+              followed_by: false,
+              requested: false,
+              blocking: false,
+              muting: false,
+            });
+          }
+          return jsonResponse({ error: "unexpected request" }, 404);
+        }),
       }),
     });
 
@@ -356,12 +365,14 @@ describe("Hollo adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHolloAdapter(),
       origin: "https://hollo.example",
-      fetch: mockFetch(async (request) => {
-        const url = new URL(request.url);
-        if (url.pathname === "/api/v1/accounts/hollo-109/statuses") {
-          return jsonResponse([{ ...accountMappingFixtures.hollo.post, quote: "invalid" }]);
-        }
-        return jsonResponse({ error: "unexpected request" }, 404);
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          const url = new URL(request.url);
+          if (url.pathname === "/api/v1/accounts/hollo-109/statuses") {
+            return jsonResponse([{ ...accountMappingFixtures.hollo.post, quote: "invalid" }]);
+          }
+          return jsonResponse({ error: "unexpected request" }, 404);
+        }),
       }),
     });
     const accountId = createEntityRef({
@@ -381,12 +392,14 @@ describe("Hollo adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHolloAdapter(),
       origin: "https://hollo.example",
-      fetch: mockFetch(async (request) => {
-        const url = new URL(request.url);
-        if (url.pathname === "/api/v1/statuses/hollo-900/react/like") {
-          return jsonResponse({ error: "upstream failed" }, 500);
-        }
-        return jsonResponse({ error: "unexpected request" }, 404);
+      remoteAuthority: createRemoteAuthority({
+        transport: mockFetch(async (request) => {
+          const url = new URL(request.url);
+          if (url.pathname === "/api/v1/statuses/hollo-900/react/like") {
+            return jsonResponse({ error: "upstream failed" }, 500);
+          }
+          return jsonResponse({ error: "unexpected request" }, 404);
+        }),
       }),
     });
     const session = await client.auth.injectToken({ accessToken: "token-1" });
@@ -487,8 +500,7 @@ describe("Hollo adapter", () => {
 });
 
 function mockFetch(handler: (request: Request) => Promise<Response>): typeof fetch {
-  return ((request) =>
-    handler(request instanceof Request ? request : new Request(request))) as typeof fetch;
+  return (request) => handler(request instanceof Request ? request : new Request(request));
 }
 
 function jsonResponse(body: unknown, status = 200): Response {

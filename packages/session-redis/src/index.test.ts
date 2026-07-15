@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createRedisAuthSessionStore,
+  createRedisBrowserSessionStore,
   createRedisOAuthClientSecretStore,
   createRedisOAuthStartLimiter,
   createRedisOAuthStateStore,
@@ -13,13 +14,14 @@ import {
   type RedisAuthSessionStoreClient,
 } from "./index.js";
 
-it("exports direct-ioredis lifecycle store factories", () => {
-  expect(createRedisAuthSessionStore).toBeTypeOf("function");
-  expect(createRedisOAuthStateStore).toBeTypeOf("function");
-  expect(createRedisOAuthClientSecretStore).toBeTypeOf("function");
-  expect(createRedisStreamTicketStore).toBeTypeOf("function");
-  expect(createRedisOAuthStartLimiter).toBeTypeOf("function");
-  expect(createRedisShortCache).toBeTypeOf("function");
+it("declares native expiry for Redis stores managed by the lifecycle", () => {
+  const client = { options: {} } as Redis;
+
+  expect(createRedisAuthSessionStore(client).expiryMode).toBe("native");
+  expect(createRedisBrowserSessionStore(client).expiryMode).toBe("native");
+  expect(createRedisOAuthStateStore(client).expiryMode).toBe("native");
+  expect(createRedisOAuthClientSecretStore(client).expiryMode).toBe("native");
+  expect(createRedisShortCache(client).expiryMode).toBe("native");
 });
 
 it("rejects the ioredis keyPrefix option that would break key scans", () => {
@@ -581,6 +583,7 @@ describe("RedisAuthSessionStore", () => {
 });
 
 class MemoryRedisClient implements RedisAuthSessionStoreClient {
+  readonly #nowMs = Date.parse("2026-04-26T00:00:00.000Z");
   readonly #values = new Map<string, string>();
   readonly #ttlMs = new Map<string, number>();
   public lastTtlMs: number | undefined;
@@ -631,13 +634,15 @@ class MemoryRedisClient implements RedisAuthSessionStoreClient {
       return 1;
     }
     const comparesAndSets = script.includes("redis.call('SET'");
-    const nowMs = Number(args[comparesAndSets ? 4 : 2]);
-    if (raw !== args[0] || !hasConsistentStorageTtlArgument(args[1], nowMs, this.#ttlMs.get(key))) {
+    if (
+      raw !== args[0] ||
+      !hasConsistentStorageTtlArgument(args[1], this.#nowMs, this.#ttlMs.get(key))
+    ) {
       return 0;
     }
 
     if (comparesAndSets) {
-      const nextTtlMs = args[3] === "" ? undefined : Number(args[3]) - nowMs;
+      const nextTtlMs = args[3] === "" ? undefined : Number(args[3]) - this.#nowMs;
       if (nextTtlMs !== undefined && nextTtlMs <= 0) return 0;
       this.lastTtlMs = nextTtlMs;
       this.#values.set(key, args[2]);

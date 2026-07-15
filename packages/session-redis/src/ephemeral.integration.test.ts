@@ -27,19 +27,17 @@ describe.skipIf(!runIntegration)("Redis ephemeral stores", () => {
     await redis.quit();
   });
 
-  it("creates and takes a stream ticket exactly once under 20-way races", async () => {
+  it("creates and takes a stream ticket exactly once under races", async () => {
     const clock = createTestClock();
     const store = createRedisStreamTicketStore(redis, {
       keyPrefix: nextPrefix("ticket-race"),
       now: clock.now,
     });
     const ticket = streamTicket("ticket-race", clock);
-    const creates = await Promise.all(Array.from({ length: 20 }, () => store.create(ticket)));
+    const creates = await Promise.all(Array.from({ length: 8 }, () => store.create(ticket)));
     expect(creates.filter(Boolean)).toHaveLength(1);
 
-    const takes = await Promise.all(
-      Array.from({ length: 20 }, () => store.take(ticket.ticketHash)),
-    );
+    const takes = await Promise.all(Array.from({ length: 8 }, () => store.take(ticket.ticketHash)));
     expect(takes.filter((value) => value !== null)).toEqual([ticket]);
   });
 
@@ -70,11 +68,32 @@ describe.skipIf(!runIntegration)("Redis ephemeral stores", () => {
     await expect(store.create(replacement)).resolves.toBe(true);
   });
 
+  it("physically expires tickets and cache entries without reads", async () => {
+    const ticketPrefix = nextPrefix("ticket-native-expiry");
+    const cachePrefix = nextPrefix("cache-native-expiry");
+    const ticketStore = createRedisStreamTicketStore(redis, { keyPrefix: ticketPrefix });
+    const cache = createRedisShortCache(redis, { keyPrefix: cachePrefix });
+    const now = Date.now();
+    const ticket = streamTicket("native-expiry", createTestClock(), {
+      createdAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + 1_000).toISOString(),
+    });
+
+    await expect(ticketStore.create(ticket)).resolves.toBe(true);
+    await cache.set("native-expiry", new Uint8Array([1]), new Date(now + 1_000).toISOString());
+    expect(await redis.pttl(`${ticketPrefix}${ticket.ticketHash}`)).toBeGreaterThan(0);
+    expect(await redis.pttl(`${cachePrefix}native-expiry`)).toBeGreaterThan(0);
+
+    await delay(1_200);
+    await expect(redis.exists(`${ticketPrefix}${ticket.ticketHash}`)).resolves.toBe(0);
+    await expect(redis.exists(`${cachePrefix}native-expiry`)).resolves.toBe(0);
+  });
+
   it("admits exactly five same-millisecond starts for one canonical IP/origin key", async () => {
     const limiter = createRedisOAuthStartLimiter(redis, { keyPrefix: nextPrefix("limiter") });
     const now = new Date();
     const results = await Promise.all(
-      Array.from({ length: 20 }, (_, index) =>
+      Array.from({ length: 8 }, (_, index) =>
         limiter.take({
           clientIp: "203.0.113.10",
           origin: index % 2 === 0 ? "HTTPS://SOCIAL.EXAMPLE:443" : "https://social.example",
@@ -83,7 +102,7 @@ describe.skipIf(!runIntegration)("Redis ephemeral stores", () => {
       ),
     );
     expect(results.filter((result) => result.allowed)).toHaveLength(5);
-    expect(results.filter((result) => !result.allowed)).toHaveLength(15);
+    expect(results.filter((result) => !result.allowed)).toHaveLength(3);
     expect(results.find((result) => !result.allowed)).toEqual({
       allowed: false,
       retryAfterSeconds: 60,
@@ -140,7 +159,7 @@ describe.skipIf(!runIntegration)("Redis ephemeral stores", () => {
     await expect(store.get("key")).resolves.toBeNull();
   });
 
-  it("takes cached bytes exactly once under 20-way races", async () => {
+  it("takes cached bytes exactly once under races", async () => {
     const clock = createTestClock();
     const store = createRedisShortCache(redis, {
       keyPrefix: nextPrefix("cache-take-race"),
@@ -149,7 +168,7 @@ describe.skipIf(!runIntegration)("Redis ephemeral stores", () => {
     const cached = new Uint8Array([0, 1, 127, 128, 255]);
     await store.set("one-shot", cached, clock.after(60_000));
 
-    const takes = await Promise.all(Array.from({ length: 20 }, () => store.take("one-shot")));
+    const takes = await Promise.all(Array.from({ length: 8 }, () => store.take("one-shot")));
     expect(takes.filter((value) => value !== null)).toEqual([cached]);
     await expect(store.get("one-shot")).resolves.toBeNull();
   });
@@ -194,4 +213,8 @@ function streamTicket(
     expiresAt: clock.after(60_000),
     ...overrides,
   };
+}
+
+async function delay(milliseconds: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

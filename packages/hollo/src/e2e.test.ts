@@ -1,5 +1,6 @@
 import { createActivityPlug } from "@activityplug/core";
 import {
+  createE2ERemoteAuthority,
   fediverseE2EEnabled,
   expectReadBaseline,
   targetsForAdapter,
@@ -20,6 +21,7 @@ describe.skipIf(!fediverseE2EEnabled || targets.length === 0)("Hollo Docker E2E"
       const discoveryClient = createActivityPlug({
         adapter: createHolloAdapter(),
         origin: target.origin,
+        remoteAuthority: createE2ERemoteAuthority(),
       });
       const instance = await discoveryClient.instances.getProfile();
       expect(instance.capabilities["accounts.relationships"].status).toBe("supported");
@@ -28,6 +30,7 @@ describe.skipIf(!fediverseE2EEnabled || targets.length === 0)("Hollo Docker E2E"
         adapter: createHolloAdapter(),
         origin: target.origin,
         capabilities: instance.capabilities,
+        remoteAuthority: createE2ERemoteAuthority(),
       });
       const session = await client.auth.injectToken({ accessToken: target.token });
       const account = await client.accounts.getByHandle({ handle: target.socialActionHandle });

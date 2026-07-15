@@ -2,9 +2,11 @@ import {
   createActivityPlugClient,
   createCapabilitySet,
   createEntityRef,
+  createRemoteAuthority,
   decodePageCursor,
   encodePageCursor,
   InMemoryAuthSessionStore,
+  BudgetScope,
   type AdapterOperationContext,
   type AuthSession,
 } from "@activityplug/core";
@@ -83,7 +85,7 @@ describe("HackersPub adapter", () => {
       };
       const client = createActivityPlugClient({
         adapter: createHackersPubAdapter(),
-        fetch,
+        remoteAuthority: createRemoteAuthority({ transport: fetch }),
         origin: "https://hackerspub.example",
         sessionStore: sessions,
       });
@@ -137,25 +139,27 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async (input, init) => {
-        const request = new Request(input, init);
-        authorizations.push(request.headers.get("Authorization") ?? "");
-        return Response.json({
-          data: {
-            viewer: {
-              username: "alice",
-              name: "Alice",
-              handle: "@alice@hackerspub.example",
-              actor: {
-                id: fixture.account.id,
-                uuid: actorUuid,
-                iri: "https://hackerspub.example/@alice",
-                url: "https://hackerspub.example/@alice",
+      remoteAuthority: createRemoteAuthority({
+        transport: async (input, init) => {
+          const request = new Request(input, init);
+          authorizations.push(request.headers.get("Authorization") ?? "");
+          return Response.json({
+            data: {
+              viewer: {
+                username: "alice",
+                name: "Alice",
+                handle: "@alice@hackerspub.example",
+                actor: {
+                  id: fixture.account.id,
+                  uuid: actorUuid,
+                  iri: "https://hackerspub.example/@alice",
+                  url: "https://hackerspub.example/@alice",
+                },
               },
             },
-          },
-        });
-      },
+          });
+        },
+      }),
     });
 
     expect(client.auth.availableStrategies).toEqual(["token", "emailChallenge", "passkey"]);
@@ -201,6 +205,36 @@ describe("HackersPub adapter", () => {
     });
   });
 
+  it("charges mapped nodes and nested depth to the operation budget", async () => {
+    const exhaustedNodes = createActivityPlugClient({
+      adapter: createHackersPubAdapter(),
+      origin: "https://hackerspub.example",
+      remoteAuthority: createRemoteAuthority({
+        transport: async () => Response.json({ data: { actorByUuid: fixture.account } }),
+      }),
+      createBudgetScope: ({ operation }) =>
+        new BudgetScope({ operation: operation ?? "unknown", limits: { nodes: 0 } }),
+    });
+    const exhaustedDepth = createActivityPlugClient({
+      adapter: createHackersPubAdapter(),
+      origin: "https://hackerspub.example",
+      remoteAuthority: createRemoteAuthority({
+        transport: async () => Response.json({ data: { actorByUuid: fixture.account } }),
+      }),
+      createBudgetScope: ({ operation }) =>
+        new BudgetScope({ operation: operation ?? "unknown", limits: { depth: 0 } }),
+    });
+
+    await expect(exhaustedNodes.accounts.getById({ id: accountId() })).rejects.toMatchObject({
+      code: "REQUEST_LIMIT_EXCEEDED",
+      dimension: "nodes",
+    });
+    await expect(exhaustedDepth.accounts.getById({ id: accountId() })).rejects.toMatchObject({
+      code: "REQUEST_LIMIT_EXCEEDED",
+      dimension: "depth",
+    });
+  });
+
   it("normalizes post fixtures and keeps Relay cursors opaque", async () => {
     const requestedAfter = encodePageCursor({
       adapter: "hackerspub",
@@ -231,26 +265,28 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async (input, init) => {
-        const request = new Request(input, init);
-        const body = (await request.json()) as { readonly variables?: unknown };
-        seenVariables.push(body.variables);
-        return Response.json({
-          data: {
-            actorByUuid: {
-              posts: {
-                edges: [{ node: post }],
-                pageInfo: {
-                  hasNextPage: true,
-                  hasPreviousPage: false,
-                  startCursor: "relay_start",
-                  endCursor: "relay_end",
+      remoteAuthority: createRemoteAuthority({
+        transport: async (input, init) => {
+          const request = new Request(input, init);
+          const body = (await request.json()) as { readonly variables?: unknown };
+          seenVariables.push(body.variables);
+          return Response.json({
+            data: {
+              actorByUuid: {
+                posts: {
+                  edges: [{ node: post }],
+                  pageInfo: {
+                    hasNextPage: true,
+                    hasPreviousPage: false,
+                    startCursor: "relay_start",
+                    endCursor: "relay_end",
+                  },
                 },
               },
             },
-          },
-        });
-      },
+          });
+        },
+      }),
     });
 
     const connection = await client.accounts.listPosts({
@@ -363,26 +399,30 @@ describe("HackersPub adapter", () => {
     const malformedJsonClient = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async () => new Response("not json"),
+      remoteAuthority: createRemoteAuthority({ transport: async () => new Response("not json") }),
     });
     const malformedErrorsClient = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async () =>
-        Response.json({
-          data: { actorByUuid: fixture.account },
-          errors: "not-an-array",
-        }),
+      remoteAuthority: createRemoteAuthority({
+        transport: async () =>
+          Response.json({
+            data: { actorByUuid: fixture.account },
+            errors: "not-an-array",
+          }),
+      }),
     });
     const emptyEnvelopeClient = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async () => Response.json({}),
+      remoteAuthority: createRemoteAuthority({ transport: async () => Response.json({}) }),
     });
     const malformedErrorEntryClient = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async () => Response.json({ errors: [null] }),
+      remoteAuthority: createRemoteAuthority({
+        transport: async () => Response.json({ errors: [null] }),
+      }),
     });
 
     await expect(malformedJsonClient.accounts.getById({ id: accountId() })).rejects.toMatchObject({
@@ -411,11 +451,13 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async () =>
-        Response.json({
-          data: { actorByUuid: fixture.account },
-          errors: [],
-        }),
+      remoteAuthority: createRemoteAuthority({
+        transport: async () =>
+          Response.json({
+            data: { actorByUuid: fixture.account },
+            errors: [],
+          }),
+      }),
     });
 
     await expect(client.accounts.getById({ id: accountId() })).resolves.toMatchObject({
@@ -427,12 +469,16 @@ describe("HackersPub adapter", () => {
     const missingDataClient = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async () => Response.json({ errors: [] }),
+      remoteAuthority: createRemoteAuthority({
+        transport: async () => Response.json({ errors: [] }),
+      }),
     });
     const nullDataClient = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async () => Response.json({ data: null, errors: [] }),
+      remoteAuthority: createRemoteAuthority({
+        transport: async () => Response.json({ data: null, errors: [] }),
+      }),
     });
 
     await expect(missingDataClient.accounts.getById({ id: accountId() })).rejects.toMatchObject({
@@ -451,10 +497,12 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async () =>
-        Response.json({
-          errors: [{ message: "GraphQL rejected the request.", path: ["actorByUuid"] }],
-        }),
+      remoteAuthority: createRemoteAuthority({
+        transport: async () =>
+          Response.json({
+            errors: [{ message: "GraphQL rejected the request.", path: ["actorByUuid"] }],
+          }),
+      }),
     });
 
     await expect(client.accounts.getById({ id: accountId() })).rejects.toMatchObject({
@@ -471,7 +519,9 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async () => Response.json({ errors: [{}] }),
+      remoteAuthority: createRemoteAuthority({
+        transport: async () => Response.json({ errors: [{}] }),
+      }),
     });
 
     await expect(client.accounts.getById({ id: accountId() })).rejects.toMatchObject({
@@ -488,11 +538,13 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async () =>
-        new Response("bad upstream", {
-          status: 502,
-          headers: { "content-type": "text/plain" },
-        }),
+      remoteAuthority: createRemoteAuthority({
+        transport: async () =>
+          new Response("bad upstream", {
+            status: 502,
+            headers: { "content-type": "text/plain" },
+          }),
+      }),
     });
 
     await expect(client.accounts.getById({ id: accountId() })).rejects.toMatchObject({
@@ -508,13 +560,15 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async () =>
-        Response.json(
-          { data: { actorByUuid: fixture.account } },
-          {
-            status: 500,
-          },
-        ),
+      remoteAuthority: createRemoteAuthority({
+        transport: async () =>
+          Response.json(
+            { data: { actorByUuid: fixture.account } },
+            {
+              status: 500,
+            },
+          ),
+      }),
     });
 
     await expect(client.accounts.getById({ id: accountId() })).rejects.toMatchObject({
@@ -526,7 +580,7 @@ describe("HackersPub adapter", () => {
     });
   });
 
-  it("keeps manual redirects and the custom fetch call shape for GraphQL requests", async () => {
+  it("keeps manual redirects in the scoped GraphQL transport request", async () => {
     const seenRequests: Array<{
       readonly accept: string | null;
       readonly hasInit: boolean;
@@ -536,20 +590,22 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async (input, init) => {
-        const request = new Request(input, init);
-        const body = (await request.json()) as {
-          readonly query?: string;
-          readonly variables?: { readonly input?: { readonly quotedPostId?: string } };
-        };
-        seenRequests.push({
-          accept: request.headers.get("accept"),
-          hasInit: init !== undefined,
-          query: body.query ?? "",
-          redirect: request.redirect,
-        });
-        return Response.json({ data: { actorByUuid: fixture.account } });
-      },
+      remoteAuthority: createRemoteAuthority({
+        transport: async (input, init) => {
+          const request = new Request(input, init);
+          const body = (await request.json()) as {
+            readonly query?: string;
+            readonly variables?: { readonly input?: { readonly quotedPostId?: string } };
+          };
+          seenRequests.push({
+            accept: request.headers.get("accept"),
+            hasInit: init !== undefined,
+            query: body.query ?? "",
+            redirect: request.redirect,
+          });
+          return Response.json({ data: { actorByUuid: fixture.account } });
+        },
+      }),
     });
 
     await expect(client.accounts.getById({ id: accountId() })).resolves.toMatchObject({
@@ -559,7 +615,7 @@ describe("HackersPub adapter", () => {
       expect.objectContaining({
         accept: "application/json",
         redirect: "manual",
-        hasInit: true,
+        hasInit: false,
       }),
     ]);
     expect(seenRequests[0]?.query).not.toContain("__typename");
@@ -580,7 +636,7 @@ describe("HackersPub adapter", () => {
       const client = createActivityPlugClient({
         adapter: createHackersPubAdapter(),
         origin: "https://hackerspub.example",
-        fetch,
+        remoteAuthority: createRemoteAuthority({ transport: fetch }),
       });
 
       await expect(client.accounts.getById({ id: accountId() })).resolves.toMatchObject({
@@ -600,7 +656,9 @@ describe("HackersPub adapter", () => {
       const client = createActivityPlugClient({
         adapter: createHackersPubAdapter(),
         origin: "https://hackerspub.example",
-        fetch: async () => new Promise<Response>(() => {}),
+        remoteAuthority: createRemoteAuthority({
+          transport: async () => new Promise<Response>(() => {}),
+        }),
       });
 
       const request = client.accounts.getById({ id: accountId() });
@@ -647,7 +705,7 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch,
+      remoteAuthority: createRemoteAuthority({ transport: fetch }),
     });
 
     await expect(
@@ -718,42 +776,44 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async (input, init) => {
-        const request = new Request(input, init);
-        const body = (await request.json()) as {
-          readonly query?: string;
-          readonly variables?: { readonly input?: { readonly quotedPostId?: string } };
-        };
-        const query = body.query ?? "";
-        if (query.includes("publicTimeline")) {
-          seenOperations.push("publicTimeline");
-          return Response.json({
-            data: {
-              publicTimeline: {
-                edges: [{ node: fixture.post }],
-                pageInfo: { hasNextPage: false, hasPreviousPage: false },
+      remoteAuthority: createRemoteAuthority({
+        transport: async (input, init) => {
+          const request = new Request(input, init);
+          const body = (await request.json()) as {
+            readonly query?: string;
+            readonly variables?: { readonly input?: { readonly quotedPostId?: string } };
+          };
+          const query = body.query ?? "";
+          if (query.includes("publicTimeline")) {
+            seenOperations.push("publicTimeline");
+            return Response.json({
+              data: {
+                publicTimeline: {
+                  edges: [{ node: fixture.post }],
+                  pageInfo: { hasNextPage: false, hasPreviousPage: false },
+                },
               },
-            },
-          });
-        }
-        if (query.includes("searchActorsByHandle")) {
-          seenOperations.push("searchActorsByHandle");
-          return Response.json({ data: { searchActorsByHandle: [fixture.account] } });
-        }
-        if (query.includes("searchPost")) {
-          seenOperations.push("searchPost");
-          return Response.json({
-            data: {
-              searchPost: {
-                edges: [{ node: fixture.post }],
-                pageInfo: { hasNextPage: false, hasPreviousPage: false },
+            });
+          }
+          if (query.includes("searchActorsByHandle")) {
+            seenOperations.push("searchActorsByHandle");
+            return Response.json({ data: { searchActorsByHandle: [fixture.account] } });
+          }
+          if (query.includes("searchPost")) {
+            seenOperations.push("searchPost");
+            return Response.json({
+              data: {
+                searchPost: {
+                  edges: [{ node: fixture.post }],
+                  pageInfo: { hasNextPage: false, hasPreviousPage: false },
+                },
               },
-            },
-          });
-        }
-        postAuthorization = request.headers.get("Authorization");
-        return Response.json({ data: { node: fixture.post } });
-      },
+            });
+          }
+          postAuthorization = request.headers.get("Authorization");
+          return Response.json({ data: { node: fixture.post } });
+        },
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token" });
 
@@ -810,7 +870,7 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter,
       origin: "https://hackerspub.example",
-      fetch,
+      remoteAuthority: createRemoteAuthority({ transport: fetch }),
     });
 
     for (const page of [{ after: "opaque-after" }, { before: "opaque-before" }]) {
@@ -851,7 +911,7 @@ describe("HackersPub adapter", () => {
     );
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
-      fetch,
+      remoteAuthority: createRemoteAuthority({ transport: fetch }),
       origin: "https://hackerspub.example",
     });
     const session = await client.auth.injectToken({ accessToken: "token" });
@@ -873,8 +933,8 @@ describe("HackersPub adapter", () => {
   it("cancels an in-flight URL-ingestion mutation with the caller signal", async () => {
     let requestSignal: AbortSignal | undefined;
     const fetchStarted = Promise.withResolvers<void>();
-    const fetch = vi.fn<typeof globalThis.fetch>(async (_input, init) => {
-      requestSignal = init?.signal ?? undefined;
+    const fetch = vi.fn<typeof globalThis.fetch>(async (input, init) => {
+      requestSignal = new Request(input, init).signal;
       fetchStarted.resolve();
       return new Promise<Response>((_resolve, reject) => {
         requestSignal?.addEventListener("abort", () => reject(requestSignal?.reason), {
@@ -884,7 +944,7 @@ describe("HackersPub adapter", () => {
     });
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
-      fetch,
+      remoteAuthority: createRemoteAuthority({ transport: fetch }),
       origin: "https://hackerspub.example",
     });
     const session = await client.auth.injectToken({ accessToken: "token" });
@@ -908,7 +968,7 @@ describe("HackersPub adapter", () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
-      fetch,
+      remoteAuthority: createRemoteAuthority({ transport: fetch }),
       origin: "https://hackerspub.example",
     });
     const publicBefore = encodePageCursor({
@@ -960,66 +1020,69 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async (input, init) => {
-        const request = new Request(input, init);
-        const path = new URL(request.url).pathname;
-        const body = request.method === "GET" ? undefined : await request.json();
-        seenRequests.push({
-          path,
-          body,
-          authorization: request.headers.get("Authorization"),
-        });
-        if (path.endsWith(`/api/posts/${postUuid}/poll`)) return Response.json(pollResponse());
-        if (path.endsWith(`/api/posts/${postUuid}/vote`)) return Response.json(pollResponse(true));
-        const query = isRecord(body) && typeof body.query === "string" ? body.query : "";
-        if (query.includes("followActor")) {
-          return Response.json({
-            data: {
-              followActor: { __typename: "FollowActorPayload", followee: relationshipActor() },
-            },
+      remoteAuthority: createRemoteAuthority({
+        transport: async (input, init) => {
+          const request = new Request(input, init);
+          const path = new URL(request.url).pathname;
+          const body = request.method === "GET" ? undefined : await request.json();
+          seenRequests.push({
+            path,
+            body,
+            authorization: request.headers.get("Authorization"),
           });
-        }
-        if (query.includes("unsharePost")) {
-          return Response.json({
-            data: {
-              unsharePost: { __typename: "UnsharePostPayload", originalPost: fixture.post },
-            },
-          });
-        }
-        if (query.includes("sharePost")) {
-          return Response.json({
-            data: { sharePost: { __typename: "SharePostPayload", share: fixture.post } },
-          });
-        }
-        if (query.includes("addReactionToPost")) {
-          reactionInputs.push(isRecord(body) ? body.variables : undefined);
-          return Response.json({
-            data: {
-              addReactionToPost: {
-                __typename: "AddReactionToPostPayload",
-                clientMutationId: null,
+          if (path.endsWith(`/api/posts/${postUuid}/poll`)) return Response.json(pollResponse());
+          if (path.endsWith(`/api/posts/${postUuid}/vote`))
+            return Response.json(pollResponse(true));
+          const query = isRecord(body) && typeof body.query === "string" ? body.query : "";
+          if (query.includes("followActor")) {
+            return Response.json({
+              data: {
+                followActor: { __typename: "FollowActorPayload", followee: relationshipActor() },
               },
-            },
-          });
-        }
-        if (query.includes("removeReactionFromPost")) {
-          reactionInputs.push(isRecord(body) ? body.variables : undefined);
-          return Response.json({
-            data: {
-              removeReactionFromPost: {
-                __typename: "RemoveReactionFromPostPayload",
-                clientMutationId: null,
+            });
+          }
+          if (query.includes("unsharePost")) {
+            return Response.json({
+              data: {
+                unsharePost: { __typename: "UnsharePostPayload", originalPost: fixture.post },
               },
-            },
-          });
-        }
-        if (query.includes("deletePost")) {
-          return Response.json({
-            data: { deletePost: { __typename: "DeletePostPayload", deletedPostId: postUuid } },
-          });
-        }
-        return Response.json({ data: { node: fixture.post } });
-      },
+            });
+          }
+          if (query.includes("sharePost")) {
+            return Response.json({
+              data: { sharePost: { __typename: "SharePostPayload", share: fixture.post } },
+            });
+          }
+          if (query.includes("addReactionToPost")) {
+            reactionInputs.push(isRecord(body) ? body.variables : undefined);
+            return Response.json({
+              data: {
+                addReactionToPost: {
+                  __typename: "AddReactionToPostPayload",
+                  clientMutationId: null,
+                },
+              },
+            });
+          }
+          if (query.includes("removeReactionFromPost")) {
+            reactionInputs.push(isRecord(body) ? body.variables : undefined);
+            return Response.json({
+              data: {
+                removeReactionFromPost: {
+                  __typename: "RemoveReactionFromPostPayload",
+                  clientMutationId: null,
+                },
+              },
+            });
+          }
+          if (query.includes("deletePost")) {
+            return Response.json({
+              data: { deletePost: { __typename: "DeletePostPayload", deletedPostId: postUuid } },
+            });
+          }
+          return Response.json({ data: { node: fixture.post } });
+        },
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token" });
 
@@ -1108,61 +1171,63 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async (input, init) => {
-        const request = new Request(input, init);
-        const body = (await request.json()) as {
-          readonly query?: string;
-          readonly variables?: Record<string, unknown>;
-        };
-        const query = body.query ?? "";
-        seenQueries.push(query);
-        notificationCalls.push(body.variables);
-        const firstPage = notificationCalls.length === 1;
-        return Response.json({
-          data: {
-            viewer: {
-              notifications: {
-                edges: [
-                  ...(firstPage
-                    ? [
-                        {
-                          cursor: "page-1-follow",
-                          node: {
-                            __typename: "FollowNotification",
-                            uuid: "00000000-0000-4000-8000-000000000009",
-                            created: "2026-05-03T00:00:00.000Z",
-                            actors: { edges: [{ node: fixture.account }] },
+      remoteAuthority: createRemoteAuthority({
+        transport: async (input, init) => {
+          const request = new Request(input, init);
+          const body = (await request.json()) as {
+            readonly query?: string;
+            readonly variables?: Record<string, unknown>;
+          };
+          const query = body.query ?? "";
+          seenQueries.push(query);
+          notificationCalls.push(body.variables);
+          const firstPage = notificationCalls.length === 1;
+          return Response.json({
+            data: {
+              viewer: {
+                notifications: {
+                  edges: [
+                    ...(firstPage
+                      ? [
+                          {
+                            cursor: "page-1-follow",
+                            node: {
+                              __typename: "FollowNotification",
+                              uuid: "00000000-0000-4000-8000-000000000009",
+                              created: "2026-05-03T00:00:00.000Z",
+                              actors: { edges: [{ node: fixture.account }] },
+                            },
                           },
-                        },
-                      ]
-                    : []),
-                  ...(firstPage
-                    ? []
-                    : [
-                        {
-                          cursor: "page-2-react",
-                          node: {
-                            __typename: "ReactNotification",
-                            uuid: "00000000-0000-4000-8000-000000000010",
-                            created: "2026-05-03T00:00:00.000Z",
-                            emoji: "👍",
-                            actors: { edges: [{ node: fixture.account }] },
-                            post: fixture.post,
+                        ]
+                      : []),
+                    ...(firstPage
+                      ? []
+                      : [
+                          {
+                            cursor: "page-2-react",
+                            node: {
+                              __typename: "ReactNotification",
+                              uuid: "00000000-0000-4000-8000-000000000010",
+                              created: "2026-05-03T00:00:00.000Z",
+                              emoji: "👍",
+                              actors: { edges: [{ node: fixture.account }] },
+                              post: fixture.post,
+                            },
                           },
-                        },
-                      ]),
-                ],
-                pageInfo: {
-                  hasNextPage: firstPage,
-                  hasPreviousPage: false,
-                  startCursor: firstPage ? "page-1-start" : "",
-                  endCursor: firstPage ? "page-1-end" : "",
+                        ]),
+                  ],
+                  pageInfo: {
+                    hasNextPage: firstPage,
+                    hasPreviousPage: false,
+                    startCursor: firstPage ? "page-1-start" : "",
+                    endCursor: firstPage ? "page-1-end" : "",
+                  },
                 },
               },
             },
-          },
-        });
-      },
+          });
+        },
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token" });
 
@@ -1213,46 +1278,48 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async (input, init) => {
-        const request = new Request(input, init);
-        const body = (await request.json()) as { readonly variables?: Record<string, unknown> };
-        notificationCalls.push(body.variables);
-        const firstPage = notificationCalls.length === 1;
-        return Response.json({
-          data: {
-            viewer: {
-              notifications: {
-                edges: [
-                  {
-                    cursor: firstPage ? "page-2-follow" : "page-1-react",
-                    node: firstPage
-                      ? {
-                          __typename: "FollowNotification",
-                          uuid: "00000000-0000-4000-8000-000000000012",
-                          created: "2026-05-03T00:01:00.000Z",
-                          actors: { edges: [{ node: fixture.account }] },
-                        }
-                      : {
-                          __typename: "ReactNotification",
-                          uuid: "00000000-0000-4000-8000-000000000011",
-                          created: "2026-05-03T00:00:00.000Z",
-                          emoji: "👍",
-                          actors: { edges: [{ node: fixture.account }] },
-                          post: fixture.post,
-                        },
+      remoteAuthority: createRemoteAuthority({
+        transport: async (input, init) => {
+          const request = new Request(input, init);
+          const body = (await request.json()) as { readonly variables?: Record<string, unknown> };
+          notificationCalls.push(body.variables);
+          const firstPage = notificationCalls.length === 1;
+          return Response.json({
+            data: {
+              viewer: {
+                notifications: {
+                  edges: [
+                    {
+                      cursor: firstPage ? "page-2-follow" : "page-1-react",
+                      node: firstPage
+                        ? {
+                            __typename: "FollowNotification",
+                            uuid: "00000000-0000-4000-8000-000000000012",
+                            created: "2026-05-03T00:01:00.000Z",
+                            actors: { edges: [{ node: fixture.account }] },
+                          }
+                        : {
+                            __typename: "ReactNotification",
+                            uuid: "00000000-0000-4000-8000-000000000011",
+                            created: "2026-05-03T00:00:00.000Z",
+                            emoji: "👍",
+                            actors: { edges: [{ node: fixture.account }] },
+                            post: fixture.post,
+                          },
+                    },
+                  ],
+                  pageInfo: {
+                    hasNextPage: false,
+                    hasPreviousPage: firstPage,
+                    startCursor: firstPage ? "page-2-start" : "page-1-start",
+                    endCursor: firstPage ? "page-2-end" : "page-1-end",
                   },
-                ],
-                pageInfo: {
-                  hasNextPage: false,
-                  hasPreviousPage: firstPage,
-                  startCursor: firstPage ? "page-2-start" : "page-1-start",
-                  endCursor: firstPage ? "page-2-end" : "page-1-end",
                 },
               },
             },
-          },
-        });
-      },
+          });
+        },
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token" });
 
@@ -1415,30 +1482,32 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async (input, init) => {
-        const request = new Request(input, init);
-        const body = (await request.json()) as { readonly variables?: Record<string, unknown> };
-        notificationCalls.push(body.variables);
-        const cursor = "stalled-cursor";
-        return Response.json({
-          data: {
-            viewer: {
-              notifications: {
-                edges:
-                  notificationCalls.length === 1
-                    ? [reactionNotificationEdge(cursor)]
-                    : [followNotificationEdge(notificationCalls.length, cursor)],
-                pageInfo: {
-                  hasNextPage: true,
-                  hasPreviousPage: false,
-                  startCursor: cursor,
-                  endCursor: cursor,
+      remoteAuthority: createRemoteAuthority({
+        transport: async (input, init) => {
+          const request = new Request(input, init);
+          const body = (await request.json()) as { readonly variables?: Record<string, unknown> };
+          notificationCalls.push(body.variables);
+          const cursor = "stalled-cursor";
+          return Response.json({
+            data: {
+              viewer: {
+                notifications: {
+                  edges:
+                    notificationCalls.length === 1
+                      ? [reactionNotificationEdge(cursor)]
+                      : [followNotificationEdge(notificationCalls.length, cursor)],
+                  pageInfo: {
+                    hasNextPage: true,
+                    hasPreviousPage: false,
+                    startCursor: cursor,
+                    endCursor: cursor,
+                  },
                 },
               },
             },
-          },
-        });
-      },
+          });
+        },
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token" });
 
@@ -1460,30 +1529,32 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async (input, init) => {
-        const request = new Request(input, init);
-        const body = (await request.json()) as { readonly variables?: Record<string, unknown> };
-        notificationCalls.push(body.variables ?? {});
-        if (notificationCalls.length > 4) {
-          throw new TypeError("Cursor cycle was not rejected.");
-        }
-        const cursor = notificationCalls.length % 2 === 1 ? "cursor-a" : "cursor-b";
-        return Response.json({
-          data: {
-            viewer: {
-              notifications: {
-                edges: [followNotificationEdge(notificationCalls.length, cursor)],
-                pageInfo: {
-                  hasNextPage: true,
-                  hasPreviousPage: false,
-                  startCursor: cursor,
-                  endCursor: cursor,
+      remoteAuthority: createRemoteAuthority({
+        transport: async (input, init) => {
+          const request = new Request(input, init);
+          const body = (await request.json()) as { readonly variables?: Record<string, unknown> };
+          notificationCalls.push(body.variables ?? {});
+          if (notificationCalls.length > 4) {
+            throw new TypeError("Cursor cycle was not rejected.");
+          }
+          const cursor = notificationCalls.length % 2 === 1 ? "cursor-a" : "cursor-b";
+          return Response.json({
+            data: {
+              viewer: {
+                notifications: {
+                  edges: [followNotificationEdge(notificationCalls.length, cursor)],
+                  pageInfo: {
+                    hasNextPage: true,
+                    hasPreviousPage: false,
+                    startCursor: cursor,
+                    endCursor: cursor,
+                  },
                 },
               },
             },
-          },
-        });
-      },
+          });
+        },
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token" });
 
@@ -1510,30 +1581,32 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async (input, init) => {
-        const request = new Request(input, init);
-        const body = (await request.json()) as { readonly variables?: Record<string, unknown> };
-        notificationCalls.push(body.variables ?? {});
-        if (notificationCalls.length > 20) {
-          throw new TypeError("Notification request budget was exceeded.");
-        }
-        const cursor = `cursor-${notificationCalls.length}`;
-        return Response.json({
-          data: {
-            viewer: {
-              notifications: {
-                edges: [followNotificationEdge(notificationCalls.length, cursor)],
-                pageInfo: {
-                  hasNextPage: true,
-                  hasPreviousPage: false,
-                  startCursor: cursor,
-                  endCursor: cursor,
+      remoteAuthority: createRemoteAuthority({
+        transport: async (input, init) => {
+          const request = new Request(input, init);
+          const body = (await request.json()) as { readonly variables?: Record<string, unknown> };
+          notificationCalls.push(body.variables ?? {});
+          if (notificationCalls.length > 20) {
+            throw new TypeError("Notification request budget was exceeded.");
+          }
+          const cursor = `cursor-${notificationCalls.length}`;
+          return Response.json({
+            data: {
+              viewer: {
+                notifications: {
+                  edges: [followNotificationEdge(notificationCalls.length, cursor)],
+                  pageInfo: {
+                    hasNextPage: true,
+                    hasPreviousPage: false,
+                    startCursor: cursor,
+                    endCursor: cursor,
+                  },
                 },
               },
             },
-          },
-        });
-      },
+          });
+        },
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token" });
 
@@ -1551,45 +1624,99 @@ describe("HackersPub adapter", () => {
     expect(new Set(notificationCalls.map((variables) => variables.after)).size).toBe(20);
   });
 
+  it("charges every filtered notification page to one operation budget", async () => {
+    const scopes: BudgetScope[] = [];
+    const transport = vi.fn(async () => {
+      const cursor = `cursor-${transport.mock.calls.length}`;
+      return Response.json({
+        data: {
+          viewer: {
+            notifications: {
+              edges: [followNotificationEdge(transport.mock.calls.length, cursor)],
+              pageInfo: {
+                hasNextPage: true,
+                hasPreviousPage: false,
+                startCursor: cursor,
+                endCursor: cursor,
+              },
+            },
+          },
+        },
+      });
+    });
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter(),
+      origin: "https://hackerspub.example",
+      remoteAuthority: createRemoteAuthority({ transport }),
+      createBudgetScope: ({ operation }) => {
+        const scope = new BudgetScope({
+          operation: operation ?? "unknown",
+          limits: { requests: 2 },
+        });
+        scopes.push(scope);
+        return scope;
+      },
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+    scopes.length = 0;
+
+    await expect(
+      client.notifications.list({
+        session,
+        types: ["emoji_reaction"],
+        page: { limit: 3 },
+      }),
+    ).rejects.toMatchObject({
+      code: "REQUEST_LIMIT_EXCEEDED",
+      dimension: "requests",
+      context: { operation: "notification.list" },
+    });
+    expect(transport).toHaveBeenCalledTimes(2);
+    expect(scopes).toHaveLength(1);
+    expect(scopes[0]?.snapshot().used.requests).toBe(2);
+  });
+
   it("continues across an empty page and accepts a terminal page without cursors", async () => {
     const notificationCalls: Record<string, unknown>[] = [];
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async (input, init) => {
-        const request = new Request(input, init);
-        const body = (await request.json()) as { readonly variables?: Record<string, unknown> };
-        notificationCalls.push(body.variables ?? {});
-        const firstPage = notificationCalls.length === 1;
-        return Response.json({
-          data: {
-            viewer: {
-              notifications: {
-                edges: firstPage
-                  ? []
-                  : [
-                      {
-                        cursor: "reaction-cursor",
-                        node: {
-                          __typename: "ReactNotification",
-                          uuid: "00000000-0000-4000-8000-000000000099",
-                          created: "2026-05-03T00:00:00.000Z",
-                          emoji: "👍",
-                          actors: { edges: [{ node: fixture.account }] },
-                          post: fixture.post,
+      remoteAuthority: createRemoteAuthority({
+        transport: async (input, init) => {
+          const request = new Request(input, init);
+          const body = (await request.json()) as { readonly variables?: Record<string, unknown> };
+          notificationCalls.push(body.variables ?? {});
+          const firstPage = notificationCalls.length === 1;
+          return Response.json({
+            data: {
+              viewer: {
+                notifications: {
+                  edges: firstPage
+                    ? []
+                    : [
+                        {
+                          cursor: "reaction-cursor",
+                          node: {
+                            __typename: "ReactNotification",
+                            uuid: "00000000-0000-4000-8000-000000000099",
+                            created: "2026-05-03T00:00:00.000Z",
+                            emoji: "👍",
+                            actors: { edges: [{ node: fixture.account }] },
+                            post: fixture.post,
+                          },
                         },
-                      },
-                    ],
-                pageInfo: {
-                  hasNextPage: firstPage,
-                  hasPreviousPage: false,
-                  ...(firstPage ? { startCursor: "empty-page", endCursor: "empty-page" } : {}),
+                      ],
+                  pageInfo: {
+                    hasNextPage: firstPage,
+                    hasPreviousPage: false,
+                    ...(firstPage ? { startCursor: "empty-page", endCursor: "empty-page" } : {}),
+                  },
                 },
               },
             },
-          },
-        });
-      },
+          });
+        },
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token" });
 
@@ -1612,21 +1739,23 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async (input, init) => {
-        const request = new Request(input, init);
-        const body = (await request.json()) as { readonly variables?: Record<string, unknown> };
-        notificationCalls.push(body.variables);
-        return Response.json({
-          data: {
-            viewer: {
-              notifications: {
-                edges: [],
-                pageInfo: { hasNextPage: true, hasPreviousPage: false },
+      remoteAuthority: createRemoteAuthority({
+        transport: async (input, init) => {
+          const request = new Request(input, init);
+          const body = (await request.json()) as { readonly variables?: Record<string, unknown> };
+          notificationCalls.push(body.variables);
+          return Response.json({
+            data: {
+              viewer: {
+                notifications: {
+                  edges: [],
+                  pageInfo: { hasNextPage: true, hasPreviousPage: false },
+                },
               },
             },
-          },
-        });
-      },
+          });
+        },
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token" });
 
@@ -1647,57 +1776,63 @@ describe("HackersPub adapter", () => {
     const malformedEdgeClient = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async () =>
-        Response.json({
-          data: {
-            viewer: {
-              notifications: {
-                edges: [null],
-                pageInfo: { hasNextPage: false, hasPreviousPage: false },
+      remoteAuthority: createRemoteAuthority({
+        transport: async () =>
+          Response.json({
+            data: {
+              viewer: {
+                notifications: {
+                  edges: [null],
+                  pageInfo: { hasNextPage: false, hasPreviousPage: false },
+                },
               },
             },
-          },
-        }),
+          }),
+      }),
     });
     const malformedNodeClient = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async () =>
-        Response.json({
-          data: {
-            viewer: {
-              notifications: {
-                edges: [{ cursor: "notification-1", node: null }],
-                pageInfo: { hasNextPage: false, hasPreviousPage: false },
+      remoteAuthority: createRemoteAuthority({
+        transport: async () =>
+          Response.json({
+            data: {
+              viewer: {
+                notifications: {
+                  edges: [{ cursor: "notification-1", node: null }],
+                  pageInfo: { hasNextPage: false, hasPreviousPage: false },
+                },
               },
             },
-          },
-        }),
+          }),
+      }),
     });
     const malformedIdClient = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async () =>
-        Response.json({
-          data: {
-            viewer: {
-              notifications: {
-                edges: [
-                  {
-                    cursor: "notification-1",
-                    node: {
-                      __typename: "FollowNotification",
-                      uuid: "not-a-uuid",
-                      created: "2026-05-03T00:00:00.000Z",
-                      actors: { edges: [{ node: fixture.account }] },
+      remoteAuthority: createRemoteAuthority({
+        transport: async () =>
+          Response.json({
+            data: {
+              viewer: {
+                notifications: {
+                  edges: [
+                    {
+                      cursor: "notification-1",
+                      node: {
+                        __typename: "FollowNotification",
+                        uuid: "not-a-uuid",
+                        created: "2026-05-03T00:00:00.000Z",
+                        actors: { edges: [{ node: fixture.account }] },
+                      },
                     },
-                  },
-                ],
-                pageInfo: { hasNextPage: false, hasPreviousPage: false },
+                  ],
+                  pageInfo: { hasNextPage: false, hasPreviousPage: false },
+                },
               },
             },
-          },
-        }),
+          }),
+      }),
     });
     const session = await malformedEdgeClient.auth.injectToken({ accessToken: "token" });
     const nodeSession = await malformedNodeClient.auth.injectToken({ accessToken: "token" });
@@ -1726,43 +1861,45 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async (input, init) => {
-        const request = new Request(input, init);
-        const path = new URL(request.url).pathname;
-        if (path === "/api/media") {
-          const form = await request.formData();
-          expect(form.get("file")).toBeInstanceOf(Blob);
-          return Response.json({
-            url: "https://hackerspub.example/media/upload.webp",
-            width: 32,
-            height: 16,
-          });
-        }
-        const body = (await request.json()) as {
-          readonly query?: string;
-          readonly variables?: { readonly input?: { readonly quotedPostId?: string } };
-        };
-        const query = body.query ?? "";
-        seenQueries.push(query);
-        if (query.includes("createNote")) {
-          const quotePost =
-            body.variables?.input?.quotedPostId === undefined
-              ? fixture.post
-              : {
-                  ...fixture.post,
-                  quotedPost: {
-                    id: fixture.post.id,
-                    uuid: fixture.post.uuid,
-                    iri: fixture.post.iri,
-                    url: fixture.post.url,
-                  },
-                };
-          return Response.json({
-            data: { createNote: { __typename: "CreateNotePayload", note: quotePost } },
-          });
-        }
-        return Response.json({ data: { node: fixture.post } });
-      },
+      remoteAuthority: createRemoteAuthority({
+        transport: async (input, init) => {
+          const request = new Request(input, init);
+          const path = new URL(request.url).pathname;
+          if (path === "/api/media") {
+            const form = await request.formData();
+            expect(form.get("file")).toBeInstanceOf(Blob);
+            return Response.json({
+              url: "https://hackerspub.example/media/upload.webp",
+              width: 32,
+              height: 16,
+            });
+          }
+          const body = (await request.json()) as {
+            readonly query?: string;
+            readonly variables?: { readonly input?: { readonly quotedPostId?: string } };
+          };
+          const query = body.query ?? "";
+          seenQueries.push(query);
+          if (query.includes("createNote")) {
+            const quotePost =
+              body.variables?.input?.quotedPostId === undefined
+                ? fixture.post
+                : {
+                    ...fixture.post,
+                    quotedPost: {
+                      id: fixture.post.id,
+                      uuid: fixture.post.uuid,
+                      iri: fixture.post.iri,
+                      url: fixture.post.url,
+                    },
+                  };
+            return Response.json({
+              data: { createNote: { __typename: "CreateNotePayload", note: quotePost } },
+            });
+          }
+          return Response.json({ data: { node: fixture.post } });
+        },
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token" });
 
@@ -1819,30 +1956,32 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async (input, init) => {
-        const request = new Request(input, init);
-        const body = (await request.json()) as { readonly query?: string };
-        const query = body.query ?? "";
-        if (query.includes("createNote")) {
-          return Response.json({
-            data: {
-              createNote: {
-                __typename: "CreateNotePayload",
-                note: {
-                  ...fixture.post,
-                  quotedPost: {
-                    id: fixture.post.id,
-                    uuid: "00000000-0000-4000-8000-000000000099",
-                    iri: "https://hackers.pub/posts/00000000-0000-4000-8000-000000000099",
-                    url: "https://hackers.pub/posts/00000000-0000-4000-8000-000000000099",
+      remoteAuthority: createRemoteAuthority({
+        transport: async (input, init) => {
+          const request = new Request(input, init);
+          const body = (await request.json()) as { readonly query?: string };
+          const query = body.query ?? "";
+          if (query.includes("createNote")) {
+            return Response.json({
+              data: {
+                createNote: {
+                  __typename: "CreateNotePayload",
+                  note: {
+                    ...fixture.post,
+                    quotedPost: {
+                      id: fixture.post.id,
+                      uuid: "00000000-0000-4000-8000-000000000099",
+                      iri: "https://hackers.pub/posts/00000000-0000-4000-8000-000000000099",
+                      url: "https://hackers.pub/posts/00000000-0000-4000-8000-000000000099",
+                    },
                   },
                 },
               },
-            },
-          });
-        }
-        return Response.json({ data: { node: fixture.post } });
-      },
+            });
+          }
+          return Response.json({ data: { node: fixture.post } });
+        },
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token" });
 
@@ -1858,7 +1997,9 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async () => Response.json({ ...pollResponse(), postId: "relay-poll-id" }),
+      remoteAuthority: createRemoteAuthority({
+        transport: async () => Response.json({ ...pollResponse(), postId: "relay-poll-id" }),
+      }),
     });
     const pollId = createEntityRef({
       adapter: "hackerspub",
@@ -1877,9 +2018,11 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async () => {
-        throw new TypeError("Expired token must be rejected before a remote request.");
-      },
+      remoteAuthority: createRemoteAuthority({
+        transport: async () => {
+          throw new TypeError("Expired token must be rejected before a remote request.");
+        },
+      }),
     });
     const session = await client.auth.injectToken({
       accessToken: "expired-token",
@@ -1898,9 +2041,11 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async () => {
-        throw new TypeError("Expired token must be rejected before a remote request.");
-      },
+      remoteAuthority: createRemoteAuthority({
+        transport: async () => {
+          throw new TypeError("Expired token must be rejected before a remote request.");
+        },
+      }),
     });
     const session = await client.auth.injectToken({
       accessToken: "expired-token",
@@ -1917,38 +2062,40 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async (input, init) => {
-        const request = new Request(input, init);
-        const body = (await request.json()) as { readonly query?: string };
-        if (body.query?.includes("viewer") === true) {
+      remoteAuthority: createRemoteAuthority({
+        transport: async (input, init) => {
+          const request = new Request(input, init);
+          const body = (await request.json()) as { readonly query?: string };
+          if (body.query?.includes("viewer") === true) {
+            return Response.json({
+              data: {
+                viewer: {
+                  uuid: "00000000-0000-4000-8000-000000000010",
+                  username: "alice",
+                  name: "Alice",
+                  handle: "@alice@hackerspub.example",
+                  actor: {
+                    id: "QWN0b3I6MDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAx",
+                    uuid: actorUuid,
+                    iri: "https://hackerspub.example/@alice",
+                    url: "https://hackerspub.example/@alice",
+                  },
+                },
+              },
+            });
+          }
           return Response.json({
             data: {
-              viewer: {
-                uuid: "00000000-0000-4000-8000-000000000010",
-                username: "alice",
-                name: "Alice",
-                handle: "@alice@hackerspub.example",
-                actor: {
-                  id: "QWN0b3I6MDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAx",
-                  uuid: actorUuid,
-                  iri: "https://hackerspub.example/@alice",
-                  url: "https://hackerspub.example/@alice",
+              actorByUuid: {
+                posts: {
+                  edges: [{ node: fixture.post }],
+                  pageInfo: { hasNextPage: false, hasPreviousPage: false },
                 },
               },
             },
           });
-        }
-        return Response.json({
-          data: {
-            actorByUuid: {
-              posts: {
-                edges: [{ node: fixture.post }],
-                pageInfo: { hasNextPage: false, hasPreviousPage: false },
-              },
-            },
-          },
-        });
-      },
+        },
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token" });
     const verified = await client.auth.verifyCredentials(session);
@@ -1966,19 +2113,21 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async () =>
-        Response.json({
-          data: {
-            viewer: {
-              username: "alice",
-              handle: "@alice@hackers.pub",
-              uuid: "00000000-0000-4000-8000-000000000010",
-              actor: {
-                uuid: "relay-actor-id",
+      remoteAuthority: createRemoteAuthority({
+        transport: async () =>
+          Response.json({
+            data: {
+              viewer: {
+                username: "alice",
+                handle: "@alice@hackers.pub",
+                uuid: "00000000-0000-4000-8000-000000000010",
+                actor: {
+                  uuid: "relay-actor-id",
+                },
               },
             },
-          },
-        }),
+          }),
+      }),
     });
     const session = await client.auth.injectToken({ accessToken: "token" });
 
@@ -1992,15 +2141,17 @@ describe("HackersPub adapter", () => {
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
       origin: "https://hackerspub.example",
-      fetch: async () =>
-        Response.json({
-          links: [
-            {
-              rel: "http://nodeinfo.diaspora.software/ns/schema/2.1",
-              href: "http://[::1",
-            },
-          ],
-        }),
+      remoteAuthority: createRemoteAuthority({
+        transport: async () =>
+          Response.json({
+            links: [
+              {
+                rel: "http://nodeinfo.diaspora.software/ns/schema/2.1",
+                href: "http://[::1",
+              },
+            ],
+          }),
+      }),
     });
 
     await expect(client.instances.detect()).rejects.toMatchObject({
@@ -2013,10 +2164,12 @@ function createClientWithGraphQLResponse(data: unknown) {
   return createActivityPlugClient({
     adapter: createHackersPubAdapter(),
     origin: "https://hackerspub.example",
-    fetch: async () =>
-      new Response(JSON.stringify({ data }), {
-        headers: { "content-type": "application/json" },
-      }),
+    remoteAuthority: createRemoteAuthority({
+      transport: async () =>
+        new Response(JSON.stringify({ data }), {
+          headers: { "content-type": "application/json" },
+        }),
+    }),
   });
 }
 
@@ -2024,6 +2177,7 @@ function searchContext(adapterId: string, origin: string): AdapterOperationConte
   return {
     adapterId,
     origin,
+    operation: "search",
     capabilities: createCapabilitySet(),
     fetch: vi.fn<typeof globalThis.fetch>(),
   };

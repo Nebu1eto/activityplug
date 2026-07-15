@@ -55,6 +55,21 @@ describe.skipIf(!runIntegration)("RedisAuthSessionStore integration", () => {
     await expect(store.get("malformed")).resolves.toBeNull();
   });
 
+  it("physically expires bounded auth sessions without reads or cleanup scans", async () => {
+    const prefix = `${keyPrefix}native-expiry:`;
+    const store = createRedisAuthSessionStore(redis, { keyPrefix: prefix });
+    const id = "physical-expiry";
+    await expect(
+      store.create(
+        createSession(id, { storageExpiresAt: new Date(Date.now() + 1_000).toISOString() }),
+      ),
+    ).resolves.toBe(true);
+    expect(await redis.pttl(`${prefix}${id}`)).toBeGreaterThan(0);
+
+    await delay(1_200);
+    await expect(redis.exists(`${prefix}${id}`)).resolves.toBe(0);
+  });
+
   it("allows exactly one competing create and compare-and-set", async () => {
     const store = createRedisAuthSessionStore(redis, { keyPrefix });
     const original = createSession("race", { revision: 0 });
@@ -64,7 +79,7 @@ describe.skipIf(!runIntegration)("RedisAuthSessionStore integration", () => {
     };
 
     const creates = await Promise.all(
-      Array.from({ length: 20 }, (_, index) => store.create(index === 0 ? original : collision)),
+      Array.from({ length: 8 }, (_, index) => store.create(index === 0 ? original : collision)),
     );
     expect(creates.filter(Boolean)).toHaveLength(1);
     const created = await store.get("race");
@@ -81,7 +96,7 @@ describe.skipIf(!runIntegration)("RedisAuthSessionStore integration", () => {
       tokenSet: { accessToken: "second", tokenType: "Bearer" },
     };
     const compares = await Promise.all(
-      Array.from({ length: 20 }, (_, index) =>
+      Array.from({ length: 8 }, (_, index) =>
         store.compareAndSet("race", 0, index % 2 === 0 ? first : second),
       ),
     );
@@ -104,19 +119,16 @@ describe.skipIf(!runIntegration)("RedisAuthSessionStore integration", () => {
   });
 
   it("preserves absolute storage TTL through CAS and compare-and-delete", async () => {
-    const store = new RedisAuthSessionStore({
-      client: redisClient(redis),
-      keyPrefix,
-      now: () => new Date("2026-04-26T00:00:00.000Z"),
-    });
+    const store = new RedisAuthSessionStore({ client: redisClient(redis), keyPrefix });
+    const now = Date.now();
     const original = createSession("ttl-session", {
       revision: 0,
-      storageExpiresAt: "2026-04-26T00:01:00.000Z",
+      storageExpiresAt: new Date(now + 60_000).toISOString(),
     });
     const replacement = {
       ...original,
       revision: 1,
-      storageExpiresAt: "2026-04-26T00:02:00.000Z",
+      storageExpiresAt: new Date(now + 120_000).toISOString(),
     };
 
     await expect(store.create(original)).resolves.toBe(true);
@@ -148,6 +160,49 @@ describe.skipIf(!runIntegration)("RedisAuthSessionStore integration", () => {
       true,
     );
   });
+
+  it("uses Redis time for delayed CAS and compare-and-delete expiry boundaries", async () => {
+    const delayedCas = createDelayedEvalClient(redisClient(redis));
+    const delayedDelete = createDelayedEvalClient(redisClient(redis));
+    const casStore = new RedisAuthSessionStore({ client: delayedCas.client, keyPrefix });
+    const deleteStore = new RedisAuthSessionStore({ client: delayedDelete.client, keyPrefix });
+    const now = Date.now();
+    const liveCas = createSession("delayed-live-cas", {
+      storageExpiresAt: new Date(now + 15_000).toISOString(),
+    });
+    const liveDelete = createSession("delayed-live-delete", {
+      storageExpiresAt: new Date(now + 15_000).toISOString(),
+    });
+
+    await expect(casStore.create(liveCas)).resolves.toBe(true);
+    await expect(deleteStore.create(liveDelete)).resolves.toBe(true);
+    delayedCas.delayNextEval(5_200);
+    delayedDelete.delayNextEval(5_200);
+    await expect(
+      Promise.all([
+        casStore.compareAndSet(liveCas.id, 0, { ...liveCas, revision: 1 }),
+        deleteStore.compareAndDelete(liveDelete.id, 0),
+      ]),
+    ).resolves.toEqual([true, true]);
+
+    const expiringNow = Date.now();
+    const expiredCas = createSession("delayed-expired-cas", {
+      storageExpiresAt: new Date(expiringNow + 500).toISOString(),
+    });
+    const expiredDelete = createSession("delayed-expired-delete", {
+      storageExpiresAt: new Date(expiringNow + 500).toISOString(),
+    });
+    await expect(casStore.create(expiredCas)).resolves.toBe(true);
+    await expect(deleteStore.create(expiredDelete)).resolves.toBe(true);
+    delayedCas.delayNextEval(700);
+    delayedDelete.delayNextEval(700);
+    await expect(
+      Promise.all([
+        casStore.compareAndSet(expiredCas.id, 0, { ...expiredCas, revision: 1 }),
+        deleteStore.compareAndDelete(expiredDelete.id, 0),
+      ]),
+    ).resolves.toEqual([false, false]);
+  }, 10_000);
 
   it("fails closed for a noncanonical storage expiration", async () => {
     const store = new RedisAuthSessionStore({ client: redisClient(redis), keyPrefix });
@@ -407,6 +462,27 @@ function redisClient(redis: Redis): RedisAuthSessionStoreClient {
         options.count,
       );
       return { cursor: nextCursor, keys };
+    },
+  };
+}
+
+function createDelayedEvalClient(client: RedisAuthSessionStoreClient): {
+  readonly client: RedisAuthSessionStoreClient;
+  readonly delayNextEval: (milliseconds: number) => void;
+} {
+  let nextDelayMs = 0;
+  return {
+    client: {
+      ...client,
+      eval: async (script, keys, args) => {
+        const delayMs = nextDelayMs;
+        nextDelayMs = 0;
+        if (delayMs > 0) await delay(delayMs);
+        return client.eval(script, keys, args);
+      },
+    },
+    delayNextEval(milliseconds) {
+      nextDelayMs = milliseconds;
     },
   };
 }

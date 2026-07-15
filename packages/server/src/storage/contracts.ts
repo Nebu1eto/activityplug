@@ -1,3 +1,9 @@
+export type SecurityStateExpiryMode = "native" | "sweep";
+
+export interface SecurityStateExpiryMetadata {
+  readonly expiryMode?: SecurityStateExpiryMode;
+}
+
 export interface BrowserSessionBase {
   readonly id: string;
   readonly csrfTokenHash: string;
@@ -12,12 +18,36 @@ export type BrowserSessionRecord = BrowserSessionBase &
     | { readonly authenticated: true; readonly activityPlugSessionId: string }
   );
 
-export interface BrowserSessionStore {
+export interface BrowserSessionAdmissionLimits {
+  readonly subject: string;
+  readonly maximumLiveSessions: number;
+  readonly maximumLiveSessionsPerSubject: number;
+  readonly maximumCreationsPerWindow: number;
+  readonly windowMilliseconds: number;
+}
+
+export type BrowserSessionAdmissionResult =
+  | { readonly admitted: true }
+  | {
+      readonly admitted: false;
+      readonly reason: "conflict" | "capacity_exceeded" | "subject_capacity_exceeded";
+    }
+  | {
+      readonly admitted: false;
+      readonly reason: "rate_limited";
+      readonly retryAfterSeconds: number;
+    };
+
+export interface BrowserSessionStore extends SecurityStateExpiryMetadata {
   create(record: BrowserSessionRecord): Promise<boolean>;
+  admit(
+    record: BrowserSessionRecord,
+    limits: BrowserSessionAdmissionLimits,
+  ): Promise<BrowserSessionAdmissionResult>;
   get(id: string): Promise<BrowserSessionRecord | null>;
   compareAndSet(id: string, revision: number, next: BrowserSessionRecord): Promise<boolean>;
   delete(id: string): Promise<void>;
-  deleteExpired(now?: Date): Promise<number>;
+  deleteExpired(now?: Date, limit?: number): Promise<number>;
 }
 
 export interface OAuthStateBinding {
@@ -43,18 +73,20 @@ export interface OAuthStateClaim extends OAuthStateRecord {
   readonly leaseUntil: string;
 }
 
-export interface OAuthStateStore {
+export interface OAuthStateStore extends SecurityStateExpiryMetadata {
   create(record: OAuthStateRecord): Promise<boolean>;
   claim(stateHash: string, leaseUntil: string): Promise<OAuthStateClaim | null>;
   release(claim: OAuthStateClaim): Promise<boolean>;
   consume(claim: OAuthStateClaim): Promise<boolean>;
-  deleteExpired(now?: Date): Promise<number>;
+  deleteExpired(now?: Date, limit?: number): Promise<number>;
 }
 
-export interface OAuthClientSecretStore {
+export interface OAuthClientSecretStore extends SecurityStateExpiryMetadata {
   put(ref: string, secret: string, expiresAt: string): Promise<boolean>;
   take(ref: string): Promise<string | null>;
-  deleteExpired(now?: Date): Promise<number>;
+  get(ref: string): Promise<string | null>;
+  delete(ref: string): Promise<boolean>;
+  deleteExpired(now?: Date, limit?: number): Promise<number>;
 }
 
 export interface StreamTicketRecord {
@@ -96,9 +128,10 @@ export interface OAuthStartLimiter {
   reserve?(input: OAuthStartLimiterInput): Promise<OAuthStartReservationResult>;
 }
 
-export interface ShortCacheStore {
+export interface ShortCacheStore extends SecurityStateExpiryMetadata {
   get(key: string): Promise<Uint8Array | null>;
   take(key: string): Promise<Uint8Array | null>;
   set(key: string, value: Uint8Array, expiresAt: string): Promise<void>;
   delete(key: string): Promise<void>;
+  deleteExpired?(now?: Date, limit?: number): Promise<number>;
 }

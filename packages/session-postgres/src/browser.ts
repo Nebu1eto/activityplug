@@ -1,4 +1,9 @@
-import { type BrowserSessionRecord, type BrowserSessionStore } from "@activityplug/server";
+import {
+  type BrowserSessionAdmissionLimits,
+  type BrowserSessionAdmissionResult,
+  type BrowserSessionRecord,
+  type BrowserSessionStore,
+} from "@activityplug/server";
 import { type Pool } from "pg";
 
 import {
@@ -11,6 +16,7 @@ import {
   type PostgresQueryClient,
   type PostgresQueryResult,
   readClock,
+  resolvePostgresCleanupLimit,
   snapshotBrowserSession,
   timestampMilliseconds,
   validateIdentifier,
@@ -44,10 +50,18 @@ interface IdentifierRow {
   readonly id: string;
 }
 
+interface AdmissionRow {
+  readonly admitted: unknown;
+  readonly reason: unknown;
+  readonly retry_after_seconds: unknown;
+}
+
 const defaultTableName = "activityplug_browser_sessions";
+const defaultRateTableName = "activityplug_browser_session_admission_rates";
 
 export class PostgresBrowserSessionStore implements BrowserSessionStore {
   readonly #client: PostgresBrowserSessionStoreClient;
+  readonly #rateTableName: string;
   readonly #tableName: string;
   readonly #now: () => Date;
 
@@ -57,6 +71,7 @@ export class PostgresBrowserSessionStore implements BrowserSessionStore {
       options.tableName ?? defaultTableName,
       "PostgreSQL browser session table name",
     );
+    this.#rateTableName = admissionRateTableName(this.#tableName);
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -75,6 +90,171 @@ export class PostgresBrowserSessionStore implements BrowserSessionStore {
         [snapshot.id, snapshot, snapshot.revision, snapshot.expiresAt, snapshot.createdAt],
       );
       return result.rows.length === 1;
+    });
+  }
+
+  public async admit(
+    record: BrowserSessionRecord,
+    limits: BrowserSessionAdmissionLimits,
+  ): Promise<BrowserSessionAdmissionResult> {
+    const snapshot = snapshotBrowserSession(record);
+    if (
+      snapshot === null ||
+      snapshot.revision !== 0 ||
+      !Number.isSafeInteger(limits.maximumLiveSessions) ||
+      limits.maximumLiveSessions <= 0 ||
+      typeof limits.subject !== "string" ||
+      limits.subject.length === 0 ||
+      !Number.isSafeInteger(limits.maximumLiveSessionsPerSubject) ||
+      limits.maximumLiveSessionsPerSubject <= 0 ||
+      !Number.isSafeInteger(limits.maximumCreationsPerWindow) ||
+      limits.maximumCreationsPerWindow <= 0 ||
+      !Number.isSafeInteger(limits.windowMilliseconds) ||
+      limits.windowMilliseconds <= 0
+    ) {
+      return { admitted: false, reason: "conflict" };
+    }
+
+    return await withConnection(this.#client, async (client) => {
+      const now = readClock(this.#now);
+      if (timestampMilliseconds(snapshot.expiresAt) <= now.date.getTime()) {
+        return { admitted: false, reason: "conflict" };
+      }
+      const windowEndsAtMilliseconds = now.date.getTime() + limits.windowMilliseconds;
+      if (!Number.isFinite(windowEndsAtMilliseconds) || windowEndsAtMilliseconds > 8.64e15) {
+        return { admitted: false, reason: "conflict" };
+      }
+      const windowEndsAt = new Date(windowEndsAtMilliseconds).toISOString();
+      await client.query("begin isolation level read committed");
+      try {
+        await client.query(
+          `select pg_catalog.pg_advisory_xact_lock(
+             pg_catalog.hashtextextended(
+               'activityplug:${this.#tableName}:browser-session-admission',
+               0
+             )
+           )`,
+        );
+        const result = await client.query<AdmissionRow>(
+          `with admission_state as materialized (
+             select exists(
+                      select 1 from ${this.#tableName} where id = $1
+                    ) as conflicts,
+                    (
+                      select count(*) from ${this.#tableName} where expires_at > $6
+                    ) as live_count,
+                    (
+                      select count(*)
+                      from ${this.#tableName}
+                      where admission_subject = $7
+                        and expires_at > $6
+                    ) as subject_live_count,
+                    coalesce((
+                      select case when window_ends_at > $6 then creation_count else 0 end
+                      from ${this.#rateTableName}
+                      where subject = $7
+                    ), 0) as creation_count,
+                    (
+                      select case
+                        when window_ends_at > $6 then greatest(
+                          1,
+                          ceil(extract(epoch from (window_ends_at - $6)))::bigint
+                        )::text
+                        else null
+                      end
+                      from ${this.#rateTableName}
+                      where subject = $7
+                    ) as retry_after_seconds
+           ), admission_decision as materialized (
+             select case
+                      when conflicts then 'conflict'
+                      when live_count >= $8::bigint then 'capacity_exceeded'
+                      when subject_live_count >= $9::bigint
+                        then 'subject_capacity_exceeded'
+                      when creation_count >= $10::bigint then 'rate_limited'
+                      else null
+                    end as reason,
+                    retry_after_seconds
+             from admission_state
+           ), inserted as (
+             insert into ${this.#tableName}
+               (id, payload, revision, expires_at, created_at, updated_at, admission_subject)
+             select $1, $2, $3, $4, $5, $5, $7
+             from admission_decision
+             where reason is null
+             on conflict (id) do nothing
+             returning id
+           ), updated_rate as (
+             insert into ${this.#rateTableName}
+               (subject, window_ends_at, creation_count, updated_at)
+             select $7, $11, 1, $6
+             from inserted
+             on conflict (subject) do update
+             set window_ends_at = case
+                   when ${this.#rateTableName}.window_ends_at <= $6
+                     then excluded.window_ends_at
+                   else ${this.#rateTableName}.window_ends_at
+                 end,
+                 creation_count = case
+                   when ${this.#rateTableName}.window_ends_at <= $6 then 1
+                   else ${this.#rateTableName}.creation_count + 1
+                 end,
+                 updated_at = excluded.updated_at
+             returning subject
+           )
+           select exists(select 1 from inserted) as admitted,
+                  case
+                    when exists(select 1 from inserted) then null
+                    when admission_decision.reason is not null then admission_decision.reason
+                    else 'conflict'
+                  end as reason,
+                  admission_decision.retry_after_seconds
+           from admission_decision
+           left join updated_rate on true`,
+          [
+            snapshot.id,
+            snapshot,
+            snapshot.revision,
+            snapshot.expiresAt,
+            snapshot.createdAt,
+            now.iso,
+            limits.subject,
+            limits.maximumLiveSessions,
+            limits.maximumLiveSessionsPerSubject,
+            limits.maximumCreationsPerWindow,
+            windowEndsAt,
+          ],
+        );
+        const row = result.rows[0];
+        let admission: BrowserSessionAdmissionResult;
+        if (row?.admitted === true && row.reason === null) {
+          admission = { admitted: true };
+        } else if (
+          row?.admitted === false &&
+          (row.reason === "conflict" ||
+            row.reason === "capacity_exceeded" ||
+            row.reason === "subject_capacity_exceeded")
+        ) {
+          admission = { admitted: false, reason: row.reason };
+        } else if (row?.admitted === false && row.reason === "rate_limited") {
+          const retryAfterSeconds = parseRevision(row.retry_after_seconds);
+          if (retryAfterSeconds === null || retryAfterSeconds < 1) {
+            throw new TypeError("PostgreSQL browser admission returned an invalid retry delay.");
+          }
+          admission = { admitted: false, reason: row.reason, retryAfterSeconds };
+        } else {
+          throw new TypeError("PostgreSQL browser admission returned an unexpected result.");
+        }
+        await client.query("commit");
+        return admission;
+      } catch (error) {
+        try {
+          await client.query("rollback");
+        } catch {
+          // Preserve the admission error; withConnection discards the connection.
+        }
+        throw error;
+      }
     });
   }
 
@@ -172,10 +352,25 @@ export class PostgresBrowserSessionStore implements BrowserSessionStore {
     await this.#client.query(`delete from ${this.#tableName} where id = $1`, [id]);
   }
 
-  public async deleteExpired(now?: Date): Promise<number> {
+  public async deleteExpired(now?: Date, limit?: number): Promise<number> {
+    const cleanupLimit = resolvePostgresCleanupLimit(limit);
     return await withConnection(this.#client, async (client) => {
       const checkedAt = readClock(() => now ?? this.#now());
-      return await deleteExpiredRows(client, this.#tableName, checkedAt.iso);
+      await client.query(
+        `with expired as (
+           select ctid
+           from ${this.#rateTableName}
+           where window_ends_at <= $1
+           order by window_ends_at, ctid
+           limit $2
+           for update skip locked
+         )
+         delete from ${this.#rateTableName} as target
+         using expired
+         where target.ctid = expired.ctid`,
+        [checkedAt.iso, cleanupLimit],
+      );
+      return await deleteExpiredRows(client, this.#tableName, checkedAt.iso, cleanupLimit);
     });
   }
 }
@@ -204,6 +399,19 @@ export async function createPostgresBrowserSessionTable(options: {
     defaultTableName,
     "activityplug_browser_sessions_expires_at_idx",
   );
+  const subjectExpiryIndex = indexName(
+    tableName,
+    "subject_expires_at_idx",
+    defaultTableName,
+    "activityplug_browser_sessions_subject_expiry_idx",
+  );
+  const rateTableName = admissionRateTableName(tableName);
+  const rateExpiryIndex = indexName(
+    rateTableName,
+    "window_ends_at_idx",
+    defaultRateTableName,
+    "activityplug_browser_admission_rates_window_end_idx",
+  );
   await options.client.query(`
     select pg_catalog.pg_advisory_xact_lock(
       pg_catalog.hashtextextended('activityplug:${tableName}:migration', 0)
@@ -216,14 +424,41 @@ export async function createPostgresBrowserSessionTable(options: {
       created_at timestamptz not null,
       updated_at timestamptz not null
     );
+    alter table ${tableName} add column if not exists admission_subject text;
+    create table if not exists ${rateTableName} (
+      subject text primary key,
+      window_ends_at timestamptz not null,
+      creation_count bigint not null check (creation_count > 0),
+      updated_at timestamptz not null
+    );
+    create index if not exists ${rateExpiryIndex}
+      on ${rateTableName} (window_ends_at);
+    ${exactIndexDefinitionSql({
+      indexName: rateExpiryIndex,
+      tableName: rateTableName,
+      columns: ["window_ends_at"],
+    })};
     create index if not exists ${expiryIndex}
       on ${tableName} (expires_at);
     ${exactIndexDefinitionSql({
       indexName: expiryIndex,
       tableName,
       columns: ["expires_at"],
+    })};
+    create index if not exists ${subjectExpiryIndex}
+      on ${tableName} (admission_subject, expires_at)
+      where admission_subject is not null;
+    ${exactIndexDefinitionSql({
+      indexName: subjectExpiryIndex,
+      tableName,
+      columns: ["admission_subject", "expires_at"],
+      predicate: "admission_subject IS NOT NULL",
     })}
   `);
+}
+
+function admissionRateTableName(tableName: string): string {
+  return indexName(tableName, "admission_rates", defaultTableName, defaultRateTableName);
 }
 
 function validBrowserSessionSql(nowParameter: "$6"): string {

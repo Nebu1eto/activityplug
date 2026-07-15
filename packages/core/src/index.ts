@@ -1,4 +1,5 @@
 export * from "./auth/oauth.js";
+export * from "./auth/credential-lease.js";
 export * from "./auth/service.js";
 export * from "./auth/types.js";
 export * from "./adapters/client.js";
@@ -9,7 +10,9 @@ export * from "./adapters/page.js";
 export * from "./capabilities/capability.js";
 export * from "./errors/error.js";
 export * from "./http/vetted-fetch.js";
+export * from "./http/remote-authority.js";
 export * from "./ids/opaque-id.js";
+export * from "./security/budget.js";
 export * from "./types/entities.js";
 export * from "./types/datetime.js";
 export * from "./types/streaming.js";

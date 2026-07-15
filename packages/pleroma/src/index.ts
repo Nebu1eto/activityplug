@@ -45,6 +45,7 @@ export type PleromaAdapterOptions = Omit<
   | "supportsRefreshToken"
   | "supportsLocalVisibility"
   | "quoteStatusParameter"
+  | "streamingAuthentication"
   | "detectedCapabilities"
 >;
 
@@ -96,7 +97,7 @@ export function createPleromaAdapter(options: PleromaAdapterOptions = {}): Activ
     supportsRefreshToken: true,
     supportsLocalVisibility: true,
     quoteStatusParameter: "quote_id",
-    streamingAuthentication: options.streamingAuthentication ?? "legacy-query",
+    streamingAuthentication: "websocket-subprotocol",
     detectedCapabilities: pleromaDetectedCapabilities,
   });
   return {

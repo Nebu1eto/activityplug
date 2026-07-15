@@ -62,6 +62,9 @@ importers:
       '@activityplug/misskey':
         specifier: workspace:*
         version: link:../../packages/misskey
+      '@activityplug/server':
+        specifier: workspace:*
+        version: link:../../packages/server
       '@activityplug/test-fixtures':
         specifier: workspace:*
         version: link:../../packages/test-fixtures

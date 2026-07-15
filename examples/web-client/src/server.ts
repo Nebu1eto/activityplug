@@ -121,22 +121,27 @@ export async function createProductServer(
     return activityPlug;
   };
   const discardDurableResources = async (): Promise<void> => {
+    const productServer = activityPlug;
     const resources = durableResources;
     durableResources = undefined;
     activityPlug = undefined;
+    await productServer?.close();
     await resources?.close();
   };
   const resetAfterFailedStart = (): void => {
     if (lifecycle !== "closed") lifecycle = "ready";
   };
-  const close = async (): Promise<void> => {
-    if (lifecycle === "closed") return;
-    lifecycle = "closed";
-    try {
-      await Promise.all([...startedServers].map(closeListeningServer));
-    } finally {
-      await discardDurableResources();
-    }
+  let closePromise: Promise<void> | undefined;
+  const close = (): Promise<void> => {
+    closePromise ??= (async () => {
+      lifecycle = "closed";
+      try {
+        await Promise.all([...startedServers].map(closeListeningServer));
+      } finally {
+        await discardDurableResources();
+      }
+    })();
+    return closePromise;
   };
 
   return {
@@ -249,8 +254,8 @@ function parseStorageMode(value: string | undefined): ProductStorageMode {
 }
 
 function parseAnonymousSessionMode(value: string | undefined): BrowserAnonymousSessionMode {
-  if (value === undefined || value === "" || value === "stored") return "stored";
-  if (value === "stateless") return "stateless";
+  if (value === undefined || value === "" || value === "stateless") return "stateless";
+  if (value === "stored") return "stored";
   throw new RangeError("ACTIVITYPLUG_ANONYMOUS_SESSION_MODE must be either stored or stateless.");
 }
 

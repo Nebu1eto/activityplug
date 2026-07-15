@@ -1,12 +1,23 @@
 import {
-  createActivityPlugClient,
+  createActivityPlugClient as createActivityPlugClientWithAuthority,
+  createRemoteAuthority,
   MAX_STREAMING_QUEUED_BYTES,
   MAX_STREAMING_QUEUED_EVENTS,
+  type ActivityPlugClientOptions,
 } from "@activityplug/core";
 import { accountMappingFixtures } from "@activityplug/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createMastodonBaseAdapter } from "./index.js";
+
+function createActivityPlugClient(options: ActivityPlugClientOptions) {
+  const { fetch = globalThis.fetch, remoteAuthority, ...clientOptions } = options;
+  const transport: typeof globalThis.fetch = (input, init) => fetch(input, init);
+  return createActivityPlugClientWithAuthority({
+    ...clientOptions,
+    remoteAuthority: remoteAuthority ?? createRemoteAuthority({ transport }),
+  });
+}
 
 describe("Mastodon-compatible streaming", () => {
   beforeEach(() => {
@@ -286,7 +297,7 @@ describe("Mastodon-compatible streaming", () => {
       fetch: instanceDiscoveryFetch({
         configuration: {
           urls: {
-            streaming: "https://stream.example/edge/base?route=blue&access_token=advertised-secret",
+            streaming: "https://mastodon.example/edge/base?route=blue",
           },
         },
       }),
@@ -297,7 +308,7 @@ describe("Mastodon-compatible streaming", () => {
     await waitForSocket(sockets);
 
     expect(sockets[0]?.url).toBe(
-      "wss://stream.example/edge/base/api/v1/streaming/?route=blue&stream=user%3Anotification",
+      "wss://mastodon.example/edge/base/api/v1/streaming/?route=blue&stream=user%3Anotification",
     );
     expect(factoryCalls[0]?.[3]).toEqual({
       operation: "stream.notifications",
@@ -305,6 +316,216 @@ describe("Mastodon-compatible streaming", () => {
     });
     sockets[0]?.remoteClose();
     await expect(pending).resolves.toEqual({ done: true, value: undefined });
+  });
+
+  it.each([
+    [
+      "URL user information",
+      "https://viewer:secret@mastodon.example/socket",
+      "UNSUPPORTED_OPERATION",
+    ],
+    ["access_token", "https://mastodon.example/socket?access_token=secret", "ORIGIN_NOT_ALLOWED"],
+    ["token", "https://mastodon.example/socket?token=secret", "ORIGIN_NOT_ALLOWED"],
+    ["api_key", "https://mastodon.example/socket?api_key=secret", "ORIGIN_NOT_ALLOWED"],
+    ["ticket", "https://mastodon.example/socket?ticket=secret", "ORIGIN_NOT_ALLOWED"],
+    ["i", "https://mastodon.example/socket?i=secret", "ORIGIN_NOT_ALLOWED"],
+    ["code", "https://mastodon.example/socket?code=secret", "ORIGIN_NOT_ALLOWED"],
+    ["state", "https://mastodon.example/socket?state=secret", "ORIGIN_NOT_ALLOWED"],
+  ])("rejects advertised streaming credentials in %s", async (_label, endpoint, code) => {
+    const webSocket = vi.fn(() => new FakeWebSocket("unused") as unknown as WebSocket);
+    const client = createActivityPlugClient({
+      adapter: createMastodonBaseAdapter({
+        id: "mastodon",
+        displayName: "Mastodon",
+        supportedSoftware: ["mastodon"],
+        webSocket,
+      }),
+      origin: "https://mastodon.example",
+      fetch: instanceDiscoveryFetch({ configuration: { urls: { streaming: endpoint } } }),
+    });
+
+    const stream = await client.streams.timeline({ type: "public" });
+    const error = await stream[Symbol.asyncIterator]()
+      .next()
+      .catch((cause: unknown) => cause);
+
+    expect(error).toMatchObject({
+      code,
+      context: { operation: "stream.timeline", origin: "https://mastodon.example" },
+    });
+    expect(JSON.stringify(error)).not.toContain("secret");
+    expect(webSocket).not.toHaveBeenCalled();
+  });
+
+  it("applies same-origin WebSocket credential representation policy", async () => {
+    const fetch = instanceDiscoveryFetch({});
+    const transport: typeof globalThis.fetch = (input, init) => fetch(input, init);
+    const webSocket = vi.fn(() => new FakeWebSocket("unused") as unknown as WebSocket);
+    const client = createActivityPlugClient({
+      adapter: createMastodonBaseAdapter({
+        id: "mastodon",
+        displayName: "Mastodon",
+        supportedSoftware: ["mastodon"],
+        webSocket,
+      }),
+      origin: "https://mastodon.example",
+      remoteAuthority: createRemoteAuthority({
+        transport,
+        sameOriginRepresentations: [],
+      }),
+    });
+    const session = await client.auth.token.importToken({ accessToken: "viewer-secret" });
+    const stream = await client.streams.notifications({ session });
+
+    await expect(stream[Symbol.asyncIterator]().next()).rejects.toMatchObject({
+      code: "ORIGIN_NOT_ALLOWED",
+      context: { operation: "stream.notifications" },
+    });
+    expect(webSocket).not.toHaveBeenCalled();
+  });
+
+  it("applies same-origin WebSocket subprotocol policy", async () => {
+    const fetch = instanceDiscoveryFetch(
+      {},
+      { origin: "https://pleroma.example", softwareName: "pleroma", version: "2.7.1" },
+    );
+    const transport: typeof globalThis.fetch = (input, init) => fetch(input, init);
+    const webSocket = vi.fn(() => new FakeWebSocket("unused") as unknown as WebSocket);
+    const client = createActivityPlugClient({
+      adapter: createMastodonBaseAdapter({
+        id: "pleroma",
+        displayName: "Pleroma",
+        supportedSoftware: ["pleroma"],
+        streamingAuthentication: "websocket-subprotocol",
+        webSocket,
+      }),
+      origin: "https://pleroma.example",
+      remoteAuthority: createRemoteAuthority({
+        transport,
+        sameOriginRepresentations: ["authorization-header"],
+      }),
+    });
+    const session = await client.auth.token.importToken({ accessToken: "viewer-secret" });
+    const stream = await client.streams.notifications({ session });
+
+    await expect(stream[Symbol.asyncIterator]().next()).rejects.toMatchObject({
+      code: "ORIGIN_NOT_ALLOWED",
+      context: { operation: "stream.notifications" },
+    });
+    expect(webSocket).not.toHaveBeenCalled();
+  });
+
+  it("rejects authenticated cross-origin discovery before socket creation", async () => {
+    const webSocket = vi.fn(() => new FakeWebSocket("unused") as unknown as WebSocket);
+    const client = createActivityPlugClient({
+      adapter: createMastodonBaseAdapter({
+        id: "mastodon",
+        displayName: "Mastodon",
+        supportedSoftware: ["mastodon"],
+        webSocket,
+      }),
+      origin: "https://mastodon.example",
+      fetch: instanceDiscoveryFetch({
+        configuration: {
+          urls: { streaming: "https://stream.example/socket?access_token=advertised-secret" },
+        },
+      }),
+    });
+    const session = await client.auth.token.importToken({ accessToken: "viewer-secret" });
+    const stream = await client.streams.notifications({ session });
+
+    const error = await stream[Symbol.asyncIterator]()
+      .next()
+      .catch((cause: unknown) => cause);
+
+    expect(webSocket).not.toHaveBeenCalled();
+    expect(error).toMatchObject({
+      code: "ORIGIN_NOT_ALLOWED",
+      context: { operation: "stream.notifications", origin: "https://stream.example" },
+    });
+    expect(String(error)).not.toContain("viewer-secret");
+    expect(JSON.stringify(error)).not.toContain("viewer-secret");
+    expect(JSON.stringify(error)).not.toContain("advertised-secret");
+  });
+
+  it("allows an authenticated cross-origin stream only with an exact directional grant", async () => {
+    const sockets: FakeWebSocket[] = [];
+    const fetch = instanceDiscoveryFetch({
+      configuration: { urls: { streaming: "https://stream.example/socket" } },
+    });
+    const transport: typeof globalThis.fetch = (input, init) => fetch(input, init);
+    const client = createActivityPlugClient({
+      adapter: createMastodonBaseAdapter({
+        id: "mastodon",
+        displayName: "Mastodon",
+        supportedSoftware: ["mastodon"],
+        webSocket: (url) => {
+          const socket = new FakeWebSocket(url);
+          sockets.push(socket);
+          return socket as unknown as WebSocket;
+        },
+      }),
+      origin: "https://mastodon.example",
+      remoteAuthority: createRemoteAuthority({
+        transport,
+        credentialGrants: [
+          {
+            issuer: "https://mastodon.example",
+            recipient: "https://stream.example",
+            operation: "stream.notifications",
+            credentialClass: "oauth-access-token",
+            representations: ["authorization-header"],
+          },
+        ],
+      }),
+    });
+    const session = await client.auth.token.importToken({ accessToken: "viewer-secret" });
+    const stream = await client.streams.notifications({ session });
+    const pending = stream[Symbol.asyncIterator]().next();
+    await waitForSocket(sockets);
+
+    expect(sockets[0]?.url).toBe(
+      "wss://stream.example/socket/api/v1/streaming/?stream=user%3Anotification",
+    );
+    sockets[0]?.remoteClose();
+    await expect(pending).resolves.toEqual({ done: true, value: undefined });
+  });
+
+  it("rejects a cross-origin stream when the grant operation is a near miss", async () => {
+    const fetch = instanceDiscoveryFetch({
+      configuration: { urls: { streaming: "https://stream.example/socket" } },
+    });
+    const transport: typeof globalThis.fetch = (input, init) => fetch(input, init);
+    const webSocket = vi.fn(() => new FakeWebSocket("unused") as unknown as WebSocket);
+    const client = createActivityPlugClient({
+      adapter: createMastodonBaseAdapter({
+        id: "mastodon",
+        displayName: "Mastodon",
+        supportedSoftware: ["mastodon"],
+        webSocket,
+      }),
+      origin: "https://mastodon.example",
+      remoteAuthority: createRemoteAuthority({
+        transport,
+        credentialGrants: [
+          {
+            issuer: "https://mastodon.example",
+            recipient: "https://stream.example",
+            operation: "stream.timeline",
+            credentialClass: "oauth-access-token",
+            representations: ["authorization-header"],
+          },
+        ],
+      }),
+    });
+    const session = await client.auth.token.importToken({ accessToken: "viewer-secret" });
+    const stream = await client.streams.notifications({ session });
+
+    await expect(stream[Symbol.asyncIterator]().next()).rejects.toMatchObject({
+      code: "ORIGIN_NOT_ALLOWED",
+      context: { operation: "stream.notifications" },
+    });
+    expect(webSocket).not.toHaveBeenCalled();
   });
 
   it("uses a legacy advertised streaming base after the v2 fallback", async () => {
@@ -818,7 +1039,12 @@ async function waitForSocketCount(
 
 function instanceDiscoveryFetch(
   instance: Record<string, unknown>,
-  options: { readonly legacy?: boolean; readonly origin?: string; readonly version?: string } = {},
+  options: {
+    readonly legacy?: boolean;
+    readonly origin?: string;
+    readonly softwareName?: string;
+    readonly version?: string;
+  } = {},
 ): typeof globalThis.fetch {
   const origin = options.origin ?? "https://mastodon.example";
   const domain = new URL(origin).host;
@@ -836,7 +1062,7 @@ function instanceDiscoveryFetch(
       });
     }
     if (url.pathname === "/nodeinfo/2.1") {
-      return Response.json({ software: { name: "mastodon", version } });
+      return Response.json({ software: { name: options.softwareName ?? "mastodon", version } });
     }
     if (url.pathname === "/api/v2/instance") {
       if (options.legacy === true) return Response.json({ error: "not found" }, { status: 404 });

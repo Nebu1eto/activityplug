@@ -11,6 +11,7 @@ export * from "./graphql/schema.js";
 export * from "./http/app.js";
 export * from "./runtime/logging.js";
 export * from "./runtime/server.js";
+export * from "./runtime/security-state-lifecycle.js";
 export * from "./security/graphql-limits.js";
 export * from "./security/node-egress.js";
 export {
@@ -24,5 +25,6 @@ export {
 } from "./security/node-websocket-egress.js";
 export * from "./security/origin-policy.js";
 export * from "./security/request-limits.js";
+export * from "./security/remote-authority.js";
 export * from "./storage/contracts.js";
 export * from "./storage/in-memory.js";

@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { capability, createCapabilitySet } from "../capabilities/capability.js";
+import { createRemoteAuthority } from "../http/remote-authority.js";
 import { createEntityRef } from "../ids/opaque-id.js";
+import { BudgetScope } from "../security/budget.js";
+import { budgetResponseBody, getRequestBudget } from "../security/request-budget.js";
 import {
   createActivityPlugClient,
   MAX_PROFILE_FIELDS,
@@ -10,6 +13,405 @@ import {
 } from "./client.js";
 
 describe("library-mode clients", () => {
+  it("creates a fresh budget scope for each public adapter operation", async () => {
+    const scopes: BudgetScope[] = [];
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet(),
+      },
+      instances: {
+        getProfile: async (_input, context) => {
+          if (context.budget !== undefined) scopes.push(context.budget);
+          return undefined as never;
+        },
+      },
+    };
+    const createBudgetScope = vi.fn(
+      () => new BudgetScope({ operation: "instance.get", limits: { requests: 1 } }),
+    );
+    const client = createActivityPlugClient({
+      adapter,
+      origin: "https://social.example",
+      createBudgetScope,
+    });
+
+    await client.instances.getProfile();
+    await client.instances.getProfile();
+
+    expect(createBudgetScope).toHaveBeenCalledTimes(2);
+    expect(createBudgetScope).toHaveBeenCalledWith({
+      adapterId: "fake",
+      operation: "instance.get",
+      origin: "https://social.example",
+    });
+    expect(scopes).toHaveLength(2);
+    expect(scopes[0]).not.toBe(scopes[1]);
+  });
+
+  it("shares one budget across nested remote requests and enforces cumulative charges", async () => {
+    const scopes: BudgetScope[] = [];
+    const transport = vi.fn(async () => Response.json({}));
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet(),
+      },
+      instances: {
+        getProfile: async (_input, context) => {
+          if (context.budget !== undefined) scopes.push(context.budget);
+          await (await context.fetch("https://social.example/first")).text();
+          await (await context.fetch("https://social.example/second")).text();
+          await (await context.fetch("https://social.example/third")).text();
+          return undefined as never;
+        },
+      },
+    };
+    const client = createActivityPlugClient({
+      adapter,
+      origin: "https://social.example",
+      remoteAuthority: createRemoteAuthority({ transport }),
+      createBudgetScope: ({ operation }) =>
+        new BudgetScope({
+          operation: operation ?? "unknown",
+          limits: { concurrency: 1, requests: 2 },
+        }),
+    });
+
+    await expect(client.instances.getProfile()).rejects.toMatchObject({
+      code: "REQUEST_LIMIT_EXCEEDED",
+      dimension: "requests",
+      context: { operation: "instance.get" },
+    });
+    expect(transport).toHaveBeenCalledTimes(2);
+    expect(scopes).toHaveLength(1);
+    expect(scopes[0]?.snapshot().used).toMatchObject({ concurrency: 0, requests: 2 });
+  });
+
+  it("holds remote concurrency until the response body is cancelled", async () => {
+    let budget: BudgetScope | undefined;
+    let headerConcurrency = -1;
+    let cancelledConcurrency = -1;
+    let exhausted: unknown;
+    const transport = vi.fn(
+      async () => new Response(new ReadableStream<Uint8Array>({ pull() {} })),
+    );
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet(),
+      },
+      instances: {
+        getProfile: async (_input, context) => {
+          const response = await context.fetch("https://social.example/first");
+          headerConcurrency = context.budget?.snapshot().used.concurrency ?? -1;
+          try {
+            await context.fetch("https://social.example/second");
+          } catch (cause) {
+            exhausted = cause;
+          }
+          await response.body?.cancel("not needed");
+          cancelledConcurrency = context.budget?.snapshot().used.concurrency ?? -1;
+          return undefined as never;
+        },
+      },
+    };
+    const client = createActivityPlugClient({
+      adapter,
+      origin: "https://social.example",
+      remoteAuthority: createRemoteAuthority({ transport }),
+      createBudgetScope: ({ operation }) => {
+        budget = new BudgetScope({
+          operation: operation ?? "unknown",
+          limits: { concurrency: 1 },
+        });
+        return budget;
+      },
+    });
+
+    await client.instances.getProfile();
+
+    expect(headerConcurrency).toBe(1);
+    expect(exhausted).toMatchObject({
+      code: "REQUEST_LIMIT_EXCEEDED",
+      dimension: "concurrency",
+    });
+    expect(cancelledConcurrency).toBe(0);
+    expect(budget?.snapshot().used.concurrency).toBe(0);
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
+  it("releases concurrency with an already budget-guarded response at EOF", async () => {
+    let headerConcurrency = -1;
+    let eofConcurrency = -1;
+    let finalBytes = -1;
+    const transport = vi.fn<typeof fetch>(async (input) => {
+      const request = input instanceof Request ? input : new Request(input);
+      const budget = getRequestBudget(request);
+      if (budget === undefined) throw new TypeError("missing request budget");
+      return budgetResponseBody(new Response("ok"), budget);
+    });
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet(),
+      },
+      instances: {
+        getProfile: async (_input, context) => {
+          const response = await context.fetch("https://social.example/data");
+          headerConcurrency = context.budget?.snapshot().used.concurrency ?? -1;
+          await response.text();
+          const snapshot = context.budget?.snapshot();
+          eofConcurrency = snapshot?.used.concurrency ?? -1;
+          finalBytes = snapshot?.used.bytes ?? -1;
+          return undefined as never;
+        },
+      },
+    };
+    const client = createActivityPlugClient({
+      adapter,
+      origin: "https://social.example",
+      remoteAuthority: createRemoteAuthority({ transport }),
+      createBudgetScope: ({ operation }) =>
+        new BudgetScope({ operation: operation ?? "unknown", limits: { concurrency: 1 } }),
+    });
+
+    await client.instances.getProfile();
+
+    expect(headerConcurrency).toBe(1);
+    expect(eofConcurrency).toBe(0);
+    expect(finalBytes).toBe(2);
+  });
+
+  it("releases concurrency immediately when the remote transport rejects", async () => {
+    const expected = new TypeError("transport failed");
+    let budget: BudgetScope | undefined;
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet(),
+      },
+      instances: {
+        getProfile: async (_input, context) => {
+          await context.fetch("https://social.example/data");
+          return undefined as never;
+        },
+      },
+    };
+    const client = createActivityPlugClient({
+      adapter,
+      origin: "https://social.example",
+      remoteAuthority: createRemoteAuthority({
+        transport: vi.fn(async () => Promise.reject(expected)),
+      }),
+      createBudgetScope: ({ operation }) => {
+        budget = new BudgetScope({ operation: operation ?? "unknown" });
+        return budget;
+      },
+    });
+
+    await expect(client.instances.getProfile()).rejects.toBe(expected);
+    expect(budget?.snapshot().used.concurrency).toBe(0);
+  });
+
+  it("keeps the operation budget on the request and guards response reads", async () => {
+    const scopes: BudgetScope[] = [];
+    let requestBudget: BudgetScope | undefined;
+    let responseCancelled = false;
+    const transport = vi.fn<typeof fetch>(async (input) => {
+      const request = input instanceof Request ? input : new Request(input);
+      requestBudget = getRequestBudget(request);
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("12"));
+            controller.enqueue(new TextEncoder().encode("34"));
+          },
+          cancel() {
+            responseCancelled = true;
+          },
+        }),
+      );
+    });
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet(),
+      },
+      instances: {
+        getProfile: async (_input, context) => {
+          if (context.budget !== undefined) scopes.push(context.budget);
+          await (await context.fetch("https://social.example/data")).text();
+          return undefined as never;
+        },
+      },
+    };
+    const client = createActivityPlugClient({
+      adapter,
+      origin: "https://social.example",
+      remoteAuthority: createRemoteAuthority({ transport }),
+      createBudgetScope: ({ operation }) =>
+        new BudgetScope({ operation: operation ?? "unknown", limits: { bytes: 3 } }),
+    });
+
+    await expect(client.instances.getProfile()).rejects.toMatchObject({
+      code: "REQUEST_LIMIT_EXCEEDED",
+      dimension: "bytes",
+    });
+    expect(requestBudget).toBe(scopes[0]);
+    expect(scopes[0]?.snapshot().used).toMatchObject({ bytes: 2, reads: 2, requests: 1 });
+    expect(responseCancelled).toBe(true);
+  });
+
+  it("checks the deadline before admitting an adapter operation", async () => {
+    const getProfile = vi.fn(async () => undefined as never);
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet(),
+      },
+      instances: { getProfile },
+    };
+    let now = 0;
+    const client = createActivityPlugClient({
+      adapter,
+      origin: "https://social.example",
+      createBudgetScope: ({ operation }) =>
+        new BudgetScope({
+          operation: operation ?? "unknown",
+          limits: { deadline: 1 },
+          now: () => {
+            const current = now;
+            now += 2;
+            return current;
+          },
+        }),
+    });
+
+    await expect(client.instances.getProfile()).rejects.toMatchObject({
+      code: "REQUEST_LIMIT_EXCEEDED",
+      dimension: "deadline",
+      context: { operation: "instance.get" },
+    });
+    expect(getProfile).not.toHaveBeenCalled();
+  });
+
+  it("checks the deadline after a no-fetch adapter operation completes", async () => {
+    let now = 0;
+    const getProfile = vi.fn(async () => {
+      now = 2;
+      return undefined as never;
+    });
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet(),
+      },
+      instances: { getProfile },
+    };
+    const client = createActivityPlugClient({
+      adapter,
+      origin: "https://social.example",
+      createBudgetScope: ({ operation }) =>
+        new BudgetScope({
+          operation: operation ?? "unknown",
+          limits: { deadline: 1 },
+          now: () => now,
+        }),
+    });
+
+    await expect(client.instances.getProfile()).rejects.toMatchObject({
+      code: "REQUEST_LIMIT_EXCEEDED",
+      dimension: "deadline",
+      context: { operation: "instance.get" },
+    });
+    expect(getProfile).toHaveBeenCalledOnce();
+  });
+
+  it("preserves adapter rejections instead of replacing them with deadline errors", async () => {
+    let now = 0;
+    const expected = new TypeError("adapter failed");
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet(),
+      },
+      instances: {
+        getProfile: async () => {
+          now = 2;
+          throw expected;
+        },
+      },
+    };
+    const client = createActivityPlugClient({
+      adapter,
+      origin: "https://social.example",
+      createBudgetScope: ({ operation }) =>
+        new BudgetScope({
+          operation: operation ?? "unknown",
+          limits: { deadline: 1 },
+          now: () => now,
+        }),
+    });
+
+    await expect(client.instances.getProfile()).rejects.toBe(expected);
+  });
+
+  it("rejects a mismatched adapter budget before adapter execution", async () => {
+    const getProfile = vi.fn(async () => undefined as never);
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet(),
+      },
+      instances: { getProfile },
+    };
+    const client = createActivityPlugClient({
+      adapter,
+      origin: "https://social.example",
+      createBudgetScope: () => new BudgetScope({ operation: "wrong.operation" }),
+    });
+
+    await expect(client.instances.getProfile()).rejects.toMatchObject({
+      code: "VALIDATION_FAILED",
+      context: {
+        operation: "instance.get",
+        raw: { budgetOperation: "wrong.operation" },
+      },
+    });
+    expect(getProfile).not.toHaveBeenCalled();
+  });
+
   it("rejects profile field overflow before adapter I/O and accepts the exact limit", async () => {
     const updateProfile = vi.fn(async () => undefined as never);
     const adapter: ActivityPlugAdapter = {
@@ -121,9 +523,8 @@ describe("library-mode clients", () => {
     expect(origins).toEqual(["https://override.example"]);
   });
 
-  it("passes the configured remote fetch through every operation context", async () => {
-    const remoteFetch = vi.fn<typeof fetch>(async () => new Response("ok"));
-    let receivedFetch: typeof fetch | undefined;
+  it("passes scoped remote authority fetch through operation contexts", async () => {
+    const remoteFetch = vi.fn(async () => new Response("ok"));
     const adapter: ActivityPlugAdapter = {
       metadata: {
         id: "fake",
@@ -134,7 +535,7 @@ describe("library-mode clients", () => {
       },
       instances: {
         getProfile: async (_input, context) => {
-          receivedFetch = context.fetch;
+          await context.fetch("https://social.example/api/v1/instance");
           return {
             ref: {
               ...createEntityRef({
@@ -159,12 +560,18 @@ describe("library-mode clients", () => {
     const client = createActivityPlugClient({
       adapter,
       origin: "https://social.example",
-      fetch: remoteFetch,
+      remoteAuthority: { fetch: remoteFetch },
     });
 
     await client.instances.getProfile();
 
-    expect(receivedFetch).toBe(remoteFetch);
+    expect(remoteFetch).toHaveBeenCalledOnce();
+    expect(remoteFetch).toHaveBeenCalledWith("https://social.example/api/v1/instance", undefined, {
+      destination: "https://social.example",
+      credentialIssuer: "https://social.example",
+      operation: "instance.get",
+      credentialClass: "oauth-access-token",
+    });
   });
 
   it.each([null, {}, "fetch"])(
@@ -194,6 +601,37 @@ describe("library-mode clients", () => {
       );
     },
   );
+
+  it("fails closed before network I/O when remote authority is omitted", async () => {
+    const originalFetch = globalThis.fetch;
+    const globalFetch = vi.fn<typeof fetch>(async () => new Response("unexpected"));
+    globalThis.fetch = globalFetch;
+    const adapter: ActivityPlugAdapter = {
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet(),
+      },
+      instances: {
+        getProfile: async (_input, context) => {
+          await context.fetch("https://social.example/api/v1/instance");
+          throw new Error("unreachable");
+        },
+      },
+    };
+    try {
+      const client = createActivityPlugClient({ adapter, origin: "https://social.example" });
+      await expect(client.instances.getProfile()).rejects.toMatchObject({
+        code: "ORIGIN_NOT_ALLOWED",
+        context: expect.objectContaining({ operation: "instance.get" }),
+      });
+      expect(globalFetch).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 
   it("canonicalizes public origins and rejects non-origin URLs", () => {
     const adapter: ActivityPlugAdapter = {

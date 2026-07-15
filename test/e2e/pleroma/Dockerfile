@@ -18,7 +18,7 @@ COPY --from=pleroma_source . .
 RUN apk add --no-cache \
       ca-certificates=20260611-r0 \
       cmake=4.1.3-r0 \
-      curl=8.19.0-r0 \
+      curl=8.20.0-r0 \
       file-dev=5.46-r2 \
       g++=15.2.0-r2 \
       gcc=15.2.0-r2 \

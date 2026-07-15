@@ -3,16 +3,17 @@ import {
   createActivityPlugClient,
   createCapabilitySet,
   createEntityRef,
+  createRemoteAuthority,
   decodePageCursor,
   InMemoryAuthSessionStore,
   type AuthSession,
 } from "@activityplug/core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createMastodonBaseAdapter } from "./index.js";
-import { mastodonPageInfoForOperation, postFromResponse } from "./internals.js";
+import { mastodonPageInfoForOperation, postFromResponse, revokeToken } from "./internals.js";
 import { remoteError, tokenHeader } from "./transport.js";
-import type { MastodonStatusResponse } from "./types.js";
+import { type MastodonStatusResponse } from "./types.js";
 
 describe("Mastodon post viewer state", () => {
   it.each(["ORIGIN_NOT_ALLOWED", "REQUEST_LIMIT_EXCEEDED"] as const)(
@@ -52,7 +53,7 @@ describe("Mastodon post viewer state", () => {
         },
       },
       origin: "https://social.example",
-      fetch: authenticatedPostFetch,
+      remoteAuthority: createRemoteAuthority({ transport: authenticatedPostFetch }),
     });
     const session = await client.auth.token.importToken({ accessToken: "viewer-token" });
 
@@ -233,6 +234,100 @@ describe("Mastodon post viewer state", () => {
     expect(pageInfo.startCursor).toBeUndefined();
   });
 });
+
+describe("Mastodon OAuth revocation", () => {
+  it("sends the registered client credentials and token in the revoke body", async () => {
+    let requestBody = "";
+    const fetch = vi.fn<typeof globalThis.fetch>(async (request) => {
+      requestBody = await new Request(request).text();
+      return new Response(null, { status: 200 });
+    });
+    await revokeToken(
+      {
+        session: oauthSessionWithClientCredential(),
+      },
+      {
+        adapterId: "mastodon",
+        origin: "https://social.example",
+        fetch,
+        credentialLeases: { resolve: async () => "client-secret" },
+      },
+      mastodonOptions(),
+    );
+
+    expect(Object.fromEntries(new URLSearchParams(requestBody))).toEqual({
+      client_id: "client-id",
+      client_secret: "client-secret",
+      token: "access-token",
+    });
+  });
+
+  it("fails before network access when the credential lease is unavailable", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    await expect(
+      revokeToken(
+        { session: oauthSessionWithClientCredential() },
+        {
+          adapterId: "mastodon",
+          origin: "https://social.example",
+          fetch,
+          credentialLeases: { resolve: async () => null },
+        },
+        mastodonOptions(),
+      ),
+    ).rejects.toMatchObject({ code: "UNSUPPORTED_OPERATION" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("does not retain client credentials in remote error causes", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(
+      async () => new Response("remote echoed secret-sentinel", { status: 400 }),
+    );
+    const error = await revokeToken(
+      { session: oauthSessionWithClientCredential() },
+      {
+        adapterId: "mastodon",
+        origin: "https://social.example",
+        fetch,
+        credentialLeases: { resolve: async () => "secret-sentinel" },
+      },
+      mastodonOptions(),
+    ).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({ code: "REMOTE_ERROR" });
+    expect((error as Error).cause).toBeUndefined();
+    expect(JSON.stringify(error)).not.toContain("secret-sentinel");
+  });
+});
+
+function oauthSessionWithClientCredential() {
+  return {
+    id: "session-1",
+    revision: 1,
+    adapter: "mastodon",
+    origin: "https://social.example",
+    strategy: "oauth" as const,
+    scopes: [],
+    capabilities: {},
+    tokenSet: { accessToken: "access-token" },
+    createdAt: "2026-07-15T00:00:00.000Z",
+    updatedAt: "2026-07-15T00:00:00.000Z",
+    metadata: {
+      oauthClient: {
+        clientId: "client-id",
+        clientSecret: { id: "lease-1", owner: "session-1", version: 0 },
+      },
+    },
+  };
+}
+
+function mastodonOptions() {
+  return {
+    id: "mastodon",
+    displayName: "Mastodon",
+    supportedSoftware: ["mastodon"],
+  };
+}
 
 const mastodonContext = {
   adapterId: "mastodon",
