@@ -7,7 +7,7 @@ auth session stores.
 Start the local services before running integration tests:
 
 ~~~~ sh
-docker compose up -d --wait redis postgres
+pnpm compose:dev
 ~~~~
 
 Run the container-backed integration tests:

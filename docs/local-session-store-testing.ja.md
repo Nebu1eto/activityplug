@@ -7,7 +7,7 @@ Compose 環境が含まれます。
 統合テストを実行する前にローカルサービスを起動してください。
 
 ~~~~ sh
-docker compose up -d --wait redis postgres
+pnpm compose:dev
 ~~~~
 
 コンテナベースの統合テストを実行します。

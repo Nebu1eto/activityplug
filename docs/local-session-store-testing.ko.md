@@ -7,7 +7,7 @@ ActivityPlug에는 Redis와 PostgreSQL 인증 세션 저장소를 위한 Docker 
 통합 테스트를 실행하기 전에 로컬 서비스를 시작하세요.
 
 ~~~~ sh
-docker compose up -d --wait redis postgres
+pnpm compose:dev
 ~~~~
 
 컨테이너 기반 통합 테스트를 실행합니다.
