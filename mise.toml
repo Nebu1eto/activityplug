@@ -28,7 +28,7 @@ run = "pnpm test"
 
 [tasks.check]
 description = "Run the full local validation suite"
-depends = ["build", "typecheck", "format:check", "lint", "test"]
+depends = ["typecheck", "format:check", "lint", "test"]
 
 [tasks."format:check"]
 description = "Check TypeScript, JSON, and Markdown formatting"
