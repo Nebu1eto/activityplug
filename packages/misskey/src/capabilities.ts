@@ -26,7 +26,6 @@ export function createMisskeyStaticCapabilities(hasWebSocket: boolean) {
         "visibility.public",
         "visibility.unlisted",
         "visibility.followers",
-        "visibility.direct",
         "visibility.local",
       ],
     }),

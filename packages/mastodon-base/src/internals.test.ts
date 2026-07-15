@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import { createMastodonBaseAdapter } from "./index.js";
 import { mastodonPageInfoForOperation, postFromResponse } from "./internals.js";
 import { remoteError, tokenHeader } from "./transport.js";
+import type { MastodonStatusResponse } from "./types.js";
 
 describe("Mastodon post viewer state", () => {
   it.each(["ORIGIN_NOT_ALLOWED", "REQUEST_LIMIT_EXCEEDED"] as const)(
@@ -139,6 +140,70 @@ describe("Mastodon post viewer state", () => {
     expect(post.viewerState).toEqual({ favourited: true, boosted: false, bookmarked: true });
   });
 
+  it("extracts a deeply nested reblog as a reference without recursive mapping", () => {
+    let nested = mastodonStatus("leaf", "https://social.example/@alice/leaf");
+    for (let depth = 0; depth < 10_000; depth += 1) {
+      nested = { ...mastodonStatus(`nested-${depth}`), reblog: nested };
+    }
+
+    const post = postFromResponse({ ...mastodonStatus("root"), reblog: nested }, mastodonContext);
+
+    expect(post.boostOf).toEqual(
+      createEntityRef({
+        adapter: "mastodon",
+        origin: "https://social.example",
+        type: "post",
+        id: "nested-9999",
+      }),
+    );
+  });
+
+  it("extracts Mastodon and Pleroma embedded quotes as shallow references", () => {
+    let nestedQuote = mastodonStatus("quote-leaf");
+    for (let depth = 0; depth < 10_000; depth += 1) {
+      nestedQuote = { ...mastodonStatus(`quote-${depth}`), reblog: nestedQuote };
+    }
+    const mastodonQuote = postFromResponse(
+      {
+        ...mastodonStatus("root"),
+        quote: {
+          quoted_status: {
+            ...nestedQuote,
+            url: "https://remote.example/@bob/quoted",
+          },
+        },
+      },
+      mastodonContext,
+    );
+    const pleromaQuote = postFromResponse(
+      {
+        ...mastodonStatus("root"),
+        pleroma: {
+          quote: {
+            ...nestedQuote,
+            id: "pleroma-quoted",
+            url: "https://remote.example/notice/quoted",
+          },
+        },
+      },
+      mastodonContext,
+    );
+
+    expect(mastodonQuote.quoteOf?.rawUrl).toBe("https://remote.example/@bob/quoted");
+    expect(pleromaQuote.quoteOf?.rawUrl).toBe("https://remote.example/notice/quoted");
+  });
+
+  it("rejects an embedded relationship without a non-empty post ID", () => {
+    expect(() =>
+      postFromResponse({ ...mastodonStatus("root"), reblog: { id: "" } }, mastodonContext),
+    ).toThrowError(
+      expect.objectContaining({
+        code: "REMOTE_ERROR",
+        context: expect.objectContaining({ operation: "posts.read" }),
+      }),
+    );
+  });
+
   it("uses byte-exact Link cursors instead of entity ID fallbacks", () => {
     const context = {
       adapterId: "mastodon",
@@ -168,6 +233,22 @@ describe("Mastodon post viewer state", () => {
     expect(pageInfo.startCursor).toBeUndefined();
   });
 });
+
+const mastodonContext = {
+  adapterId: "mastodon",
+  origin: "https://social.example",
+  capabilities: createCapabilitySet(),
+  fetch: globalThis.fetch,
+};
+
+function mastodonStatus(id: string, url?: string): MastodonStatusResponse {
+  return {
+    id,
+    account: { id: "account-1", username: "alice", acct: "alice" },
+    created_at: "2026-07-11T00:00:00.000Z",
+    ...(url === undefined ? {} : { url }),
+  };
+}
 
 const authenticatedPostFetch: typeof globalThis.fetch = async (input) => {
   const request = new Request(input);

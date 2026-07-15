@@ -484,7 +484,7 @@ export function postFromResponse(
         }),
     ...(status.reblog === null || status.reblog === undefined
       ? {}
-      : { boostOf: postFromResponse(status.reblog, context, operation).ref }),
+      : { boostOf: postReferenceFromResponse(status.reblog, context, operation) }),
     ...quoteRefFromResponse(status, context, operation),
     counts: {
       ...renamedOptionalNumber(
@@ -549,11 +549,7 @@ function quoteRefFromResponse(
         });
       }
       return {
-        quoteOf: postFromResponse(
-          quotedStatus as unknown as MastodonStatusResponse,
-          context,
-          operation,
-        ).ref,
+        quoteOf: postReferenceFromResponse(quotedStatus, context, operation),
       };
     }
   }
@@ -578,11 +574,7 @@ function quoteRefFromResponse(
         });
       }
       return {
-        quoteOf: postFromResponse(
-          pleromaQuote as unknown as MastodonStatusResponse,
-          context,
-          operation,
-        ).ref,
+        quoteOf: postReferenceFromResponse(pleromaQuote, context, operation),
       };
     }
     const pleromaQuoteId = status.pleroma["quote_id"];
@@ -604,6 +596,29 @@ function quoteRefFromResponse(
     }
   }
   return {};
+}
+
+function postReferenceFromResponse(
+  response: unknown,
+  context: AdapterOperationContext,
+  operation: string,
+): Post["ref"] {
+  if (!isRecord(response)) {
+    throw invalidRemoteResponse("Mastodon related status response is malformed.", {
+      context,
+      operation,
+      raw: response,
+    });
+  }
+  const url = optionalString(response["url"], "url", response, context, operation);
+  const uri = optionalString(response["uri"], "uri", response, context, operation);
+  return createEntityRef({
+    adapter: context.adapterId,
+    origin: context.origin,
+    type: "post",
+    id: requiredNonEmptyString(response["id"], "id", response, context, operation),
+    rawUrl: url ?? uri,
+  });
 }
 
 export function mediaAttachmentFromResponse(

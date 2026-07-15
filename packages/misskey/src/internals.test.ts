@@ -6,8 +6,9 @@ import {
 } from "@activityplug/core";
 import { describe, expect, it } from "vitest";
 
-import { noteFromResponse } from "./internals.js";
+import { misskeyVisibilityInput, noteFromResponse } from "./internals.js";
 import { remoteError, tokenHeader } from "./transport.js";
+import { type MisskeyNoteResponse } from "./types.js";
 
 describe("Misskey post viewer state", () => {
   it.each(["ORIGIN_NOT_ALLOWED", "REQUEST_LIMIT_EXCEEDED"] as const)(
@@ -99,8 +100,100 @@ describe("Misskey post viewer state", () => {
     );
 
     expect(post.viewerState).toEqual({
-      bookmarked: true,
+      favourited: true,
       reactions: [{ emoji: "⭐", count: 3, me: true }],
     });
   });
+
+  it("extracts a deeply nested renote as a reference without recursive mapping", () => {
+    let nested = misskeyNote("leaf", "https://misskey.example/notes/leaf");
+    for (let depth = 0; depth < 10_000; depth += 1) {
+      nested = { ...misskeyNote(`nested-${depth}`), renoteId: nested.id, renote: nested };
+    }
+
+    const post = noteFromResponse(
+      {
+        ...misskeyNote("root"),
+        renoteId: nested.id,
+        renote: nested,
+      },
+      misskeyContext,
+    );
+
+    expect(post.boostOf).toEqual(
+      expect.objectContaining({
+        rawId: "nested-9999",
+      }),
+    );
+
+    const quote = noteFromResponse(
+      {
+        ...misskeyNote("quote-root"),
+        text: "local quote comment",
+        renoteId: nested.id,
+        renote: nested,
+      },
+      misskeyContext,
+    );
+    expect(quote.quoteOf).toEqual(expect.objectContaining({ rawId: "nested-9999" }));
+  });
+
+  it("preserves a shallow renote URL and rejects an empty renote ID", () => {
+    const post = noteFromResponse(
+      {
+        ...misskeyNote("root"),
+        renoteId: "quoted",
+        renote: misskeyNote("quoted", "https://remote.example/notes/quoted"),
+      },
+      misskeyContext,
+    );
+
+    expect(post.boostOf?.rawUrl).toBe("https://remote.example/notes/quoted");
+    expect(() =>
+      noteFromResponse(
+        {
+          ...misskeyNote("root"),
+          renoteId: "invalid",
+          renote: { ...misskeyNote("invalid"), id: "" },
+        },
+        misskeyContext,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "REMOTE_ERROR" }));
+  });
+
+  it.each([
+    ["public", { visibility: "public" }],
+    ["unlisted", { visibility: "home" }],
+    ["followers", { visibility: "followers" }],
+    ["local", { visibility: "public", localOnly: true }],
+  ] as const)("preserves the supported %s visibility input", (visibility, expected) => {
+    expect(
+      misskeyVisibilityInput(
+        visibility,
+        {
+          adapterId: "misskey",
+          origin: "https://misskey.example",
+          capabilities: createCapabilitySet(),
+          fetch: globalThis.fetch,
+        },
+        "post.create",
+      ),
+    ).toEqual(expected);
+  });
 });
+
+const misskeyContext = {
+  adapterId: "misskey",
+  origin: "https://misskey.example",
+  capabilities: createCapabilitySet(),
+  fetch: globalThis.fetch,
+};
+
+function misskeyNote(id: string, url?: string): MisskeyNoteResponse {
+  return {
+    id,
+    user: { id: "account-1", username: "alice", host: null },
+    createdAt: "2026-07-11T00:00:00.000Z",
+    ...(url === undefined ? {} : { url }),
+  };
+}

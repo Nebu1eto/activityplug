@@ -3,6 +3,7 @@ import {
   createEntityRef,
   decodePageCursor,
   encodePageCursor,
+  unsupportedOperation,
   type Account,
   type AdapterOperationContext,
   type AuthAdapterContext,
@@ -225,7 +226,7 @@ export function noteFromResponse(
   const noteUri = optionalString(note.uri, "uri", note, context, operation);
   const text = optionalString(note.text, "text", note, context, operation);
   const cw = optionalString(note.cw, "cw", note, context, operation);
-  const bookmarked = optionalBoolean(note.isFavorited, "isFavorited", note, context, operation);
+  const favourited = optionalBoolean(note.isFavorited, "isFavorited", note, context, operation);
   const myReaction = optionalNonEmptyString(
     note.myReaction,
     "myReaction",
@@ -290,11 +291,11 @@ export function noteFromResponse(
         ? {}
         : { favourites: reactionCount(note.reactions, note, context, operation) }),
     },
-    ...(bookmarked === undefined && myReaction === undefined
+    ...(favourited === undefined && myReaction === undefined
       ? {}
       : {
           viewerState: {
-            ...(bookmarked === undefined ? {} : { bookmarked }),
+            ...(favourited === undefined ? {} : { favourited }),
             ...(myReaction === undefined
               ? {}
               : {
@@ -379,9 +380,32 @@ function renoteReferenceFromResponse(
   operation: string,
 ): Pick<Post, "boostOf" | "quoteOf"> {
   if (note.renote === null || note.renote === undefined) return {};
-  const ref = noteFromResponse(note.renote, context, operation).ref;
+  const ref = noteReferenceFromResponse(note.renote, context, operation);
   if (isMisskeyQuote(note)) return { quoteOf: ref };
   return { boostOf: ref };
+}
+
+function noteReferenceFromResponse(
+  response: unknown,
+  context: AdapterOperationContext,
+  operation: string,
+): Post["ref"] {
+  if (!isRecord(response)) {
+    throw invalidRemoteResponse("Misskey related note response is malformed.", {
+      context,
+      operation,
+      raw: response,
+    });
+  }
+  const url = optionalString(response["url"], "url", response, context, operation);
+  const uri = optionalString(response["uri"], "uri", response, context, operation);
+  return createEntityRef({
+    adapter: context.adapterId,
+    origin: context.origin,
+    type: "post",
+    id: requiredNonEmptyString(response["id"], "id", response, context, operation),
+    rawUrl: url ?? uri,
+  });
 }
 
 function isMisskeyQuote(note: MisskeyNoteResponse): boolean {
@@ -583,7 +607,12 @@ export function misskeyVisibilityInput(
   operation: string,
 ): { readonly visibility: string; readonly localOnly?: boolean } {
   if (value === "unlisted") return { visibility: "home" };
-  if (value === "direct") return { visibility: "specified" };
+  if (value === "direct") {
+    throw unsupportedOperation(operation, {
+      ...errorContext(context, operation),
+      capability: operation === "social.boost" ? "social.boost" : "posts.create",
+    });
+  }
   if (value === "local") {
     return { visibility: "public", localOnly: true };
   }

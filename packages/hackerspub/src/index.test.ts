@@ -1284,7 +1284,133 @@ describe("HackersPub adapter", () => {
     ).toBe("page-1-react");
   });
 
-  it("stops filtered HackersPub notification scans when cursors do not advance", async () => {
+  it("keeps over-returned filtered notification matches reachable through pageInfo", async () => {
+    const reactEdge = (index: number) => ({
+      cursor: `react-${index}`,
+      node: {
+        __typename: "ReactNotification",
+        uuid: `00000000-0000-4000-8000-00000000002${index}`,
+        created: "2026-05-03T00:00:00.000Z",
+        emoji: "👍",
+        actors: { edges: [{ node: fixture.account }] },
+        post: fixture.post,
+      },
+    });
+    let notificationCalls = 0;
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter(),
+      origin: "https://hackerspub.example",
+      remoteAuthority: createRemoteAuthority({
+        transport: async () => {
+          notificationCalls += 1;
+          return Response.json({
+            data: {
+              viewer: {
+                notifications: {
+                  edges: [reactEdge(1), reactEdge(2), reactEdge(3)],
+                  pageInfo: {
+                    hasNextPage: false,
+                    hasPreviousPage: false,
+                    startCursor: "react-1",
+                    endCursor: "react-3",
+                  },
+                },
+              },
+            },
+          });
+        },
+      }),
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    const notifications = await client.notifications.list({
+      session,
+      types: ["emoji_reaction"],
+      page: { limit: 2 },
+    });
+
+    expect(notificationCalls).toBe(1);
+    expect(notifications.nodes.map((notification) => notification.ref.rawId)).toEqual([
+      "00000000-0000-4000-8000-000000000021",
+      "00000000-0000-4000-8000-000000000022",
+    ]);
+    expect(notifications.pageInfo.hasNextPage).toBe(true);
+    expect(
+      decodePageCursor(notifications.pageInfo.endCursor ?? "", {
+        adapter: "hackerspub",
+        origin: "https://hackerspub.example",
+        operation: "notification.list",
+      }),
+    ).toBe("react-2");
+  });
+
+  it("keeps over-returned backward filtered notification matches nearest the cursor", async () => {
+    const reactEdge = (index: number) => ({
+      cursor: `react-${index}`,
+      node: {
+        __typename: "ReactNotification",
+        uuid: `00000000-0000-4000-8000-00000000003${index}`,
+        created: "2026-05-03T00:00:00.000Z",
+        emoji: "👍",
+        actors: { edges: [{ node: fixture.account }] },
+        post: fixture.post,
+      },
+    });
+    const before = encodePageCursor({
+      adapter: "hackerspub",
+      origin: "https://hackerspub.example",
+      operation: "notification.list",
+      cursor: "initial-before",
+    });
+    let notificationCalls = 0;
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter(),
+      origin: "https://hackerspub.example",
+      remoteAuthority: createRemoteAuthority({
+        transport: async () => {
+          notificationCalls += 1;
+          return Response.json({
+            data: {
+              viewer: {
+                notifications: {
+                  edges: [reactEdge(1), reactEdge(2), reactEdge(3)],
+                  pageInfo: {
+                    hasNextPage: false,
+                    hasPreviousPage: false,
+                    startCursor: "react-1",
+                    endCursor: "react-3",
+                  },
+                },
+              },
+            },
+          });
+        },
+      }),
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    const notifications = await client.notifications.list({
+      session,
+      types: ["emoji_reaction"],
+      page: { before, limit: 2 },
+    });
+
+    expect(notificationCalls).toBe(1);
+    expect(notifications.nodes.map((notification) => notification.ref.rawId)).toEqual([
+      "00000000-0000-4000-8000-000000000032",
+      "00000000-0000-4000-8000-000000000033",
+    ]);
+    expect(notifications.pageInfo.hasPreviousPage).toBe(true);
+    expect(
+      decodePageCursor(notifications.pageInfo.startCursor ?? "", {
+        adapter: "hackerspub",
+        origin: "https://hackerspub.example",
+        operation: "notification.list",
+      }),
+    ).toBe("react-2");
+  });
+
+  it("rejects filtered HackersPub notification scans when a cursor repeats", async () => {
     const notificationCalls: unknown[] = [];
     const client = createActivityPlugClient({
       adapter: createHackersPubAdapter(),
@@ -1293,16 +1419,171 @@ describe("HackersPub adapter", () => {
         const request = new Request(input, init);
         const body = (await request.json()) as { readonly variables?: Record<string, unknown> };
         notificationCalls.push(body.variables);
+        const cursor = "stalled-cursor";
         return Response.json({
           data: {
             viewer: {
               notifications: {
-                edges: [],
+                edges:
+                  notificationCalls.length === 1
+                    ? [reactionNotificationEdge(cursor)]
+                    : [followNotificationEdge(notificationCalls.length, cursor)],
                 pageInfo: {
                   hasNextPage: true,
                   hasPreviousPage: false,
-                  startCursor: "",
-                  endCursor: "stalled-cursor",
+                  startCursor: cursor,
+                  endCursor: cursor,
+                },
+              },
+            },
+          },
+        });
+      },
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    await expect(
+      client.notifications.list({
+        session,
+        types: ["emoji_reaction"],
+        page: { limit: 2 },
+      }),
+    ).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { operation: "notification.list" },
+    });
+    expect(notificationCalls).toHaveLength(2);
+  });
+
+  it("rejects alternating filtered notification cursors before another request", async () => {
+    const notificationCalls: Record<string, unknown>[] = [];
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter(),
+      origin: "https://hackerspub.example",
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        const body = (await request.json()) as { readonly variables?: Record<string, unknown> };
+        notificationCalls.push(body.variables ?? {});
+        if (notificationCalls.length > 4) {
+          throw new TypeError("Cursor cycle was not rejected.");
+        }
+        const cursor = notificationCalls.length % 2 === 1 ? "cursor-a" : "cursor-b";
+        return Response.json({
+          data: {
+            viewer: {
+              notifications: {
+                edges: [followNotificationEdge(notificationCalls.length, cursor)],
+                pageInfo: {
+                  hasNextPage: true,
+                  hasPreviousPage: false,
+                  startCursor: cursor,
+                  endCursor: cursor,
+                },
+              },
+            },
+          },
+        });
+      },
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    await expect(
+      client.notifications.list({
+        session,
+        types: ["emoji_reaction"],
+        page: { limit: 2 },
+      }),
+    ).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { operation: "notification.list" },
+    });
+    expect(notificationCalls).toHaveLength(3);
+    expect(notificationCalls.map((variables) => variables.after)).toEqual([
+      undefined,
+      "cursor-a",
+      "cursor-b",
+    ]);
+  });
+
+  it("caps filtered notification scans at twenty requests with unique cursors", async () => {
+    const notificationCalls: Record<string, unknown>[] = [];
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter(),
+      origin: "https://hackerspub.example",
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        const body = (await request.json()) as { readonly variables?: Record<string, unknown> };
+        notificationCalls.push(body.variables ?? {});
+        if (notificationCalls.length > 20) {
+          throw new TypeError("Notification request budget was exceeded.");
+        }
+        const cursor = `cursor-${notificationCalls.length}`;
+        return Response.json({
+          data: {
+            viewer: {
+              notifications: {
+                edges: [followNotificationEdge(notificationCalls.length, cursor)],
+                pageInfo: {
+                  hasNextPage: true,
+                  hasPreviousPage: false,
+                  startCursor: cursor,
+                  endCursor: cursor,
+                },
+              },
+            },
+          },
+        });
+      },
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    await expect(
+      client.notifications.list({
+        session,
+        types: ["emoji_reaction"],
+        page: { limit: 2 },
+      }),
+    ).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { operation: "notification.list" },
+    });
+    expect(notificationCalls).toHaveLength(20);
+    expect(new Set(notificationCalls.map((variables) => variables.after)).size).toBe(20);
+  });
+
+  it("continues across an empty page and accepts a terminal page without cursors", async () => {
+    const notificationCalls: Record<string, unknown>[] = [];
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter(),
+      origin: "https://hackerspub.example",
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        const body = (await request.json()) as { readonly variables?: Record<string, unknown> };
+        notificationCalls.push(body.variables ?? {});
+        const firstPage = notificationCalls.length === 1;
+        return Response.json({
+          data: {
+            viewer: {
+              notifications: {
+                edges: firstPage
+                  ? []
+                  : [
+                      {
+                        cursor: "reaction-cursor",
+                        node: {
+                          __typename: "ReactNotification",
+                          uuid: "00000000-0000-4000-8000-000000000099",
+                          created: "2026-05-03T00:00:00.000Z",
+                          emoji: "👍",
+                          actors: { edges: [{ node: fixture.account }] },
+                          post: fixture.post,
+                        },
+                      },
+                    ],
+                pageInfo: {
+                  hasNextPage: firstPage,
+                  hasPreviousPage: false,
+                  ...(firstPage ? { startCursor: "empty-page", endCursor: "empty-page" } : {}),
                 },
               },
             },
@@ -1318,9 +1599,48 @@ describe("HackersPub adapter", () => {
       page: { limit: 2 },
     });
 
-    expect(notificationCalls).toHaveLength(1);
-    expect(notifications.nodes).toEqual([]);
+    expect(notificationCalls).toHaveLength(2);
+    expect(notificationCalls[1]).toMatchObject({ after: "empty-page" });
+    expect(notifications.nodes.map((notification) => notification.ref.rawId)).toEqual([
+      "00000000-0000-4000-8000-000000000099",
+    ]);
     expect(notifications.pageInfo.hasNextPage).toBe(false);
+  });
+
+  it("rejects a filtered notification page that claims more data without a cursor", async () => {
+    const notificationCalls: unknown[] = [];
+    const client = createActivityPlugClient({
+      adapter: createHackersPubAdapter(),
+      origin: "https://hackerspub.example",
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        const body = (await request.json()) as { readonly variables?: Record<string, unknown> };
+        notificationCalls.push(body.variables);
+        return Response.json({
+          data: {
+            viewer: {
+              notifications: {
+                edges: [],
+                pageInfo: { hasNextPage: true, hasPreviousPage: false },
+              },
+            },
+          },
+        });
+      },
+    });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+
+    await expect(
+      client.notifications.list({
+        session,
+        types: ["emoji_reaction"],
+        page: { limit: 2 },
+      }),
+    ).rejects.toMatchObject({
+      code: "REMOTE_ERROR",
+      context: { operation: "notification.list" },
+    });
+    expect(notificationCalls).toHaveLength(1);
   });
 
   it("rejects malformed HackersPub notification edges and IDs", async () => {
@@ -1733,6 +2053,32 @@ function relationshipActor() {
     viewerFollows: true,
     followsViewer: true,
     viewerBlocks: false,
+  };
+}
+
+function followNotificationEdge(index: number, cursor: string) {
+  return {
+    cursor,
+    node: {
+      __typename: "FollowNotification",
+      uuid: `00000000-0000-4000-8000-${index.toString().padStart(12, "0")}`,
+      created: "2026-05-03T00:00:00.000Z",
+      actors: { edges: [{ node: accountMappingFixtures.hackerspub.account }] },
+    },
+  };
+}
+
+function reactionNotificationEdge(cursor: string) {
+  return {
+    cursor,
+    node: {
+      __typename: "ReactNotification",
+      uuid: "00000000-0000-4000-8000-000000000098",
+      created: "2026-05-03T00:00:00.000Z",
+      emoji: "👍",
+      actors: { edges: [{ node: accountMappingFixtures.hackerspub.account }] },
+      post: accountMappingFixtures.hackerspub.post,
+    },
   };
 }
 

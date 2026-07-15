@@ -14,9 +14,26 @@ describe("Misskey post semantics", () => {
       "visibility.public",
       "visibility.unlisted",
       "visibility.followers",
-      "visibility.direct",
       "visibility.local",
     ]);
+  });
+
+  it("rejects direct visibility before making a remote request", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const client = createActivityPlugClient({
+      adapter: createMisskeyAdapter(),
+      origin: "https://misskey.example",
+      fetch,
+    });
+    const session = await client.auth.injectToken({ accessToken: "viewer-token" });
+
+    await expect(
+      client.posts.create({ session, content: "Private", visibility: "direct" }),
+    ).rejects.toMatchObject({
+      code: "UNSUPPORTED_OPERATION",
+      context: { capability: "posts.create", operation: "post.create" },
+    });
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("advertises URL ingestion only when an injected socket can execute it", async () => {

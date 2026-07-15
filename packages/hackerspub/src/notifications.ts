@@ -26,6 +26,8 @@ import {
 } from "./transport.js";
 import { type HackersPubAdapterOptions, type HackersPubPost } from "./types.js";
 
+const filteredNotificationRequestLimit = 20;
+
 export async function listNotifications(
   input: ListNotificationsInput,
   context: AdapterOperationContext,
@@ -54,12 +56,22 @@ async function listFilteredNotifications(
   const limit = input.page?.limit ?? 20;
   const accepted: { readonly cursor: string; readonly node: Notification }[] = [];
   let variables = initialVariables;
+  let firstConnection: HackersPubNotificationConnection | undefined;
   let lastConnection: HackersPubNotificationConnection | undefined;
+  let truncated = false;
   const backward = input.page?.before !== undefined;
-  let previousCursor = cursorVariable(initialVariables, backward);
-  let stoppedWithoutProgress = false;
+  const initialCursor = cursorVariable(initialVariables, backward);
+  const visitedCursors = new Set(initialCursor === undefined ? [] : [initialCursor]);
+  let requestCount = 0;
   while (accepted.length < limit) {
+    if (requestCount >= filteredNotificationRequestLimit) {
+      throw notificationPaginationError(context, "exceeded its remote request limit", {
+        requestCount,
+      });
+    }
+    requestCount += 1;
     const notifications = await notificationConnection(variables, input, context, options);
+    firstConnection ??= notifications;
     lastConnection = notifications;
     const pageAccepted: { readonly cursor: string; readonly node: Notification }[] = [];
     for (const edge of notifications.edges) {
@@ -68,12 +80,23 @@ async function listFilteredNotifications(
       if (input.types?.some((type) => type === notification.type) === true) {
         pageAccepted.push({ cursor: parsed.cursor, node: notification });
       }
-      if (accepted.length + pageAccepted.length >= limit) break;
     }
     if (backward) {
       accepted.unshift(...pageAccepted);
+      if (accepted.length > limit) {
+        // Keep the matches closest to the requested cursor; the dropped
+        // earlier matches stay reachable through the returned startCursor.
+        accepted.splice(0, accepted.length - limit);
+        truncated = true;
+      }
     } else {
-      accepted.push(...pageAccepted);
+      for (const item of pageAccepted) {
+        if (accepted.length >= limit) {
+          truncated = true;
+          break;
+        }
+        accepted.push(item);
+      }
     }
     const nextCursor = backward
       ? notifications.pageInfo.startCursor
@@ -81,20 +104,26 @@ async function listFilteredNotifications(
     const hasMore = backward
       ? notifications.pageInfo.hasPreviousPage
       : notifications.pageInfo.hasNextPage;
-    if (!hasMore) {
+    if (!hasMore || accepted.length >= limit) {
       break;
     }
-    if (
-      notifications.edges.length === 0 ||
-      nextCursor === null ||
-      nextCursor === undefined ||
-      nextCursor.length === 0 ||
-      nextCursor === previousCursor
-    ) {
-      stoppedWithoutProgress = true;
-      break;
+    if (nextCursor === null || nextCursor === undefined || nextCursor.length === 0) {
+      throw notificationPaginationError(context, "claimed another page without a cursor", {
+        requestCount,
+      });
     }
-    previousCursor = nextCursor;
+    if (visitedCursors.has(nextCursor)) {
+      throw notificationPaginationError(context, "repeated a previously visited cursor", {
+        cursor: nextCursor,
+        requestCount,
+      });
+    }
+    if (requestCount >= filteredNotificationRequestLimit) {
+      throw notificationPaginationError(context, "exceeded its remote request limit", {
+        requestCount,
+      });
+    }
+    visitedCursors.add(nextCursor);
     const remaining = limit - accepted.length;
     variables =
       remaining <= 0
@@ -109,14 +138,12 @@ async function listFilteredNotifications(
   return {
     nodes,
     pageInfo: {
-      hasNextPage:
-        stoppedWithoutProgress && !backward
-          ? false
-          : (lastConnection?.pageInfo?.hasNextPage ?? false),
-      hasPreviousPage:
-        stoppedWithoutProgress && backward
-          ? false
-          : (lastConnection?.pageInfo?.hasPreviousPage ?? false),
+      hasNextPage: backward
+        ? (firstConnection?.pageInfo?.hasNextPage ?? false)
+        : truncated || (lastConnection?.pageInfo?.hasNextPage ?? false),
+      hasPreviousPage: backward
+        ? truncated || (lastConnection?.pageInfo?.hasPreviousPage ?? false)
+        : (firstConnection?.pageInfo?.hasPreviousPage ?? false),
       ...(startCursor === undefined
         ? {}
         : {
@@ -129,6 +156,20 @@ async function listFilteredNotifications(
           }),
     },
   };
+}
+
+function notificationPaginationError(
+  context: AdapterOperationContext,
+  reason: string,
+  raw: Readonly<Record<string, unknown>>,
+) {
+  return activityPlugError(
+    "REMOTE_ERROR",
+    `HackersPub notification pagination ${reason}.`,
+    context,
+    "notification.list",
+    raw,
+  );
 }
 
 function cursorVariable(variables: Record<string, unknown>, backward: boolean): string | undefined {
@@ -287,7 +328,7 @@ function notificationEdgeFromResponse(
       edge,
     );
   }
-  return { cursor: edge.cursor, node: edge.node as HackersPubNotificationNode };
+  return { cursor: edge.cursor, node: edge.node };
 }
 
 export async function clearNotifications(
@@ -382,7 +423,7 @@ function notificationFromResponse(
       type: "notification",
       id: rawId,
     }),
-    type: notificationTypeFromResponse(notification.__typename),
+    type: notificationTypeFromResponse(notification["__typename"]),
     createdAt: notification.created,
     account: actorFromResponse(actor, context, "notification.list").ref,
     ...(post === undefined ? {} : { post }),
