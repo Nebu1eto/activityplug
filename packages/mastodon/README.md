@@ -44,9 +44,15 @@ when the server advertises `wss://stream.example`.
 Mastodon uses the `authorization-header` streaming mode by default. For an
 authenticated stream, the adapter supplies the token as `options.authorization`
 to the factory; the streaming URL remains token-free. The factory must forward
-that value as the WebSocket `Authorization` header. Anonymous streams receive
-no authorization value. Authenticated streams require an encrypted `wss:`
-target.
+that value as the WebSocket `Authorization` header. If the advertised endpoint
+has a different origin, the authority also requires an exact directional grant
+from the instance origin to the streaming origin. The grant uses credential
+class `oauth-access-token`, representation `authorization-header`, and the
+actual public operation, `stream.timeline` or `stream.notifications`.
+Same-origin authenticated streams need no cross-origin grant. Anonymous streams
+receive no authorization value and need no credential grant, although the
+factory's egress policy still applies. Authenticated streams require an
+encrypted `wss:` target.
 
 
 License

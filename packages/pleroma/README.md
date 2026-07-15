@@ -36,16 +36,20 @@ not create a WebSocket by itself.
 
 Instances can advertise `configuration.urls.streaming` or the legacy
 `urls.streaming_api`. That endpoint may use a different host from the instance
-HTTP API. The adapter uses the advertised endpoint and appends
-`/api/v1/streaming/`, so allow both the instance HTTPS origin and the
-advertised streaming HTTPS origin. For example, allow `https://stream.example`
-when the server advertises `wss://stream.example`.
+HTTP API. Anonymous public streams may use that advertised endpoint when the
+factory permits it.
 
-The Pleroma wrapper explicitly defaults to `legacy-query`. An authenticated
-stream therefore carries its access token in the URL query rather than in
-`options.authorization`; treat that URL as credential-bearing and use an
-encrypted `wss:` target. Set `streamingAuthentication: "authorization-header"`
-only when the target supports WebSocket `Authorization` header authentication.
+Authenticated streams never put the bearer token in the URL. The adapter uses
+the WebSocket subprotocol for Akkoma and for Pleroma 2.7.1 or newer. An older or
+unverified Pleroma version fails with typed `UNSUPPORTED_OPERATION` before the
+socket is opened. Authenticated streams also require encrypted `wss:`. If the
+advertised endpoint has a different origin, the authority requires an exact
+directional grant from the instance origin to the streaming origin. The grant
+uses credential class `oauth-access-token`, representation
+`websocket-subprotocol`, and the actual public operation, `stream.timeline` or
+`stream.notifications`. Same-origin authenticated streams need no cross-origin
+grant. Anonymous streams carry no subprotocol credential and need no credential
+grant, although the factory's egress policy still applies.
 
 
 License

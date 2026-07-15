@@ -44,8 +44,14 @@ HTTPS 오리진을 모두 허용하십시오. 예를 들어 서버가 `wss://str
 Mastodon은 기본적으로 `authorization-header` 스트리밍 모드를 사용합니다.
 인증된 스트림에서는 어댑터가 토큰을 팩토리의 `options.authorization`으로
 제공하며 스트리밍 URL에는 토큰이 포함되지 않습니다. 팩토리는 이 값을
-WebSocket `Authorization` 헤더로 전달해야 합니다. 익명 스트림에는 인증 값이
-제공되지 않습니다. 인증된 스트림에는 암호화된 `wss:` 대상이 필요합니다.
+WebSocket `Authorization` 헤더로 전달해야 합니다. 알린 엔드포인트의 오리진이
+다르면 권한에는 인스턴스 오리진에서 스트리밍 오리진으로 향하는 정확한 방향성
+grant도 필요합니다. 이 grant는 자격 증명 클래스 `oauth-access-token`, 표현
+`authorization-header` 및 실제 공개 작업 `stream.timeline` 또는
+`stream.notifications`를 사용합니다. 같은 오리진의 인증 스트림에는 오리진 간
+grant가 필요하지 않습니다. 익명 스트림에는 인증 값이 제공되지 않으므로 자격
+증명 grant도 필요하지 않지만 팩토리의 이그레스 정책은 계속 적용됩니다. 인증된
+스트림에는 암호화된 `wss:` 대상이 필요합니다.
 
 
 라이선스

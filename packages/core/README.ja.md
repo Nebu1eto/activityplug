@@ -28,6 +28,44 @@ import * as activityplug from "@activityplug/core";
 利用可能な正確な契約については、エクスポートされた型を参照してください。
 
 
+リモートトランスポートの移行
+----------------------------
+
+`createActivityPlugClient()` は raw `fetch` オプションを受け付けず、
+`globalThis.fetch` にフォールバックしなくなりました。リモート操作には明示的な
+`RemoteAuthority` が必要です。指定しない場合、最初のリモート操作はネット
+ワーク I/O より前に `ORIGIN_NOT_ALLOWED` で失敗します。
+
+~~~~ ts
+import { createActivityPlugClient, createRemoteAuthority } from "@activityplug/core";
+
+const client = createActivityPlugClient({
+  adapter,
+  origin: "https://social.example",
+  remoteAuthority: createRemoteAuthority({ transport: vettedTransport }),
+});
+~~~~
+
+`vettedTransport` は、ランタイムの宛先、DNS、プライベートネットワーク、応答
+上限を事前に適用する必要があります。raw グローバル fetch の直接指定は拒否
+されます。ブラウザーランタイムに限り、`createBrowserRemoteAuthority()` で
+ブラウザーの fetch 境界を明示的に選択できます。ActivityPlug サーバーは独自の
+検証済み権限を構築するため、このクライアント設定は不要です。
+
+権限は同一オリジンの認証情報を既定で許可します。オリジンをまたぐ認証情報
+には、発行元、受信先、公開操作、認証情報クラス、表現がすべて正確に一致する
+方向付き `credentialGrants` エントリーが必要です。対応する表現は
+`authorization-header`、`cookie-header`、`form-body`、`json-body`、
+`websocket-subprotocol` です。匿名操作は認証情報を運ばないため、認証情報の
+grant は不要です。
+
+一致する本文 grant がない別オリジンのフォームまたは JSON 本文は、リクエスト
+の複製から最大 64 KiB だけ検査され、元の本文はトランスポートで引き続き利用
+できます。未知の本文形式やこの上限を超える本文は、ネットワーク I/O より前に
+拒否されます。URL のユーザー情報や既知のクエリパラメーターに含まれる認証情報
+は常に拒否され、URL へのフォールバックはありません。
+
+
 WebSocket アダプター用ユーティリティ
 ------------------------------------
 
