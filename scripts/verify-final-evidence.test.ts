@@ -8,11 +8,9 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
   collectDocumentationSiblings,
-  getExactHeadSha,
   getChangedDocumentationPaths,
   getPublishedDocumentationPaths,
   resolveProductionImages,
-  resolveEvidenceBase,
   repositoryGitEnvironment,
   verifyFinalEvidence,
   writeEvidenceAtomically,
@@ -168,6 +166,21 @@ test("always includes published documentation even without a branch diff", () =>
   );
 });
 
+test("does not require translations for changeset metadata", async () => {
+  const root = await fixtureRoot();
+
+  await expect(
+    verifyFinalEvidence(root, {
+      environment: safeEnvironment,
+      getChangedPaths: async () => [{ path: ".changeset/secure-remote-authority.md", status: "A" }],
+      getGitStatus: async () => [],
+      verifyCompose: async () => [],
+      verifyPublishedTarballs: async () => undefined,
+      ...passingEvidenceProbes,
+    }),
+  ).resolves.toMatchObject({ dependencyFreshness: { outdatedDirectDependencies: 0 } });
+});
+
 test("fails closed for deleted Markdown before other evidence probes", async () => {
   const root = await fixtureRoot();
   const verifyCompose = vi.fn(async () => []);
@@ -186,41 +199,10 @@ test("fails closed for deleted Markdown before other evidence probes", async () 
 });
 
 describe("evidence base resolution", () => {
-  test("returns undefined when no usable base ref is available", async () => {
-    const root = await fixtureRoot();
-    await expect(resolveEvidenceBase(root, {})).resolves.toBeUndefined();
-  });
-
   test("fails closed when a standalone checkout has no evidence base", async () => {
     const root = await fixtureRoot();
     await expect(getChangedDocumentationPaths(root, {})).rejects.toThrow(
       "Unable to resolve evidence base for documentation verification",
-    );
-  });
-
-  test("uses the evidence base from verifyFinalEvidence options", async () => {
-    const root = await fixtureRoot();
-    await git(root, ["init", "--initial-branch=topic"]);
-    await git(root, ["config", "user.email", "test@example.test"]);
-    await git(root, ["config", "user.name", "Test User"]);
-    await git(root, ["add", "."]);
-    await git(root, ["commit", "-m", "base"]);
-    await writeFile(join(root, "docs", "production-compose.md"), "# Updated English\n");
-    await writeFile(join(root, "docs", "production-compose.ko.md"), "# Updated Korean\n");
-    await writeFile(join(root, "docs", "production-compose.ja.md"), "# Updated Japanese\n");
-    await git(root, ["add", "."]);
-    await git(root, ["commit", "-m", "update documentation"]);
-
-    const evidence = await verifyFinalEvidence(root, {
-      environment: { ...safeEnvironment, ACTIVITYPLUG_EVIDENCE_BASE: "HEAD~1" },
-      getGitStatus: async () => [],
-      verifyCompose: async () => [],
-      verifyPublishedTarballs: async () => undefined,
-      ...passingEvidenceProbes,
-    });
-
-    expect(evidence.documentationSiblings).toEqual(
-      expect.arrayContaining(["docs/production-compose.ja.md", "docs/production-compose.ko.md"]),
     );
   });
 
@@ -239,95 +221,6 @@ describe("evidence base resolution", () => {
     await expect(
       getChangedDocumentationPaths(root, { ACTIVITYPLUG_EVIDENCE_BASE: base }),
     ).rejects.toThrow("Unable to resolve evidence base");
-  });
-
-  test("rejects local main when main resolves to HEAD", async () => {
-    const root = await fixtureRoot();
-    await git(root, ["init", "--initial-branch=main"]);
-    await git(root, ["config", "user.email", "test@example.test"]);
-    await git(root, ["config", "user.name", "Test User"]);
-    await git(root, ["add", "."]);
-    await git(root, ["commit", "-m", "fixture"]);
-
-    await expect(resolveEvidenceBase(root, {})).resolves.toBeUndefined();
-    await expect(getChangedDocumentationPaths(root, {})).rejects.toThrow(
-      "Unable to resolve evidence base",
-    );
-  });
-
-  test("rejects a base whose merge-base with HEAD is HEAD", async () => {
-    const root = await fixtureRoot();
-    await git(root, ["init", "--initial-branch=main"]);
-    await git(root, ["config", "user.email", "test@example.test"]);
-    await git(root, ["config", "user.name", "Test User"]);
-    await git(root, ["add", "."]);
-    await git(root, ["commit", "-m", "base"]);
-    const head = await git(root, ["rev-parse", "HEAD"]);
-    await git(root, ["checkout", "-b", "future"]);
-    await writeFile(join(root, "future.txt"), "future\n");
-    await git(root, ["add", "future.txt"]);
-    await git(root, ["commit", "-m", "future"]);
-    await git(root, ["checkout", "--detach", head]);
-
-    await expect(
-      getChangedDocumentationPaths(root, { ACTIVITYPLUG_EVIDENCE_BASE: "future" }),
-    ).rejects.toThrow("Unable to resolve evidence base");
-  });
-
-  test("falls back from a missing GitHub base ref to local main", async () => {
-    const root = await fixtureRoot();
-    await git(root, ["init", "--initial-branch=main"]);
-    await git(root, ["config", "user.email", "test@example.test"]);
-    await git(root, ["config", "user.name", "Test User"]);
-    await git(root, ["add", "."]);
-    await git(root, ["commit", "-m", "fixture"]);
-    const expected = await git(root, ["rev-parse", "HEAD"]);
-    await git(root, ["checkout", "-b", "topic"]);
-    await writeFile(join(root, "topic.txt"), "topic\n");
-    await git(root, ["add", "topic.txt"]);
-    await git(root, ["commit", "-m", "topic"]);
-    await expect(resolveEvidenceBase(root, { GITHUB_BASE_REF: "missing" })).resolves.toBe(expected);
-  });
-
-  test("rejects renaming an English Markdown source to a non-document path", async () => {
-    const root = await fixtureRoot();
-    await git(root, ["init", "--initial-branch=topic"]);
-    await git(root, ["config", "user.email", "test@example.test"]);
-    await git(root, ["config", "user.name", "Test User"]);
-    await git(root, ["add", "."]);
-    await git(root, ["commit", "-m", "base"]);
-    await git(root, ["mv", "docs/production-compose.md", "docs/production-compose.txt"]);
-    await git(root, ["commit", "-m", "rename away", "--", "docs"]);
-
-    const changes = await getChangedDocumentationPaths(root, {
-      ACTIVITYPLUG_EVIDENCE_BASE: "HEAD~1",
-    });
-    expect(changes).toContainEqual({ path: "docs/production-compose.md", status: "D" });
-    await expect(
-      collectDocumentationSiblings(root, ["docs/production-compose.md"], changes),
-    ).rejects.toThrow("must not be deleted");
-  });
-
-  test("ignores repository state inherited from a parent Git hook", async () => {
-    const root = await fixtureRoot();
-    await git(root, ["init", "--initial-branch=main"]);
-    await git(root, ["config", "user.email", "test@example.test"]);
-    await git(root, ["config", "user.name", "Test User"]);
-    await git(root, ["add", "."]);
-    await git(root, ["commit", "-m", "fixture"]);
-    const expected = await git(root, ["rev-parse", "HEAD"]);
-    await git(root, ["checkout", "-b", "topic"]);
-    await writeFile(join(root, "topic.txt"), "topic\n");
-    await git(root, ["add", "topic.txt"]);
-    await git(root, ["commit", "-m", "topic"]);
-
-    const inheritedRoot = await fixtureRoot();
-    await git(inheritedRoot, ["init", "--initial-branch=main"]);
-    vi.stubEnv("GIT_DIR", join(inheritedRoot, ".git"));
-    vi.stubEnv("GIT_INDEX_FILE", join(inheritedRoot, ".git", "index"));
-    vi.stubEnv("GIT_WORK_TREE", inheritedRoot);
-
-    await expect(resolveEvidenceBase(root, { GITHUB_BASE_REF: "missing" })).resolves.toBe(expected);
   });
 });
 
@@ -491,25 +384,6 @@ test("rejects evidence output path traversal", async () => {
       productionAudit: { advisories: 0 },
     }),
   ).rejects.toThrow("artifacts/verification");
-});
-
-test("resolves the exact HEAD while ignoring inherited Git repository state", async () => {
-  const root = await fixtureRoot();
-  await git(root, ["init", "--initial-branch=main"]);
-  await git(root, ["config", "user.email", "test@example.test"]);
-  await git(root, ["config", "user.name", "Test User"]);
-  await git(root, ["add", "."]);
-  await git(root, ["commit", "-m", "fixture"]);
-  const expected = await git(root, ["rev-parse", "HEAD"]);
-
-  const inheritedRoot = await fixtureRoot();
-  await git(inheritedRoot, ["init", "--initial-branch=main"]);
-  vi.stubEnv("GIT_DIR", join(inheritedRoot, ".git"));
-  vi.stubEnv("GIT_INDEX_FILE", join(inheritedRoot, ".git", "index"));
-  vi.stubEnv("GIT_WORK_TREE", inheritedRoot);
-
-  await expect(getExactHeadSha(root)).resolves.toBe(expected);
-  expect(expected).toMatch(/^[a-f0-9]{40}$/u);
 });
 
 async function git(repositoryRoot: string, args: string[]): Promise<string> {

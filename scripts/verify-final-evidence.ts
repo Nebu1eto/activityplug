@@ -392,7 +392,12 @@ export async function writeEvidenceAtomically(
 }
 
 function isPublishableEnglishMarkdown(path: string): boolean {
-  return path.endsWith(".md") && !path.endsWith(".ko.md") && !path.endsWith(".ja.md");
+  return (
+    !path.startsWith(".changeset/") &&
+    path.endsWith(".md") &&
+    !path.endsWith(".ko.md") &&
+    !path.endsWith(".ja.md")
+  );
 }
 
 function requiresTranslationFreshness(status: string | undefined): boolean {
