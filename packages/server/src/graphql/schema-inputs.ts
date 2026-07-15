@@ -1,4 +1,4 @@
-import { ActivityPlugError, isIsoDateTimeString } from "@activityplug/core";
+import { ActivityPlugError, isIsoDateTimeString, MAX_PROFILE_FIELDS } from "@activityplug/core";
 
 export function postUpdateInput(input: unknown) {
   const value = objectInput(input);
@@ -313,7 +313,18 @@ function filterKeywords(input: unknown) {
 }
 
 function accountFields(input: unknown) {
-  return arrayInput(input, "fields").map((item) => {
+  const fields = arrayInput(input, "fields");
+  if (fields.length > MAX_PROFILE_FIELDS) {
+    throw new ActivityPlugError(
+      "REQUEST_LIMIT_EXCEEDED",
+      "Profile fields exceeded the configured count limit.",
+      {
+        operation: "account.updateProfile",
+        raw: { dimension: "profile.fields", limit: MAX_PROFILE_FIELDS },
+      },
+    );
+  }
+  return fields.map((item) => {
     const value = objectInput(item);
     return {
       name: stringInput(value, "name"),

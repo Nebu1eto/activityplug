@@ -1409,6 +1409,81 @@ describe("createActivityPlugServer", () => {
     );
   });
 
+  it("applies OAuth client origin policy before one shared admission", async () => {
+    const take = vi.fn(async () => ({ allowed: true as const }));
+    const release = vi.fn(async () => undefined);
+    const reserve = vi.fn(async () => ({ allowed: true as const, release }));
+    const server = createActivityPlugServer({
+      adapters: [testAdapter],
+      sessions: new InMemoryAuthSessionStore(),
+      authStartLimiter: { take, reserve },
+      originPolicy: {
+        assertAllowed: async (origin) => {
+          if (origin === "https://blocked.example") {
+            throw new ActivityPlugError("ORIGIN_NOT_ALLOWED", "Blocked origin.");
+          }
+        },
+      },
+    });
+    const client = {
+      clientName: "ActivityPlug",
+      redirectUris: ["https://client.example/callback"],
+    };
+
+    const blockedHttp = await server.app.request("/api/v1/auth/clients", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ origin: "https://blocked.example", client }),
+    });
+    const blockedGraphQL = await server.app.request("/graphql", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        query: `mutation($input: RegisterOAuthClientInput!) {
+          registerOAuthClient(input: $input) { clientId }
+        }`,
+        variables: { input: { origin: "https://blocked.example", client } },
+      }),
+    });
+
+    expect(blockedHttp.status).toBe(403);
+    expect(await blockedGraphQL.json()).toMatchObject({
+      errors: [
+        {
+          extensions: {
+            activityplug: { code: "ORIGIN_NOT_ALLOWED" },
+          },
+        },
+      ],
+    });
+    expect(take).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+
+    await server.app.request("/api/v1/auth/clients", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ origin: "HTTPS://SOCIAL.EXAMPLE:443/", client }),
+    });
+    await server.app.request("/graphql", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        query: `mutation($input: RegisterOAuthClientInput!) {
+          registerOAuthClient(input: $input) { clientId }
+        }`,
+        variables: { input: { origin: "HTTPS://SOCIAL.EXAMPLE:443/", client } },
+      }),
+    });
+    await expect(
+      server.service.auth.registerClient({ origin: "https://social.example", client }),
+    ).rejects.toMatchObject({ code: "UNSUPPORTED_OPERATION" });
+    expect(reserve).toHaveBeenCalledTimes(3);
+    expect(reserve).toHaveBeenCalledWith(
+      expect.objectContaining({ origin: "https://social.example" }),
+    );
+    expect(release).toHaveBeenCalledTimes(3);
+  });
+
   it("preserves operation context for malformed public IDs", async () => {
     const sessionStore = new InMemoryAuthSessionStore();
     await sessionStore.create({

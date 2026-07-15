@@ -4,11 +4,48 @@ import { capability, createCapabilitySet } from "../capabilities/capability.js";
 import { createEntityRef } from "../ids/opaque-id.js";
 import {
   createActivityPlugClient,
+  MAX_PROFILE_FIELDS,
   type ActivityPlugAdapter,
   type CreatePostInput,
 } from "./client.js";
 
 describe("library-mode clients", () => {
+  it("rejects profile field overflow before adapter I/O and accepts the exact limit", async () => {
+    const updateProfile = vi.fn(async () => undefined as never);
+    const adapter: ActivityPlugAdapter = {
+      auth: testTokenAuth,
+      metadata: {
+        id: "fake",
+        displayName: "Fake Adapter",
+        kind: "unknown",
+        supportedSoftware: ["fake"],
+        staticCapabilities: createCapabilitySet({
+          "auth.tokenInjection": capability("supported"),
+          "accounts.updateProfile": capability("supported"),
+        }),
+      },
+      accounts: { updateProfile },
+    };
+    const client = createActivityPlugClient({ adapter, origin: "https://social.example" });
+    const session = await client.auth.injectToken({ accessToken: "token" });
+    const field = { name: "", value: "" };
+
+    await client.accounts.updateProfile({
+      session,
+      fields: Array.from({ length: MAX_PROFILE_FIELDS }, () => field),
+    });
+    await expect(
+      client.accounts.updateProfile({
+        session,
+        fields: Array.from({ length: MAX_PROFILE_FIELDS + 1 }, () => field),
+      }),
+    ).rejects.toMatchObject({
+      code: "REQUEST_LIMIT_EXCEEDED",
+      context: expect.objectContaining({ operation: "account.updateProfile" }),
+    });
+    expect(updateProfile).toHaveBeenCalledOnce();
+  });
+
   it("can be created from a fake adapter without importing server code", () => {
     const adapter: ActivityPlugAdapter = {
       auth: testTokenAuth,

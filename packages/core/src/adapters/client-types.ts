@@ -470,6 +470,8 @@ export interface UpdateProfileInput {
   readonly fields?: readonly AccountFieldInput[];
 }
 
+export const MAX_PROFILE_FIELDS = 100;
+
 export interface AccountFieldInput {
   readonly name: string;
   readonly value: string;

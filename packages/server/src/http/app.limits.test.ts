@@ -1,10 +1,108 @@
-import { capability, createCapabilitySet } from "@activityplug/core";
+import { capability, createCapabilitySet, MAX_PROFILE_FIELDS } from "@activityplug/core";
 import { describe, expect, it, vi } from "vitest";
 
-import { createTestService, testInstance, testMedia } from "./app-test-utils.js";
+import {
+  createTestService,
+  testInstance,
+  testMedia,
+  testSession,
+  testViewerAccount,
+} from "./app-test-utils.js";
 import { createActivityPlugApp } from "./app.js";
 
 describe("ActivityPlug transport limits", () => {
+  it.each(["HTTP", "GraphQL"] as const)(
+    "rejects profile field overflow through %s before service work",
+    async (surface) => {
+      const updateProfile = vi.fn(createTestService().accounts.updateProfile);
+      const app = createActivityPlugApp({
+        service: createTestService({
+          capabilities: () =>
+            createCapabilitySet({ "accounts.updateProfile": capability("supported") }),
+          accounts: { ...createTestService().accounts, updateProfile },
+        }),
+      });
+      const fields = Array.from({ length: MAX_PROFILE_FIELDS + 1 }, () => ({
+        name: "field",
+        value: "value",
+      }));
+
+      const response =
+        surface === "HTTP"
+          ? await app.request("/api/v1/accounts/update-profile", {
+              method: "PATCH",
+              headers: {
+                authorization: `Bearer ${testSession.id}`,
+                "content-type": "application/json",
+              },
+              body: JSON.stringify({ origin: "https://example.test", fields }),
+            })
+          : await app.request("/graphql", {
+              method: "POST",
+              headers: {
+                authorization: `Bearer ${testSession.id}`,
+                "content-type": "application/json",
+              },
+              body: JSON.stringify({
+                query:
+                  "mutation UpdateProfile($input: UpdateProfileInput!) { updateProfile(input: $input) { username } }",
+                variables: { input: { origin: "https://example.test", fields } },
+              }),
+            });
+
+      expect(response.status).toBe(surface === "HTTP" ? 413 : 200);
+      await expect(response.json()).resolves.toMatchObject(
+        surface === "HTTP"
+          ? { error: { code: "REQUEST_LIMIT_EXCEEDED" } }
+          : { errors: [{ extensions: { activityplug: { code: "REQUEST_LIMIT_EXCEEDED" } } }] },
+      );
+      expect(updateProfile).not.toHaveBeenCalled();
+    },
+  );
+
+  it("accepts the exact profile field limit through HTTP and GraphQL", async () => {
+    const updateProfile = vi.fn(createTestService().accounts.updateProfile);
+    const app = createActivityPlugApp({
+      service: createTestService({
+        capabilities: () =>
+          createCapabilitySet({ "accounts.updateProfile": capability("supported") }),
+        accounts: { ...createTestService().accounts, updateProfile },
+      }),
+    });
+    const fields = Array.from({ length: MAX_PROFILE_FIELDS }, () => ({
+      name: "field",
+      value: "value",
+    }));
+
+    const httpResponse = await app.request("/api/v1/accounts/update-profile", {
+      method: "PATCH",
+      headers: {
+        authorization: `Bearer ${testSession.id}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ origin: "https://example.test", fields }),
+    });
+    const graphqlResponse = await app.request("/graphql", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${testSession.id}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        query:
+          "mutation UpdateProfile($input: UpdateProfileInput!) { updateProfile(input: $input) { username } }",
+        variables: { input: { origin: "https://example.test", fields } },
+      }),
+    });
+
+    expect(httpResponse.status).toBe(200);
+    expect(graphqlResponse.status).toBe(200);
+    await expect(graphqlResponse.json()).resolves.toMatchObject({
+      data: { updateProfile: { username: testViewerAccount.username } },
+    });
+    expect(updateProfile).toHaveBeenCalledTimes(2);
+  });
+
   it("rejects an oversized JSON body before service work", async () => {
     const detect = vi.fn(createTestService().instances.detect);
     const app = createActivityPlugApp({

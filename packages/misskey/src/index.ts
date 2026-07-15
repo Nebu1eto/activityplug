@@ -2,6 +2,7 @@ import {
   ActivityPlugError,
   closeWebSocketSafely,
   createEntityRef,
+  MAX_PROFILE_FIELDS,
   MAX_STREAMING_QUEUED_BYTES,
   resolveSameOriginDiscoveryUrl,
   resolveWebSocketFactoryResult,
@@ -1164,6 +1165,18 @@ async function updateProfile(
   context: AdapterOperationContext,
   options: MisskeyAdapterOptions,
 ): Promise<Account> {
+  if ((input.fields?.length ?? 0) > MAX_PROFILE_FIELDS) {
+    throw new ActivityPlugError(
+      "REQUEST_LIMIT_EXCEEDED",
+      "Profile fields exceeded the configured count limit.",
+      {
+        adapter: context.adapterId,
+        origin: context.origin,
+        operation: "account.updateProfile",
+        raw: { dimension: "profile.fields", limit: MAX_PROFILE_FIELDS },
+      },
+    );
+  }
   const response = await requestJson<MisskeyMeResponse>(
     clientFor(context, options)
       .post("api/i/update", {

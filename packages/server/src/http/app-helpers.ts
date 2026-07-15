@@ -5,6 +5,7 @@ import {
   isActivityPlugError,
   isIsoDateTimeString,
   maxPageLimit,
+  MAX_PROFILE_FIELDS,
   type ActivityPlugError as ActivityPlugErrorType,
   type OAuthClientRegistration,
   type PasskeyAuthenticationResponse,
@@ -994,6 +995,9 @@ export function optionalAccountFields(body: Record<string, unknown>): {
       "Request body field must be an account field array: fields.",
     );
   }
+  if (value.length > MAX_PROFILE_FIELDS) {
+    throw profileFieldLimitError();
+  }
   return {
     fields: value.map((item) => {
       const field = requireObjectBody(item);
@@ -1003,6 +1007,17 @@ export function optionalAccountFields(body: Record<string, unknown>): {
       };
     }),
   };
+}
+
+function profileFieldLimitError(): ActivityPlugError {
+  return new ActivityPlugError(
+    "REQUEST_LIMIT_EXCEEDED",
+    "Profile fields exceeded the configured count limit.",
+    {
+      operation: "account.updateProfile",
+      raw: { dimension: "profile.fields", limit: MAX_PROFILE_FIELDS },
+    },
+  );
 }
 
 export function randomState(): string {

@@ -488,6 +488,107 @@ describe("createVettedFetch", () => {
     });
   });
 
+  it("accepts the exact remote response read budget and cancels the next chunk", async () => {
+    let cancelled = false;
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("a"));
+        controller.enqueue(new TextEncoder().encode("b"));
+        controller.enqueue(new TextEncoder().encode("c"));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const vettedFetch = createTestFetch({
+      maxBodyReads: 2,
+      dispatchPinned: { dispatch: async () => new Response(source) },
+    });
+
+    const response = await vettedFetch("https://social.example/data");
+
+    await expect(response.text()).rejects.toMatchObject({
+      code: "REQUEST_LIMIT_EXCEEDED",
+      context: expect.objectContaining({ operation: "remote.response" }),
+    });
+    expect(cancelled).toBe(true);
+  });
+
+  it("preserves a coalesced response within the remote response read budget", async () => {
+    const vettedFetch = createTestFetch({
+      maxBodyReads: 1,
+      dispatchPinned: { dispatch: async () => new Response("abc") },
+    });
+
+    const response = await vettedFetch("https://social.example/data");
+
+    await expect(response.text()).resolves.toBe("abc");
+  });
+
+  it("shares the request read budget across replay prefix and forwarding", async () => {
+    let cancelled = false;
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("12"));
+        controller.enqueue(new TextEncoder().encode("345"));
+        controller.enqueue(new TextEncoder().encode("6"));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const dispatch = vi.fn(async ({ request }: PinnedDispatchInput) => {
+      await request.text();
+      return new Response("unexpected");
+    });
+    const vettedFetch = createTestFetch({
+      maxBodyReads: 2,
+      replayBodyBytes: 4,
+      dispatchPinned: { dispatch },
+    });
+
+    await expect(
+      vettedFetch("https://social.example/upload", {
+        method: "POST",
+        body: source,
+        duplex: "half",
+      } as RequestInit),
+    ).rejects.toMatchObject({
+      code: "REQUEST_LIMIT_EXCEEDED",
+      context: expect.objectContaining({ operation: "remote.request" }),
+    });
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(cancelled).toBe(true);
+  });
+
+  it("accepts a request at the exact read and replay boundaries", async () => {
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("12"));
+        controller.enqueue(new TextEncoder().encode("34"));
+        controller.close();
+      },
+    });
+    const dispatch = vi.fn(async ({ request }: PinnedDispatchInput) => {
+      await expect(request.text()).resolves.toBe("1234");
+      return new Response("ok");
+    });
+    const vettedFetch = createTestFetch({
+      maxBodyReads: 2,
+      replayBodyBytes: 4,
+      dispatchPinned: { dispatch },
+    });
+
+    await expect(
+      vettedFetch("https://social.example/upload", {
+        method: "POST",
+        body: source,
+        duplex: "half",
+      } as RequestInit),
+    ).resolves.toMatchObject({ status: 200 });
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
+
   it("preserves the typed response-limit error when stream cancellation fails", async () => {
     const body = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -600,6 +701,7 @@ describe("createVettedFetch", () => {
 
     for (const invalid of [
       { ...base, replayBodyBytes: -1 },
+      { ...base, maxBodyReads: 0 },
       { ...base, timeoutMs: 0 },
       { ...base, timeoutMs: 2_147_483_648 },
       { ...base, lookup: undefined },
@@ -645,6 +747,7 @@ function createTestFetch(
     readonly remoteStructuredBytes: number;
     readonly maxRedirects: number;
     readonly replayBodyBytes: number;
+    readonly maxBodyReads: number;
     readonly timeoutMs: number;
     readonly lookup: LookupAddresses;
     readonly dispatchPinned: PinnedDispatcher;

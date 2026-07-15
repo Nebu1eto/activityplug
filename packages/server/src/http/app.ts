@@ -389,6 +389,7 @@ export function createActivityPlugApp(options: CreateActivityPlugAppOptions): Ho
           await serviceFor(context).auth.registerClient({
             ...selector,
             origin,
+            clientIp: oauthClientRegistrationIp(options, context),
             client: oauthClientInput(body["client"]),
           }),
         ),
@@ -1512,6 +1513,9 @@ export function createActivityPlugApp(options: CreateActivityPlugAppOptions): Ho
       get clientIp() {
         return requiredClientIp(context.req.raw, options.clientIp, context);
       },
+      get oauthClientRegistrationIp() {
+        return oauthClientRegistrationIp(options, context);
+      },
       tokenImport: options.tokenImport,
       assertOAuthClientRegistrationAllowed: (origin) =>
         assertOAuthClientRegistrationAllowed(
@@ -1577,6 +1581,16 @@ function requiredClientIp(
     throw new ActivityPlugError("VALIDATION_FAILED", "Trusted client IP is invalid.");
   }
   return clientIp;
+}
+
+function oauthClientRegistrationIp(
+  options: CreateActivityPlugAppOptions,
+  context: Context,
+): string {
+  if (options.oauthClientRegistrationLimiter !== undefined) {
+    return requiredClientIp(context.req.raw, options.clientIp, context);
+  }
+  return resolveClientIp(context.req.raw, options.clientIp, peerAddressFor(context)) ?? "unknown";
 }
 
 function assertCredentialedCorsConfiguration(

@@ -4,6 +4,7 @@ import {
   createCapabilitySet,
   createEntityRef,
   mergeCapabilityLayers,
+  MAX_PROFILE_FIELDS,
   resolveSameOriginDiscoveryUrl,
   type Account,
   type ActivityPlugAdapter,
@@ -1096,12 +1097,7 @@ async function listAccountFollows(
   );
   return {
     nodes: response.map((account) => accountFromResponse(account, context, operation)),
-    pageInfo: mastodonPageInfoForOperation(
-      response as readonly MastodonStatusResponse[],
-      remoteResponse.headers,
-      context,
-      operation,
-    ),
+    pageInfo: mastodonPageInfoForOperation(response, remoteResponse.headers, context, operation),
   };
 }
 
@@ -1119,6 +1115,18 @@ async function updateProfile(
         origin: context.origin,
         operation: "account.updateProfile",
         capability: "accounts.updateProfile",
+      },
+    );
+  }
+  if ((input.fields?.length ?? 0) > MAX_PROFILE_FIELDS) {
+    throw new ActivityPlugError(
+      "REQUEST_LIMIT_EXCEEDED",
+      "Profile fields exceeded the configured count limit.",
+      {
+        adapter: context.adapterId,
+        origin: context.origin,
+        operation: "account.updateProfile",
+        raw: { dimension: "profile.fields", limit: MAX_PROFILE_FIELDS },
       },
     );
   }

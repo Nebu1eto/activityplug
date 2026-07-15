@@ -511,6 +511,130 @@ describe("InMemoryOAuthStartLimiter", () => {
       limiter.take({ clientIp: "203.0.113.30", origin: "not-an-origin", now: new Date() }),
     ).rejects.toThrow();
   });
+
+  it("bounds variant-origin state while canonical origins share one key", async () => {
+    const limiter = new InMemoryOAuthStartLimiter({
+      maxStartsPerClientIp: 2_000,
+      maxStartsGlobal: 2_000,
+      maxLiveKeys: 8,
+    });
+    const now = new Date(initialNow);
+
+    for (const origin of [
+      "HTTPS://SOCIAL.EXAMPLE:443/",
+      "https://social.example",
+      "https://social.example/",
+    ]) {
+      const reservation = await limiter.reserve({
+        clientIp: "203.0.113.40",
+        origin,
+        now,
+      });
+      expect(reservation.allowed).toBe(true);
+      if (reservation.allowed) await reservation.release();
+    }
+
+    const variants = await Promise.all(
+      Array.from({ length: 1_000 }, async (_unused, index) => {
+        const reservation = await limiter.reserve({
+          clientIp: "203.0.113.40",
+          origin: `https://variant-${index}.example`,
+          now,
+        });
+        if (reservation.allowed) await reservation.release();
+        return reservation;
+      }),
+    );
+    expect(variants.filter((result) => result.allowed)).toHaveLength(7);
+    expect(
+      variants.filter((result) => !result.allowed && result.reason === "capacity_exceeded"),
+    ).toHaveLength(993);
+  });
+
+  it("atomically caps live keys, shares an existing key, and releases reservations", async () => {
+    const limiter = new InMemoryOAuthStartLimiter({
+      maxStartsPerKey: 1_024,
+      maxStartsPerClientIp: 2_048,
+      maxStartsGlobal: 2_048,
+      maxLiveKeys: 4,
+      maxTrackedKeys: 1_024,
+    });
+    const now = new Date(initialNow);
+    const contenders = await Promise.all(
+      Array.from({ length: 1_024 }, (_unused, index) =>
+        limiter.reserve({
+          clientIp: "203.0.113.50",
+          origin: `https://contender-${index}.example`,
+          now,
+        }),
+      ),
+    );
+    const admitted = contenders.filter((result) => result.allowed);
+    expect(admitted).toHaveLength(4);
+    expect(
+      contenders.filter((result) => !result.allowed && result.reason === "capacity_exceeded"),
+    ).toHaveLength(1_020);
+
+    const shared = await limiter.reserve({
+      clientIp: "203.0.113.50",
+      origin: "https://contender-0.example",
+      now,
+    });
+    expect(shared.allowed).toBe(true);
+    const denied = await limiter.reserve({
+      clientIp: "203.0.113.50",
+      origin: "https://new-key.example",
+      now,
+    });
+    expect(denied).toEqual({ allowed: false, reason: "capacity_exceeded" });
+
+    if (shared.allowed) await shared.release();
+    for (const reservation of admitted) await reservation.release();
+    const afterRelease = await limiter.reserve({
+      clientIp: "203.0.113.50",
+      origin: "https://new-key.example",
+      now,
+    });
+    expect(afterRelease.allowed).toBe(true);
+    if (afterRelease.allowed) await afterRelease.release();
+  });
+
+  it("atomically enforces per-IP and global event budgets", async () => {
+    const limiter = new InMemoryOAuthStartLimiter({
+      maxStartsPerKey: 10,
+      maxStartsPerClientIp: 2,
+      maxStartsGlobal: 3,
+      maxLiveKeys: 10,
+    });
+    const now = new Date(initialNow);
+
+    const sameIp = await Promise.all(
+      Array.from({ length: 3 }, (_unused, index) =>
+        limiter.reserve({
+          clientIp: "203.0.113.60",
+          origin: `https://same-ip-${index}.example`,
+          now,
+        }),
+      ),
+    );
+    expect(sameIp.filter((result) => result.allowed)).toHaveLength(2);
+    expect(
+      sameIp.filter((result) => !result.allowed && result.reason === "rate_limited"),
+    ).toHaveLength(1);
+
+    const global = await Promise.all([
+      limiter.reserve({ clientIp: "203.0.113.61", origin: "https://global-a.example", now }),
+      limiter.reserve({ clientIp: "203.0.113.62", origin: "https://global-b.example", now }),
+    ]);
+    expect(global.filter((result) => result.allowed)).toHaveLength(1);
+    expect(
+      global.filter((result) => !result.allowed && result.reason === "rate_limited"),
+    ).toHaveLength(1);
+
+    for (const result of [...sameIp, ...global]) {
+      if (result.allowed) await result.release();
+    }
+  });
 });
 
 describe("InMemoryShortCacheStore", () => {

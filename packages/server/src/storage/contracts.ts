@@ -82,8 +82,18 @@ export type OAuthStartLimitResult =
   | { readonly allowed: true }
   | { readonly allowed: false; readonly retryAfterSeconds: number };
 
+export type OAuthStartReservationResult =
+  | { readonly allowed: true; readonly release: () => Promise<void> }
+  | {
+      readonly allowed: false;
+      readonly reason: "rate_limited";
+      readonly retryAfterSeconds: number;
+    }
+  | { readonly allowed: false; readonly reason: "capacity_exceeded" };
+
 export interface OAuthStartLimiter {
   take(input: OAuthStartLimiterInput): Promise<OAuthStartLimitResult>;
+  reserve?(input: OAuthStartLimiterInput): Promise<OAuthStartReservationResult>;
 }
 
 export interface ShortCacheStore {

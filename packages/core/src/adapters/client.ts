@@ -50,10 +50,11 @@ import {
   type UpdatePostInput,
   type UpdateProfileInput,
 } from "./client-types.js";
+import { MAX_PROFILE_FIELDS } from "./client-types.js";
 import { isValidAdapterId } from "./metadata.js";
 import { PORTABLE_PAGE_LIMIT } from "./page.js";
 
-export type * from "./client-types.js";
+export * from "./client-types.js";
 
 export function createActivityPlugClient(options: ActivityPlugClientOptions): ActivityPlugClient {
   if (!isValidAdapterId(options.adapter.metadata.id)) {
@@ -310,6 +311,18 @@ function assertUpdateProfileInput(input: UpdateProfileInput, client: RequiredCli
         "Profile fields must include string names and values.",
         "account.updateProfile",
         client,
+      );
+    }
+    if (input.fields.length > MAX_PROFILE_FIELDS) {
+      throw new ActivityPlugError(
+        "REQUEST_LIMIT_EXCEEDED",
+        "Profile fields exceeded the configured count limit.",
+        {
+          adapter: client.adapter.metadata.id,
+          origin: client.origin,
+          operation: "account.updateProfile",
+          raw: { dimension: "profile.fields", limit: MAX_PROFILE_FIELDS },
+        },
       );
     }
   }

@@ -43,6 +43,8 @@ export interface AdvertisedMultipartConstraints {
 
 type BodySource = Request | ReadableStream<Uint8Array> | null;
 
+const MAX_REQUEST_BODY_READS = 4_096;
+
 export function resolveRequestLimits(overrides: Partial<RequestLimits> = {}): RequestLimits {
   if (typeof overrides !== "object" || overrides === null) {
     throw new TypeError("Request limit overrides must be an object.");
@@ -83,8 +85,9 @@ export async function readBoundedBodyBytes(
   if (stream === null) return new Uint8Array();
 
   const reader = stream.getReader();
-  const chunks: Uint8Array[] = [];
+  let bytes: Uint8Array<ArrayBuffer> = new Uint8Array();
   let total = 0;
+  let reads = 0;
   let completed = false;
   try {
     for (;;) {
@@ -93,11 +96,16 @@ export async function readBoundedBodyBytes(
         completed = true;
         break;
       }
+      reads += 1;
+      if (reads > MAX_REQUEST_BODY_READS) {
+        throw requestLimitError(limit);
+      }
       if (value.byteLength > limit - total) {
         throw requestLimitError(limit);
       }
+      bytes = ensureBodyCapacity(bytes, total + value.byteLength, limit);
+      bytes.set(value, total);
       total += value.byteLength;
-      chunks.push(value);
     }
   } catch (cause) {
     startReaderCancellation(reader, cause);
@@ -109,13 +117,7 @@ export async function readBoundedBodyBytes(
     releaseReader(reader);
   }
 
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return bytes;
+  return bytes.byteLength === total ? bytes : bytes.slice(0, total);
 }
 
 export async function readBoundedBodyText(
@@ -234,6 +236,18 @@ function contentLength(headers: Headers): number {
   if (value === null || !/^\d+$/u.test(value)) return 0;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) ? parsed : Number.POSITIVE_INFINITY;
+}
+
+function ensureBodyCapacity(
+  bytes: Uint8Array<ArrayBuffer>,
+  required: number,
+  limit: number,
+): Uint8Array<ArrayBuffer> {
+  if (required <= bytes.byteLength) return bytes;
+  const doubled = Math.min(limit, bytes.byteLength * 2);
+  const expanded = new Uint8Array(Math.max(required, doubled));
+  expanded.set(bytes);
+  return expanded;
 }
 
 function intersectLimit(configured: number, advertised: number | undefined, name: string): number {

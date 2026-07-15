@@ -110,6 +110,7 @@ export interface GraphQLContext {
   readonly service: ActivityPlugApiService;
   readonly request: Request;
   readonly clientIp: string;
+  readonly oauthClientRegistrationIp: string;
   readonly tokenImport?: TokenImportOptions;
   readonly assertOAuthClientRegistrationAllowed: (origin: string) => Promise<string>;
 }
@@ -1642,6 +1643,7 @@ builder.mutationFields((t) => ({
         return serializeOAuthClientRegistration(
           await context.service.auth.registerClient({
             origin,
+            clientIp: context.oauthClientRegistrationIp,
             ...(input.adapter === null || input.adapter === undefined
               ? {}
               : { adapter: input.adapter }),

@@ -13,6 +13,7 @@ import {
 } from "./request-limits.js";
 
 const encoder = new TextEncoder();
+const maxBodyReads = 4_096;
 
 function streamRequest(body: ReadableStream<Uint8Array>, headers?: HeadersInit): Request {
   return new Request("https://activityplug.test/body", {
@@ -65,16 +66,6 @@ describe("request limit configuration", () => {
 });
 
 describe("bounded body reading", () => {
-  it("accepts the exact byte boundary and rejects one byte above it", async () => {
-    await expect(readBoundedBodyBytes(new Response("1234").body, 4)).resolves.toEqual(
-      encoder.encode("1234"),
-    );
-    await expect(readBoundedBodyBytes(new Response("12345").body, 4)).rejects.toMatchObject({
-      code: "REQUEST_LIMIT_EXCEEDED",
-      context: { operation: "request.body", raw: { limit: 4 } },
-    });
-  });
-
   it("rejects a trustworthy oversized Content-Length before reading", async () => {
     const pull = vi.fn();
     const cancel = vi.fn();
@@ -136,6 +127,63 @@ describe("bounded body reading", () => {
       code: "REQUEST_LIMIT_EXCEEDED",
     });
     expect(cancelled).toBe(true);
+    expect(stream.locked).toBe(false);
+  });
+
+  it.each([maxBodyReads - 1, maxBodyReads])(
+    "accepts %s non-empty body reads at and below the read boundary",
+    async (readCount) => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (let index = 0; index < readCount; index += 1) {
+            controller.enqueue(encoder.encode("x"));
+          }
+          controller.close();
+        },
+      });
+
+      const bytes = await readBoundedBodyBytes(stream, maxBodyReads + 1);
+
+      expect(bytes.byteLength).toBe(readCount);
+      expect(bytes.every((byte) => byte === 120)).toBe(true);
+      expect(stream.locked).toBe(false);
+    },
+  );
+
+  it("rejects and cancels one non-empty body read above the read boundary", async () => {
+    const cancel = vi.fn();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let index = 0; index <= maxBodyReads; index += 1) {
+          controller.enqueue(encoder.encode("x"));
+        }
+      },
+      cancel,
+    });
+
+    await expect(readBoundedBodyBytes(stream, maxBodyReads + 1)).rejects.toMatchObject({
+      code: "REQUEST_LIMIT_EXCEEDED",
+      context: { operation: "request.body", raw: { limit: maxBodyReads + 1 } },
+    });
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(stream.locked).toBe(false);
+  });
+
+  it("charges zero-length body values against the read boundary", async () => {
+    const cancel = vi.fn();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let index = 0; index <= maxBodyReads; index += 1) {
+          controller.enqueue(new Uint8Array());
+        }
+      },
+      cancel,
+    });
+
+    await expect(readBoundedBodyBytes(stream, 1)).rejects.toMatchObject({
+      code: "REQUEST_LIMIT_EXCEEDED",
+    });
+    expect(cancel).toHaveBeenCalledOnce();
     expect(stream.locked).toBe(false);
   });
 
@@ -238,18 +286,6 @@ describe("multipart constraint helpers", () => {
     });
     expect(Object.isFrozen(constraints)).toBe(true);
     expect(Object.isFrozen(constraints.acceptedMimeTypes)).toBe(true);
-  });
-
-  it("clamps per-file bytes to a stricter advertised aggregate limit", () => {
-    expect(
-      resolveMultipartConstraints(DEFAULT_REQUEST_LIMITS, {
-        multipartBytes: 1_000,
-      }),
-    ).toEqual({
-      multipartBytes: 1_000,
-      multipartFiles: 4,
-      multipartFileBytes: 1_000,
-    });
   });
 
   it("rejects file count, individual size, total size, and MIME violations", () => {

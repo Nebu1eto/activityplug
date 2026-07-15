@@ -10,6 +10,7 @@ import {
   type OAuthStartLimiter,
   type OAuthStartLimiterInput,
   type OAuthStartLimitResult,
+  type OAuthStartReservationResult,
   type OAuthStateBinding,
   type OAuthStateClaim,
   type OAuthStateRecord,
@@ -334,53 +335,158 @@ export class InMemoryStreamTicketStore implements StreamTicketStore {
   }
 }
 
-const oauthStartWindowMilliseconds = 60_000;
-const oauthStartsPerWindow = 5;
+const defaultOAuthStartWindowMilliseconds = 60_000;
+const defaultOAuthStartsPerKey = 5;
+const defaultOAuthStartsPerClientIp = 100;
+const defaultOAuthStartsGlobal = 1_000;
+const defaultOAuthStartLiveKeys = 256;
+
+export interface InMemoryOAuthStartLimiterOptions {
+  readonly windowMilliseconds?: number;
+  readonly maxStartsPerKey?: number;
+  readonly maxStartsPerClientIp?: number;
+  readonly maxStartsGlobal?: number;
+  readonly maxLiveKeys?: number;
+  readonly maxTrackedKeys?: number;
+}
 
 export class InMemoryOAuthStartLimiter implements OAuthStartLimiter {
   readonly #starts = new Map<string, number[]>();
+  readonly #clientIpStarts = new Map<string, number[]>();
+  #globalStarts: number[] = [];
+  readonly #activeKeys = new Map<string, number>();
   readonly #mutex = new PromiseChainMutex();
+  readonly #windowMilliseconds: number;
+  readonly #maxStartsPerKey: number;
+  readonly #maxStartsPerClientIp: number;
+  readonly #maxStartsGlobal: number;
+  readonly #maxLiveKeys: number;
+  readonly #maxTrackedKeys: number;
   #nextCleanupAt = Number.NEGATIVE_INFINITY;
 
+  public constructor(options: InMemoryOAuthStartLimiterOptions = {}) {
+    this.#windowMilliseconds = positiveSafeInteger(
+      options.windowMilliseconds ?? defaultOAuthStartWindowMilliseconds,
+      "OAuth start limiter windowMilliseconds",
+    );
+    this.#maxStartsPerKey = positiveSafeInteger(
+      options.maxStartsPerKey ?? defaultOAuthStartsPerKey,
+      "OAuth start limiter maxStartsPerKey",
+    );
+    this.#maxStartsPerClientIp = positiveSafeInteger(
+      options.maxStartsPerClientIp ?? defaultOAuthStartsPerClientIp,
+      "OAuth start limiter maxStartsPerClientIp",
+    );
+    this.#maxStartsGlobal = positiveSafeInteger(
+      options.maxStartsGlobal ?? defaultOAuthStartsGlobal,
+      "OAuth start limiter maxStartsGlobal",
+    );
+    this.#maxLiveKeys = positiveSafeInteger(
+      options.maxLiveKeys ?? defaultOAuthStartLiveKeys,
+      "OAuth start limiter maxLiveKeys",
+    );
+    this.#maxTrackedKeys = positiveSafeInteger(
+      options.maxTrackedKeys ?? this.#maxLiveKeys,
+      "OAuth start limiter maxTrackedKeys",
+    );
+  }
+
   public async take(input: OAuthStartLimiterInput): Promise<OAuthStartLimitResult> {
+    const result = await this.#admit(input, false);
+    return result.allowed
+      ? { allowed: true }
+      : result.reason === "rate_limited"
+        ? { allowed: false, retryAfterSeconds: result.retryAfterSeconds }
+        : { allowed: false, retryAfterSeconds: Math.ceil(this.#windowMilliseconds / 1_000) };
+  }
+
+  public reserve(input: OAuthStartLimiterInput): Promise<OAuthStartReservationResult> {
+    return this.#admit(input, true);
+  }
+
+  #admit(input: OAuthStartLimiterInput, reserve: boolean): Promise<OAuthStartReservationResult> {
     const snapshot = snapshotLimiterInput(input);
-    return await this.#mutex.run(() => {
+    return this.#mutex.run(() => {
       this.#deleteExpiredWindows(snapshot.now);
       const key = JSON.stringify([snapshot.clientIp, snapshot.origin]);
-      const cutoff = snapshot.now - oauthStartWindowMilliseconds;
-      const active = (this.#starts.get(key) ?? [])
-        .filter((startedAt) => startedAt > cutoff)
-        .toSorted((left, right) => left - right);
-
-      if (active.length >= oauthStartsPerWindow) {
-        this.#starts.set(key, active);
+      const cutoff = snapshot.now - this.#windowMilliseconds;
+      const keyStarts = activeStarts(this.#starts.get(key), cutoff);
+      const clientIpStarts = activeStarts(this.#clientIpStarts.get(snapshot.clientIp), cutoff);
+      const globalStarts = activeStarts(this.#globalStarts, cutoff);
+      const constrained = [
+        [keyStarts, this.#maxStartsPerKey],
+        [clientIpStarts, this.#maxStartsPerClientIp],
+        [globalStarts, this.#maxStartsGlobal],
+      ] as const;
+      const exceeded = constrained.filter(([starts, maximum]) => starts.length >= maximum);
+      if (exceeded.length > 0) {
         return {
           allowed: false,
+          reason: "rate_limited",
           retryAfterSeconds: Math.max(
             1,
-            Math.ceil((active[0] + oauthStartWindowMilliseconds - snapshot.now) / 1_000),
+            ...exceeded.map(([starts]) =>
+              Math.ceil((starts[0] + this.#windowMilliseconds - snapshot.now) / 1_000),
+            ),
           ),
         };
       }
+      if (!this.#starts.has(key) && this.#starts.size >= this.#maxTrackedKeys) {
+        return { allowed: false, reason: "capacity_exceeded" };
+      }
+      if (reserve && !this.#activeKeys.has(key) && this.#activeKeys.size >= this.#maxLiveKeys) {
+        return { allowed: false, reason: "capacity_exceeded" };
+      }
 
-      this.#starts.set(
-        key,
-        [...active, snapshot.now].toSorted((left, right) => left - right),
-      );
-      return { allowed: true };
+      this.#starts.set(key, [...keyStarts, snapshot.now]);
+      this.#clientIpStarts.set(snapshot.clientIp, [...clientIpStarts, snapshot.now]);
+      this.#globalStarts = [...globalStarts, snapshot.now];
+      if (!reserve) return { allowed: true, release: async () => undefined };
+
+      this.#activeKeys.set(key, (this.#activeKeys.get(key) ?? 0) + 1);
+      let released = false;
+      return {
+        allowed: true,
+        release: async () => {
+          if (released) return;
+          released = true;
+          await this.#mutex.run(() => {
+            const active = this.#activeKeys.get(key);
+            if (active === undefined || active <= 1) this.#activeKeys.delete(key);
+            else this.#activeKeys.set(key, active - 1);
+          });
+        },
+      };
     });
   }
 
   #deleteExpiredWindows(now: number): void {
     if (now < this.#nextCleanupAt) return;
-    const cutoff = now - oauthStartWindowMilliseconds;
+    const cutoff = now - this.#windowMilliseconds;
     for (const [key, starts] of this.#starts) {
-      const active = starts.filter((startedAt) => startedAt > cutoff);
+      const active = activeStarts(starts, cutoff);
       if (active.length === 0) this.#starts.delete(key);
       else this.#starts.set(key, active);
     }
-    this.#nextCleanupAt = now + oauthStartWindowMilliseconds;
+    for (const [clientIp, starts] of this.#clientIpStarts) {
+      const active = activeStarts(starts, cutoff);
+      if (active.length === 0) this.#clientIpStarts.delete(clientIp);
+      else this.#clientIpStarts.set(clientIp, active);
+    }
+    this.#globalStarts = activeStarts(this.#globalStarts, cutoff);
+    this.#nextCleanupAt = now + this.#windowMilliseconds;
   }
+}
+
+function activeStarts(starts: readonly number[] | undefined, cutoff: number): number[] {
+  return (starts ?? []).filter((startedAt) => startedAt > cutoff);
+}
+
+function positiveSafeInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new TypeError(`${name} must be a positive safe integer.`);
+  }
+  return value;
 }
 
 interface CachedBytes {

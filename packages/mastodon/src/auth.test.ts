@@ -2,6 +2,7 @@ import {
   createActivityPlugClient,
   createCapabilitySet,
   createEntityRef,
+  MAX_PROFILE_FIELDS,
   mergeCapabilityLayers,
   type ActivityPlugAdapter,
   type AdapterOperationContext,
@@ -11,6 +12,34 @@ import { describe, expect, it, vi } from "vitest";
 import { createMastodonAdapter, mastodonDetectedCapabilities } from "./index.js";
 
 describe("Mastodon auth adapter", () => {
+  it("rejects profile field overflow before FormData or remote I/O", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const adapter = createMastodonAdapter();
+    const context: AdapterOperationContext = {
+      adapterId: "mastodon",
+      origin: "https://mastodon.example",
+      capabilities: createCapabilitySet(),
+      fetch,
+    };
+
+    await expect(
+      adapter.accounts?.updateProfile?.(
+        {
+          session: { id: "session" } as never,
+          fields: Array.from({ length: MAX_PROFILE_FIELDS + 1 }, () => ({
+            name: "",
+            value: "",
+          })),
+        },
+        context,
+      ),
+    ).rejects.toMatchObject({
+      code: "REQUEST_LIMIT_EXCEEDED",
+      context: expect.objectContaining({ operation: "account.updateProfile" }),
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("declares every supported post creation input", () => {
     const postCreate = createMastodonAdapter().metadata.staticCapabilities["posts.create"];
 

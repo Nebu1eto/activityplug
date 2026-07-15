@@ -582,6 +582,7 @@ export type ImportTokenRequest = InstanceSelector & InjectTokenInput;
 
 export interface RegisterOAuthClientRequest extends InstanceSelector {
   readonly client: OAuthClientRegistrationInput;
+  readonly clientIp?: string;
 }
 
 export interface AuthStartRequest extends InstanceSelector {

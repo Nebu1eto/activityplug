@@ -144,7 +144,6 @@ export function createActivityPlugServer(options: ActivityPlugServerOptions): Ac
     tokenImport: options.tokenImport,
     requestLimits,
     graphqlLimits: options.graphqlLimits,
-    oauthClientRegistrationLimiter: authStartLimiter,
     ...(options.browser?.clientIp === undefined ? {} : { clientIp: options.browser.clientIp }),
   });
   const browser =
@@ -1368,12 +1367,21 @@ function createAdapterBackedApiService(
       registerClient: async (input) => {
         const selector = normalizeSelector(input, "auth.registerClient");
         await originPolicy({ origin: selector.origin, operation: "auth.registerClient" });
-        return resolveClient(
-          selector,
-          options.adapters,
-          sessions,
-          options.operationFetch,
-        ).auth.oauth.registerClient(input.client);
+        const reservation = await reserveOAuthClientRegistration(
+          options.authStartLimiter,
+          input.clientIp,
+          selector.origin,
+        );
+        try {
+          return await resolveClient(
+            selector,
+            options.adapters,
+            sessions,
+            options.operationFetch,
+          ).auth.oauth.registerClient(input.client);
+        } finally {
+          await reservation?.release();
+        }
       },
       start: async (input) => {
         const extended = input as typeof input & { readonly clientIp?: string };
@@ -1654,6 +1662,44 @@ async function assertAuthStartAllowed(
       raw: { retryAfterSeconds: result.retryAfterSeconds },
     });
   }
+}
+
+async function reserveOAuthClientRegistration(
+  limiter: OAuthStartLimiter | undefined,
+  clientIp: string | undefined,
+  origin: string,
+): Promise<{ readonly release: () => Promise<void> } | undefined> {
+  if (limiter === undefined) return undefined;
+  const input = {
+    clientIp:
+      typeof clientIp === "string" && clientIp.trim() !== "" && clientIp.length <= 256
+        ? clientIp
+        : "unknown",
+    origin,
+    now: new Date(),
+  };
+  if (limiter.reserve !== undefined) {
+    const result = await limiter.reserve(input);
+    if (result.allowed) return { release: result.release };
+    const raw =
+      result.reason === "rate_limited"
+        ? { reason: result.reason, retryAfterSeconds: result.retryAfterSeconds }
+        : { reason: result.reason };
+    throw new ActivityPlugError("RATE_LIMITED", "Too many OAuth client registrations.", {
+      origin,
+      operation: "auth.registerClient",
+      raw,
+    });
+  }
+  const result = await limiter.take(input);
+  if (!result.allowed) {
+    throw new ActivityPlugError("RATE_LIMITED", "Too many OAuth client registrations.", {
+      origin,
+      operation: "auth.registerClient",
+      raw: { reason: "rate_limited", retryAfterSeconds: result.retryAfterSeconds },
+    });
+  }
+  return undefined;
 }
 
 function normalizeServerOrigin(

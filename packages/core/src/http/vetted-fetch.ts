@@ -4,6 +4,7 @@ import { ActivityPlugError, isActivityPlugError } from "../errors/error.js";
 export const DEFAULT_REMOTE_STRUCTURED_BYTES = 16 * 1024 * 1024;
 export const DEFAULT_MAX_REDIRECTS = 5;
 export const DEFAULT_REPLAY_BODY_BYTES = 1024 * 1024;
+export const DEFAULT_MAX_BODY_READS = 4_096;
 export const DEFAULT_REMOTE_TIMEOUT_MS = 10_000;
 const MAX_REPLAY_BODY_BYTES = 16 * 1024 * 1024;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
@@ -65,6 +66,8 @@ export interface VettedFetchOptions {
   readonly maxRedirects?: number;
   /** Maximum body size that may be retained for a body-preserving redirect. */
   readonly replayBodyBytes?: number;
+  /** Maximum non-EOF reads shared by request replay/forwarding and the response body. */
+  readonly maxBodyReads?: number;
   /** Overall deadline covering policy, DNS, dispatch, redirects, and response body. */
   readonly timeoutMs?: number;
   readonly lookup: LookupAddresses;
@@ -90,6 +93,7 @@ export function createVettedFetch(options: VettedFetchOptions): typeof fetch {
   assertVettedFetchOptions(options);
   const maxRedirects = options.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
   const replayBodyBytes = options.replayBodyBytes ?? DEFAULT_REPLAY_BODY_BYTES;
+  const maxBodyReads = options.maxBodyReads ?? DEFAULT_MAX_BODY_READS;
   const timeoutMs = options.timeoutMs ?? DEFAULT_REMOTE_TIMEOUT_MS;
 
   const vettedFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -145,7 +149,7 @@ export function createVettedFetch(options: VettedFetchOptions): typeof fetch {
         }
         const selectedAddress = addresses[0];
 
-        prepared ??= await prepareRequest(request, replayBodyBytes, deadline.signal);
+        prepared ??= await prepareRequest(request, replayBodyBytes, maxBodyReads, deadline.signal);
         request = prepared.request;
         let response: Response;
         try {
@@ -178,6 +182,7 @@ export function createVettedFetch(options: VettedFetchOptions): typeof fetch {
           return limitResponseBody(
             response,
             options.remoteStructuredBytes,
+            maxBodyReads,
             request.url,
             deadline.signal,
             deadline.cleanup,
@@ -269,34 +274,39 @@ export async function resolveVettedRemoteTarget(
 export async function readBoundedResponseBytes(
   response: Response,
   limit: number,
+  maxReads = DEFAULT_MAX_BODY_READS,
 ): Promise<Uint8Array> {
   assertByteLimit(limit);
+  assertPositiveSafeInteger(maxReads, "Remote response maxReads");
   if (response.body === null) return new Uint8Array();
   const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
+  let body: Uint8Array<ArrayBufferLike> = new Uint8Array(Math.min(limit, 8 * 1024));
   let total = 0;
+  let reads = 0;
   try {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      total += value.byteLength;
-      if (total > limit) {
+      reads += 1;
+      if (reads > maxReads) {
+        const cause = bodyReadLimitError("remote.response", maxReads);
+        startReaderCancellation(reader, cause);
+        throw cause;
+      }
+      const nextTotal = total + value.byteLength;
+      if (nextTotal > limit) {
         const cause = responseLimitError(limit);
         startReaderCancellation(reader, cause);
         throw cause;
       }
-      chunks.push(value);
+      body = ensureBufferCapacity(body, nextTotal, limit);
+      body.set(value, total);
+      total = nextTotal;
     }
   } finally {
     reader.releaseLock();
   }
-  const body = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return body;
+  return body.slice(0, total);
 }
 
 export async function readBoundedResponseText(response: Response, limit: number): Promise<string> {
@@ -322,6 +332,7 @@ function assertVettedFetchOptions(options: VettedFetchOptions): void {
       `Vetted fetch replayBodyBytes must be between 0 and ${MAX_REPLAY_BODY_BYTES}.`,
     );
   }
+  assertPositiveSafeInteger(options.maxBodyReads ?? DEFAULT_MAX_BODY_READS, "maxBodyReads");
   const timeoutMs = options.timeoutMs ?? DEFAULT_REMOTE_TIMEOUT_MS;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMER_DELAY_MS) {
     throw new TypeError(`Vetted fetch timeoutMs must be between 1 and ${MAX_TIMER_DELAY_MS}.`);
@@ -435,19 +446,21 @@ function requestWithSignal(request: Request, signal: AbortSignal): Request {
 async function prepareRequest(
   request: Request,
   replayLimit: number,
+  maxReads: number,
   signal: AbortSignal,
 ): Promise<PreparedRequest> {
   if (request.body === null) return { request, body: { kind: "none" } };
 
   const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
+  let prefix: Uint8Array<ArrayBufferLike> = new Uint8Array(Math.min(replayLimit, 8 * 1024));
   let total = 0;
+  const readBudget = { used: 0, limit: maxReads };
   try {
     for (;;) {
       const { done, value } = await raceWithAbort(reader.read(), signal);
       if (done) {
         releaseReader(reader);
-        const bytes = joinBytes(chunks, total);
+        const bytes = prefix.slice(0, total);
         return {
           request: recreateRequest(
             request,
@@ -460,22 +473,26 @@ async function prepareRequest(
         };
       }
 
+      consumeBodyRead(readBudget, "remote.request");
+
       const remaining = replayLimit - total;
       if (value.byteLength <= remaining) {
-        chunks.push(value.slice());
+        prefix = ensureBufferCapacity(prefix, total + value.byteLength, replayLimit);
+        prefix.set(value, total);
         total += value.byteLength;
         continue;
       }
 
       if (remaining > 0) {
-        chunks.push(value.slice(0, remaining));
+        prefix = ensureBufferCapacity(prefix, total + remaining, replayLimit);
+        prefix.set(value.subarray(0, remaining), total);
         total += remaining;
       }
-      const prefix = joinBytes(chunks, total);
+      const replayPrefix = prefix.slice(0, total);
       // Retain the producer-owned chunk instead of copying an arbitrarily large
       // overflow after the bounded replay prefix.
       const overflow = value.subarray(Math.max(remaining, 0));
-      const forwardingBody = forwardRequestBody(prefix, overflow, reader, signal);
+      const forwardingBody = forwardRequestBody(replayPrefix, overflow, reader, readBudget, signal);
       try {
         return {
           request: recreateRequest(
@@ -503,6 +520,7 @@ function forwardRequestBody(
   prefix: Uint8Array,
   overflow: Uint8Array,
   reader: ReadableStreamDefaultReader<Uint8Array>,
+  readBudget: { used: number; readonly limit: number },
   signal: AbortSignal,
 ): ReadableStream<Uint8Array> {
   const queued = [prefix, overflow].filter((chunk) => chunk.byteLength > 0);
@@ -546,6 +564,7 @@ function forwardRequestBody(
           controller.close();
           return;
         }
+        consumeBodyRead(readBudget, "remote.request");
         controller.enqueue(value);
       } catch (cause) {
         stop(cause, true);
@@ -582,16 +601,6 @@ function recreateRequest(
     init.duplex = "half";
   }
   return new Request(url, init);
-}
-
-function joinBytes(chunks: readonly Uint8Array[], total: number): Uint8Array {
-  const joined = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    joined.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return joined;
 }
 
 function validatedRequestUrl(request: Request): URL {
@@ -809,6 +818,7 @@ function createRedirectRequest(
 function limitResponseBody(
   response: Response,
   limit: number,
+  maxReads: number,
   requestUrl: string,
   signal: AbortSignal,
   cleanupDeadline: () => void,
@@ -819,6 +829,7 @@ function limitResponseBody(
   }
   const reader = response.body.getReader();
   let total = 0;
+  let reads = 0;
   let finished = false;
   let released = false;
   let controllerRef: ReadableStreamDefaultController<Uint8Array> | undefined;
@@ -848,20 +859,38 @@ function limitResponseBody(
     async pull(controller) {
       if (finished) return;
       try {
-        const { done, value } = await raceWithAbort(reader.read(), signal);
-        if (finished) return;
-        if (done) {
-          finished = true;
-          release();
-          controller.close();
-          return;
+        const blockLimit = Math.min(64 * 1024, limit - total);
+        let block: Uint8Array<ArrayBufferLike> = new Uint8Array(Math.min(blockLimit, 8 * 1024));
+        let blockLength = 0;
+        for (;;) {
+          const { done, value } = await raceWithAbort(reader.read(), signal);
+          if (finished) return;
+          if (done) {
+            if (blockLength > 0) controller.enqueue(block.slice(0, blockLength));
+            finished = true;
+            release();
+            controller.close();
+            return;
+          }
+          reads += 1;
+          if (reads > maxReads) {
+            fail(bodyReadLimitError("remote.response", maxReads));
+            return;
+          }
+          const nextTotal = total + value.byteLength;
+          if (nextTotal > limit) {
+            fail(responseLimitError(limit));
+            return;
+          }
+          block = ensureBufferCapacity(block, blockLength + value.byteLength, limit - total);
+          block.set(value, blockLength);
+          blockLength += value.byteLength;
+          total = nextTotal;
+          if (blockLength >= 64 * 1024 || total === limit) {
+            controller.enqueue(block.slice(0, blockLength));
+            return;
+          }
         }
-        total += value.byteLength;
-        if (total > limit) {
-          fail(responseLimitError(limit));
-          return;
-        }
-        controller.enqueue(value);
       } catch (cause) {
         fail(cause);
       }
@@ -1084,6 +1113,40 @@ function responseLimitError(limit: number): ActivityPlugError {
     "Remote structured response exceeded the configured byte limit.",
     { operation: "remote.response", raw: { limit } },
   );
+}
+
+function bodyReadLimitError(operation: "remote.request" | "remote.response", limit: number) {
+  return new ActivityPlugError(
+    "REQUEST_LIMIT_EXCEEDED",
+    "Remote body exceeded the configured read limit.",
+    { operation, raw: { dimension: "reads", limit } },
+  );
+}
+
+function consumeBodyRead(
+  budget: { used: number; readonly limit: number },
+  operation: "remote.request" | "remote.response",
+): void {
+  budget.used += 1;
+  if (budget.used > budget.limit) throw bodyReadLimitError(operation, budget.limit);
+}
+
+function ensureBufferCapacity(
+  bytes: Uint8Array<ArrayBufferLike>,
+  required: number,
+  limit: number,
+): Uint8Array<ArrayBufferLike> {
+  if (required <= bytes.byteLength) return bytes;
+  const doubled = Math.min(limit, Math.max(1, bytes.byteLength * 2));
+  const expanded = new Uint8Array(Math.max(required, doubled));
+  expanded.set(bytes);
+  return expanded;
+}
+
+function assertPositiveSafeInteger(value: unknown, name: string): asserts value is number {
+  if (!Number.isSafeInteger(value) || (value as number) <= 0) {
+    throw new TypeError(`${name} must be a positive safe integer.`);
+  }
 }
 
 function originNotAllowed(message: string, request: Request): ActivityPlugError {
