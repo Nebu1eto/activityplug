@@ -22,8 +22,6 @@
     "dist/*.mjs",
     "dist/*.d.mts",
     "README.md",
-    "README.ko.md",
-    "README.ja.md",
     "LICENSE-MIT",
     "LICENSE-APACHE"
   ],

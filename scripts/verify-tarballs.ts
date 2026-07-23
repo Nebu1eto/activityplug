@@ -23,8 +23,6 @@ export const publishablePackages = [
 const requiredArchiveFiles = [
   "package.json",
   "README.md",
-  "README.ko.md",
-  "README.ja.md",
   "LICENSE-MIT",
   "LICENSE-APACHE",
 ] as const;
@@ -162,7 +160,7 @@ export async function inspectTarball(
         throw new Error(`${basename(tarball)} declares missing bin ${binPath}`);
       }
     }
-    for (const readme of ["README.md", "README.ko.md", "README.ja.md"] as const) {
+    for (const readme of ["README.md"] as const) {
       const contents = await readFile(join(packageRoot, readme), "utf8");
       if (contents.trim() === "") {
         throw new Error(`${basename(tarball)} contains an empty ${readme}`);

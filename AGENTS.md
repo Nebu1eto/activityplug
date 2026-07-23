@@ -73,13 +73,13 @@ Documentation rules
 
  -  Documentation must be careful, complete, and precise.
  -  All code comments and documentation must be written in English.
- -  For each documentation file, provide Korean and Japanese sibling files with
-    equivalent content. For example, `some-document.md` must be accompanied by
-    `some-document.ko.md` and `some-document.ja.md`.
+ -  Provide Korean and Japanese sibling files for the root README and documents
+    under `docs/`.
+ -  Keep package, example, and repository-internal documentation in English.
  -  Documentation must use natural sentence structure.
  -  The required tone is concise but polite and extremely precise.
- -  Use the `writing-tropes` skill whenever drafting, editing, translating, or
-    reviewing documentation or other prose.
+ -  Use the `effective-writing` skill whenever drafting, editing, translating,
+    or reviewing documentation or other prose.
 
 
 Validation rules

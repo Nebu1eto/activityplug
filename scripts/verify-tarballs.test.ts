@@ -60,8 +60,6 @@ async function fixtureTarball(
   );
   const readme = `# Fixture\n\n\`\`\`sh\npnpm add @activityplug/fixture\n\`\`\`\n\n\`\`\`ts\nimport * as activityplug from "@activityplug/fixture";\n\`\`\`\n`;
   await writeFile(join(packageRoot, "README.md"), readme);
-  await writeFile(join(packageRoot, "README.ko.md"), readme);
-  await writeFile(join(packageRoot, "README.ja.md"), readme);
   await writeFile(join(packageRoot, "dist/index.mjs"), "export const ok = true;\n");
   await writeFile(join(packageRoot, "dist/index.d.mts"), declaration);
   if (extraFile !== undefined) {
