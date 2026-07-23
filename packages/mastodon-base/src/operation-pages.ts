@@ -12,7 +12,6 @@ import {
   encodeOperationCursor,
   mastodonPageInfoForOperation,
 } from "./internals.js";
-import { type MastodonStatusResponse } from "./types.js";
 
 export function genericPageInfo(
   response: readonly { readonly id?: string }[],
@@ -20,12 +19,7 @@ export function genericPageInfo(
   context: AdapterOperationContext,
   operation: string,
 ): Connection<unknown>["pageInfo"] {
-  return mastodonPageInfoForOperation(
-    response as readonly MastodonStatusResponse[],
-    headers,
-    context,
-    operation,
-  );
+  return mastodonPageInfoForOperation(response, headers, context, operation);
 }
 
 export function localCollectionPage<T>(
