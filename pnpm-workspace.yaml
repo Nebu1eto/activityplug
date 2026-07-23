@@ -5,9 +5,10 @@ allowBuilds:
   esbuild: true
   lefthook: true
 minimumReleaseAgeExclude:
-  - rolldown-plugin-dts@0.27.9
-  - oxfmt@0.59.0
-  - oxlint@1.74.0
+  - rolldown-plugin-dts@0.27.12
+  - oxfmt@0.60.0
+  - oxlint@1.75.0
+  - oxlint-tsgolint@7.0.2001
   - dompurify@3.4.12
   - "@oxfmt/*"
   - "@oxlint/*"

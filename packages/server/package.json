@@ -47,26 +47,32 @@
     "test": "node --experimental-strip-types ../../scripts/run-package-tests.ts"
   },
   "dependencies": {
-    "@activityplug/core": "workspace:*",
-    "@activityplug/hackerspub": "workspace:*",
-    "@activityplug/hollo": "workspace:*",
-    "@activityplug/mastodon": "workspace:*",
-    "@activityplug/misskey": "workspace:*",
-    "@activityplug/pleroma": "workspace:*",
-    "@hono/node-server": "^2.0.8",
-    "@logtape/logtape": "^2.2.4",
-    "@optique/core": "^1.1.1",
-    "@optique/run": "^1.1.1",
+    "@activityplug/hackerspub": "workspace:^",
+    "@activityplug/hollo": "workspace:^",
+    "@activityplug/mastodon": "workspace:^",
+    "@activityplug/misskey": "workspace:^",
+    "@activityplug/pleroma": "workspace:^",
+    "@optique/core": "^1.2.0",
+    "@optique/run": "^1.2.0",
     "@pothos/core": "^4.13.1",
-    "graphql": "^17.0.2",
-    "hono": "^4.12.30",
-    "ws": "^8.21.0",
+    "ws": "^8.21.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@activityplug/e2e-fixtures": "workspace:*",
     "@activityplug/test-fixtures": "workspace:*",
-    "@types/ws": "^8.18.1"
+    "@hono/node-server": "^2.0.11",
+    "@logtape/logtape": "^2.2.4",
+    "@types/ws": "^8.18.1",
+    "graphql": "^17.0.2",
+    "hono": "^4.12.31"
+  },
+  "peerDependencies": {
+    "@activityplug/core": "workspace:^",
+    "@hono/node-server": "^2.0.11",
+    "@logtape/logtape": "^2.2.4",
+    "graphql": "^17.0.2",
+    "hono": "^4.12.31"
   },
   "engines": {
     "node": ">=26"

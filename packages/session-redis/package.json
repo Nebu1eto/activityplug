@@ -45,10 +45,15 @@
     "test:integration": "node --experimental-strip-types ../../scripts/run-package-tests.ts --integration"
   },
   "dependencies": {
-    "@activityplug/core": "workspace:*",
-    "@activityplug/server": "workspace:*",
-    "ioredis": "^5.11.1",
     "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "ioredis": "^5.11.1"
+  },
+  "peerDependencies": {
+    "@activityplug/core": "workspace:^",
+    "@activityplug/server": "workspace:^",
+    "ioredis": "^5.11.1"
   },
   "engines": {
     "node": ">=26"

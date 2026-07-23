@@ -154,7 +154,13 @@ describe("inspectTarball", () => {
     const consumer = await mkdtemp(join(tmpdir(), "activityplug-consumer-test-"));
     temporaryDirectories.push(consumer);
     await expect(
-      createConsumer(consumer, manifest, new Map([[manifest.name, tarball]]), repositoryRoot),
+      createConsumer(
+        consumer,
+        manifest,
+        new Map([[manifest.name, tarball]]),
+        new Map([[manifest.name, manifest]]),
+        repositoryRoot,
+      ),
     ).rejects.toThrow();
   });
 });

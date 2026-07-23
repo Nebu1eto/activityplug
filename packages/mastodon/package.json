@@ -44,11 +44,13 @@
     "test": "node --experimental-strip-types ../../scripts/run-package-tests.ts"
   },
   "dependencies": {
-    "@activityplug/core": "workspace:*",
-    "@activityplug/mastodon-base": "workspace:*"
+    "@activityplug/mastodon-base": "workspace:^"
   },
   "devDependencies": {
     "@activityplug/e2e-fixtures": "workspace:*"
+  },
+  "peerDependencies": {
+    "@activityplug/core": "workspace:^"
   },
   "engines": {
     "node": ">=26"

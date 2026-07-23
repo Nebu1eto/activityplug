@@ -44,12 +44,15 @@
     "test": "node --experimental-strip-types ../../scripts/run-package-tests.ts"
   },
   "dependencies": {
-    "@activityplug/core": "workspace:*",
-    "ky": "^2.0.2",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@activityplug/test-fixtures": "workspace:*"
+    "@activityplug/test-fixtures": "workspace:*",
+    "ky": "^2.0.2"
+  },
+  "peerDependencies": {
+    "@activityplug/core": "workspace:^",
+    "ky": "^2.0.2"
   },
   "engines": {
     "node": ">=26"

@@ -38,7 +38,9 @@ const credentialValuePattern =
 
 export type PackageManifest = {
   bin?: string | Record<string, string>;
+  dependencies?: Record<string, string>;
   name: string;
+  peerDependencies?: Record<string, string>;
   types?: string;
   version: string;
   exports?: unknown;
@@ -200,14 +202,39 @@ export async function createConsumer(
   directory: string,
   target: PackageManifest,
   tarballs: ReadonlyMap<string, string>,
+  manifests: ReadonlyMap<string, PackageManifest>,
   repositoryRoot: string,
 ): Promise<void> {
   await mkdir(directory, { recursive: true });
   const tarballReferences = Object.fromEntries(
     [...tarballs].map(([name, tarball]) => [name, `file:${tarball}`]),
   );
+  const peerDependencies: Record<string, string> = {};
+  const pending = [target];
+  const visited = new Set<string>();
+  while (pending.length > 0) {
+    const manifest = pending.pop();
+    if (manifest === undefined || visited.has(manifest.name)) continue;
+    visited.add(manifest.name);
+    for (const [name, range] of Object.entries(manifest.peerDependencies ?? {})) {
+      const selected = tarballReferences[name] ?? range;
+      const existing = peerDependencies[name];
+      if (existing !== undefined && existing !== selected) {
+        throw new Error(`${target.name} has conflicting peer ranges for ${name}`);
+      }
+      peerDependencies[name] = selected;
+    }
+    for (const name of [
+      ...Object.keys(manifest.dependencies ?? {}),
+      ...Object.keys(manifest.peerDependencies ?? {}),
+    ]) {
+      const localManifest = manifests.get(name);
+      if (localManifest !== undefined) pending.push(localManifest);
+    }
+  }
   const dependencies = {
     "@types/node": "26.1.1",
+    ...peerDependencies,
     [target.name]: tarballReferences[target.name],
   };
   await writeFile(
@@ -310,7 +337,13 @@ export async function verifyTarballs(repositoryRoot: string): Promise<void> {
 
     for (const [name, manifest] of manifests) {
       const slug = name.replace(/^@/, "").replaceAll("/", "-");
-      await createConsumer(join(workspace, "consumers", slug), manifest, tarballs, repositoryRoot);
+      await createConsumer(
+        join(workspace, "consumers", slug),
+        manifest,
+        tarballs,
+        manifests,
+        repositoryRoot,
+      );
     }
   } finally {
     await rm(workspace, { recursive: true, force: true });

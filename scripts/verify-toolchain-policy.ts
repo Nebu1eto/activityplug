@@ -9,6 +9,7 @@ interface PackageManifest {
   readonly overrides?: unknown;
   readonly packageManager?: string;
   readonly peerDependencies?: Readonly<Record<string, string>>;
+  readonly private?: boolean;
   readonly pnpm?: { readonly overrides?: unknown; readonly peerDependencyRules?: unknown };
   readonly scripts?: Readonly<Record<string, string>>;
 }
@@ -78,8 +79,14 @@ export async function verifyToolchainPolicy(root: URL): Promise<string[]> {
         if (name === "graphql" && !/^\^?17\./.test(version)) {
           violations.push(`${path}: ${key} must select GraphQL 17`);
         }
-        if (internalPackages.has(name) && version !== "workspace:*") {
-          violations.push(`${path}: ${key} must be workspace:*`);
+        if (internalPackages.has(name)) {
+          const expected =
+            manifest.private === true || section === "devDependencies"
+              ? "workspace:*"
+              : "workspace:^";
+          if (version !== expected) {
+            violations.push(`${path}: ${key} must be ${expected}`);
+          }
         }
       }
     }
