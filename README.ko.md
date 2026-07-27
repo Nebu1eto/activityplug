@@ -28,13 +28,13 @@ TypeScript 계약으로 통합합니다. 라이브러리로 직접 가져다 쓸
 브라우저 저장소에 남기지 않아야 한다면 **브라우저 API**를 사용합니다.
 브라우저 route는 불투명 서명 BFF cookie와 CSRF 보호를 사용합니다.
 
-[시작 가이드](docs/getting-started.ko.md)를 먼저 읽고 아래 문서로
+[시작 가이드](docs/ko/getting-started.md)를 먼저 읽고 아래 문서로
 이동하십시오.
 
- -  [라이브러리 사용법](docs/library-usage.ko.md)
- -  [서버 사용법](docs/server-usage.ko.md)
- -  [브라우저 통합](docs/browser-integration.ko.md)
- -  [API 표면](docs/api-surfaces.ko.md)
+ -  [라이브러리 사용법](docs/ko/library-usage.md)
+ -  [서버 사용법](docs/ko/server-usage.md)
+ -  [브라우저 통합](docs/ko/browser-integration.md)
+ -  [API 표면](docs/ko/api-surfaces.md)
 
 
 공개 패키지
@@ -75,7 +75,7 @@ ActivityPlug 패키지는 Node.js 26 이상이 필요하며 ECMAScript module을
 문서
 ----
 
-[문서 색인](docs/README.ko.md)은 작업과 독자별로 가이드를 분류합니다.
+[문서 색인](docs/ko/README.md)은 작업과 독자별로 가이드를 분류합니다.
 Capability 동작, 인증, streaming, storage, 배포, 보안, 아키텍처, 어댑터
 개발, 테스트, 마이그레이션 문서를 확인할 수 있습니다.
 

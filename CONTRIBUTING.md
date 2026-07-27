@@ -85,8 +85,9 @@ Documentation
 -------------
 
  -  All code comments and documentation are written in English.
- -  Root-level guides and documents under `docs/` have Korean (`.ko.md`) and
-    Japanese (`.ja.md`) sibling files.
+ -  Root-level guides have Korean (`.ko.md`) and Japanese (`.ja.md`) sibling
+    files. Documents under `docs/` are organized by language directory
+    (`docs/en/`, `docs/ko/`, `docs/ja/`).
  -  Package and example READMEs are English only.
  -  Use natural sentence structure and follow the `effective-writing` skill
     when drafting prose.

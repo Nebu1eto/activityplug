@@ -148,7 +148,7 @@ export async function getChangedDocumentationPaths(
 /** Lists published Markdown that must retain translation parity on every ref. */
 export function getPublishedDocumentationPaths(): string[] {
   return [
-    "docs/production-compose.md",
+    "docs/en/production-compose.md",
     ...publishablePackages.map((directory) => `packages/${directory}/README.md`),
   ].toSorted();
 }
@@ -175,9 +175,8 @@ export async function collectDocumentationSiblings(
     if (sourceContents.trim() === "") {
       throw new Error("Published documentation requires a nonempty English source");
     }
-    const stem = path.slice(0, -".md".length);
     for (const language of ["ko", "ja"] as const) {
-      const sibling = `${stem}.${language}.md`;
+      const sibling = documentationSiblingPath(path, language);
       let contents: string;
       try {
         contents = await readFile(resolve(repositoryRoot, sibling), "utf8");
@@ -391,12 +390,22 @@ export async function writeEvidenceAtomically(
   }
 }
 
+function documentationSiblingPath(path: string, language: string): string {
+  if (path.startsWith("docs/en/")) {
+    return path.replace("docs/en/", `docs/${language}/`);
+  }
+  const stem = path.slice(0, -".md".length);
+  return `${stem}.${language}.md`;
+}
+
 function isPublishableEnglishMarkdown(path: string): boolean {
   return (
     !path.startsWith(".changeset/") &&
     path.endsWith(".md") &&
     !path.endsWith(".ko.md") &&
-    !path.endsWith(".ja.md")
+    !path.endsWith(".ja.md") &&
+    !path.startsWith("docs/ko/") &&
+    !path.startsWith("docs/ja/")
   );
 }
 

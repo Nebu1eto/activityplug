@@ -28,12 +28,12 @@ Use the **browser API** when a web application must keep ActivityPlug session
 identifiers and remote credentials out of browser storage. The browser routes
 use an opaque, signed BFF cookie and CSRF protection.
 
-Start with the [Getting started guide](docs/getting-started.md), then see:
+Start with the [Getting started guide](docs/en/getting-started.md), then see:
 
- -  [Library usage](docs/library-usage.md)
- -  [Server usage](docs/server-usage.md)
- -  [Browser integration](docs/browser-integration.md)
- -  [API surfaces](docs/api-surfaces.md)
+ -  [Library usage](docs/en/library-usage.md)
+ -  [Server usage](docs/en/server-usage.md)
+ -  [Browser integration](docs/en/browser-integration.md)
+ -  [API surfaces](docs/en/api-surfaces.md)
 
 
 Public packages

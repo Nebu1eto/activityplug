@@ -31,13 +31,13 @@ credential をブラウザストレージに保存すべきでない場合は**�
 を使います。ブラウザ route は不透明な署名付き BFF cookie と CSRF 保護を
 使用します。
 
-まず[スタートガイド](docs/getting-started.ja.md)を読み、続けて以下の
+まず[スタートガイド](docs/ja/getting-started.md)を読み、続けて以下の
 文書を参照してください。
 
- -  [ライブラリの使い方](docs/library-usage.ja.md)
- -  [サーバの使い方](docs/server-usage.ja.md)
- -  [ブラウザ統合](docs/browser-integration.ja.md)
- -  [API サーフェス](docs/api-surfaces.ja.md)
+ -  [ライブラリの使い方](docs/ja/library-usage.md)
+ -  [サーバの使い方](docs/ja/server-usage.md)
+ -  [ブラウザ統合](docs/ja/browser-integration.md)
+ -  [API サーフェス](docs/ja/api-surfaces.md)
 
 
 公開パッケージ
@@ -78,7 +78,7 @@ ActivityPlug パッケージは Node.js 26 以降を必要とし、ECMAScript mo
 ドキュメント
 ------------
 
-[ドキュメント索引](docs/README.ja.md)では、目的と読者に応じてガイドを
+[ドキュメント索引](docs/ja/README.md)では、目的と読者に応じてガイドを
 分類しています。Capability の動作、認証、streaming、storage、配備、
 セキュリティ、アーキテクチャ、アダプタ開発、テスト、migration の各文書を
 参照できます。

@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -47,9 +47,11 @@ afterEach(async () => {
 async function fixtureRoot(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "activityplug-final-evidence-"));
   temporaryDirectories.push(directory);
-  await mkdir(join(directory, "docs"), { recursive: true });
+  await mkdir(join(directory, "docs", "en"), { recursive: true });
+  await mkdir(join(directory, "docs", "ko"), { recursive: true });
+  await mkdir(join(directory, "docs", "ja"), { recursive: true });
   await mkdir(join(directory, "artifacts", "verification"), { recursive: true });
-  await writeDocumentationTriplet(directory, "docs/production-compose");
+  await writeDocumentationTriplet(directory, "docs/en/production-compose");
   await Promise.all(
     [
       "core",
@@ -77,53 +79,62 @@ async function fixtureRoot(): Promise<string> {
 
 async function writeDocumentationTriplet(root: string, stem: string): Promise<void> {
   await writeFile(join(root, `${stem}.md`), "# English\n");
-  await writeFile(join(root, `${stem}.ko.md`), "# Korean\n");
-  await writeFile(join(root, `${stem}.ja.md`), "# Japanese\n");
+  if (stem.startsWith("docs/en/")) {
+    const relative = stem.slice("docs/en/".length);
+    for (const language of ["ko", "ja"] as const) {
+      const siblingPath = join(root, "docs", language, `${relative}.md`);
+      await mkdir(dirname(siblingPath), { recursive: true });
+      await writeFile(siblingPath, `# ${language === "ko" ? "Korean" : "Japanese"}\n`);
+    }
+  } else {
+    await writeFile(join(root, `${stem}.ko.md`), "# Korean\n");
+    await writeFile(join(root, `${stem}.ja.md`), "# Japanese\n");
+  }
 }
 
 describe("documentation siblings", () => {
   test("rejects missing and empty English sources even when translations exist", async () => {
     const root = await fixtureRoot();
-    await writeDocumentationTriplet(root, "docs/guide");
-    await rm(join(root, "docs", "guide.md"));
-    await expect(collectDocumentationSiblings(root, ["docs/guide.md"])).rejects.toThrow(
+    await writeDocumentationTriplet(root, "docs/en/guide");
+    await rm(join(root, "docs", "en", "guide.md"));
+    await expect(collectDocumentationSiblings(root, ["docs/en/guide.md"])).rejects.toThrow(
       "nonempty English source",
     );
-    await writeFile(join(root, "docs", "guide.md"), "\n");
-    await expect(collectDocumentationSiblings(root, ["docs/guide.md"])).rejects.toThrow(
+    await writeFile(join(root, "docs", "en", "guide.md"), "\n");
+    await expect(collectDocumentationSiblings(root, ["docs/en/guide.md"])).rejects.toThrow(
       "nonempty English source",
     );
   });
 
   test("rejects a deleted English source even if translated siblings remain", async () => {
     const root = await fixtureRoot();
-    await writeDocumentationTriplet(root, "docs/guide");
+    await writeDocumentationTriplet(root, "docs/en/guide");
     await expect(
       collectDocumentationSiblings(
         root,
-        ["docs/guide.md"],
-        [{ path: "docs/guide.md", status: "D" }],
+        ["docs/en/guide.md"],
+        [{ path: "docs/en/guide.md", status: "D" }],
       ),
     ).rejects.toThrow("must not be deleted");
   });
 
   test("rejects missing and empty translated siblings", async () => {
     const root = await fixtureRoot();
-    await writeFile(join(root, "docs", "guide.md"), "# Guide\n");
-    await writeFile(join(root, "docs", "guide.ko.md"), "\n");
-    await expect(collectDocumentationSiblings(root, ["docs/guide.md"])).rejects.toThrow(
+    await writeFile(join(root, "docs", "en", "guide.md"), "# Guide\n");
+    await writeFile(join(root, "docs", "ko", "guide.md"), "\n");
+    await expect(collectDocumentationSiblings(root, ["docs/en/guide.md"])).rejects.toThrow(
       "nonempty ko sibling",
     );
-    await writeFile(join(root, "docs", "guide.ko.md"), "# Korean\n");
-    await expect(collectDocumentationSiblings(root, ["docs/guide.md"])).rejects.toThrow(
+    await writeFile(join(root, "docs", "ko", "guide.md"), "# Korean\n");
+    await expect(collectDocumentationSiblings(root, ["docs/en/guide.md"])).rejects.toThrow(
       "nonempty ja sibling",
     );
   });
 
   test("requires siblings for implementation plans", async () => {
     const root = await fixtureRoot();
-    await mkdir(join(root, "docs", "superpowers", "plans"), { recursive: true });
-    const plan = "docs/superpowers/plans/implementation.md";
+    await mkdir(join(root, "docs", "en", "superpowers", "plans"), { recursive: true });
+    const plan = "docs/en/superpowers/plans/implementation.md";
     await writeFile(join(root, plan), "# Implementation plan\n");
 
     await expect(collectDocumentationSiblings(root, [plan])).rejects.toThrow("nonempty ko sibling");
@@ -131,13 +142,13 @@ describe("documentation siblings", () => {
 
   test("rejects nonempty translations that were unchanged in the base diff", async () => {
     const root = await fixtureRoot();
-    await writeDocumentationTriplet(root, "docs/guide");
+    await writeDocumentationTriplet(root, "docs/en/guide");
 
     await expect(
       collectDocumentationSiblings(
         root,
-        ["docs/guide.md"],
-        [{ path: "docs/guide.md", status: "M" }],
+        ["docs/en/guide.md"],
+        [{ path: "docs/en/guide.md", status: "M" }],
       ),
     ).rejects.toThrow("changed ko sibling");
   });
@@ -146,23 +157,23 @@ describe("documentation siblings", () => {
     "accepts %s source and translation changes in the same base diff",
     async (status) => {
       const root = await fixtureRoot();
-      await writeDocumentationTriplet(root, "docs/guide");
+      await writeDocumentationTriplet(root, "docs/en/guide");
       const changes = [
-        { path: "docs/guide.md", status },
-        { path: "docs/guide.ko.md", status },
-        { path: "docs/guide.ja.md", status },
+        { path: "docs/en/guide.md", status },
+        { path: "docs/ko/guide.md", status },
+        { path: "docs/ja/guide.md", status },
       ];
 
-      await expect(collectDocumentationSiblings(root, ["docs/guide.md"], changes)).resolves.toEqual(
-        ["docs/guide.ja.md", "docs/guide.ko.md"],
-      );
+      await expect(
+        collectDocumentationSiblings(root, ["docs/en/guide.md"], changes),
+      ).resolves.toEqual(["docs/ja/guide.md", "docs/ko/guide.md"]);
     },
   );
 });
 
 test("always includes published documentation even without a branch diff", () => {
   expect(getPublishedDocumentationPaths()).toEqual(
-    expect.arrayContaining(["docs/production-compose.md", "packages/core/README.md"]),
+    expect.arrayContaining(["docs/en/production-compose.md", "packages/core/README.md"]),
   );
 });
 
@@ -188,7 +199,7 @@ test("fails closed for deleted Markdown before other evidence probes", async () 
   await expect(
     verifyFinalEvidence(root, {
       environment: safeEnvironment,
-      getChangedPaths: async () => [{ path: "docs/guide.ko.md", status: "D" }],
+      getChangedPaths: async () => [{ path: "docs/ko/guide.md", status: "D" }],
       getGitStatus: async () => [],
       verifyCompose,
       verifyPublishedTarballs: async () => undefined,
