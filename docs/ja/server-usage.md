@@ -1,13 +1,13 @@
 サーバの使い方
 ==============
 
-[English](../en/server-usage.md) | [한국어](../ko/server-usage.md) | 日本語
+[English](/en/server-usage.md) | [한국어](/ko/server-usage.md) | 日本語
 
 `@activityplug/server` はコマンドラインプロセスとして、または Node.js
 アプリケーションの一部として実行できます。どちらの形式でも公開 HTTP
-API、GraphQL、WebSocket ストリームを提供します。プログラムによる構築では
-永続ストア、依存関係の readiness チェック、カスタム制限、ブラウザ BFF も
-サポートします。
+API、GraphQL、WebSocket
+ストリームを提供します。プログラムから構築する場合は永続ストア、依存関係の
+readiness チェック、 カスタム制限、ブラウザ BFF もサポートします。
 
 
 サーバをインストールする
@@ -38,8 +38,8 @@ pnpm exec activityplug-server \
 ~~~~
 
 `--allow-origin` を省略するとリモート origin 許可リストは空になります。
-このプロセスが接続する HTTPS ActivityPub サーバごとにオプションを繰り返し
-指定してください。
+接続する HTTPS ActivityPub サーバごとにこのオプションを繰り返し指定して
+ください。
 
 ~~~~ sh
 pnpm exec activityplug-server \
@@ -85,8 +85,8 @@ CLI は起動前にホスト、ポート、origin、ブラウザ設定、署名�
 サーバを構築する
 ----------------
 
-プログラムによる設定ではアダプタの構築、リモート権限、リスナを分離
-します。
+プログラムから設定する場合はアダプタの構築、リモート権限、リスナを
+分離します。
 
 ~~~~ ts
 import { createMastodonAdapter } from "@activityplug/mastodon";
@@ -138,8 +138,8 @@ WebSocket 接続に適用します。
 アプリケーション側でも準備完了を通知する前に待機する必要があります。
 
 `start()` は Node リスナを作成し、サーバオブジェクト、ホスト名、ポートを
-返します。プログラムによる起動ではポート `0` も有効で、OS が利用可能な
-ポートを選択します。返される `StartedServer.port` は設定値 `0` のままです。
+返します。プログラムからの起動ではポート `0` も有効で、OS が利用可能なポートを
+選択します。返される `StartedServer.port` は設定値 `0` のままです。
 割り当てられたポートは `listening` イベント後に
 `StartedServer.server.address()` で取得してください。
 
@@ -242,8 +242,8 @@ HTTP ホップを省略しつつ、アダプタ選択、セッション検証、
 Bearer credential として指定します。
 
 raw トークンインポートは `tokenImport.enabled` が true の場合にのみ有効
-です。`guard` なしで有効にするとルートに到達できる呼び出し元に開放され
-ます。本番アプリケーションではインポートを無効にするか、認可ガードを指定
+です。`guard` なしで有効にすると、ルートに到達できるすべての呼び出し元に
+開放されます。本番アプリケーションではインポートを無効にするか、認可ガードを指定
 してください。
 
 認証レスポンスには `Cache-Control: no-store` が付与されます。GraphQL
@@ -265,8 +265,8 @@ JavaScript に保存せず、cookie BFF を有効にしてください。
  -  認証開始レート制限
  -  短期認証チャレンジ
 
-これらのストアはプロセスローカルであり、再起動するとレコードを失います。
-複数のサーバレプリカを連携させることもできません。
+これらのストアはプロセスローカルであり、再起動するとレコードが失われ
+ます。複数のサーバレプリカ間で連携させることもできません。
 
 セッションやブラウザフローを再起動後も維持する場合、または複数レプリカで
 実行する場合は永続ストアを注入してください。
@@ -405,4 +405,6 @@ const doc = createOpenApiDocument({ tokenImport: "guarded" });
  -  [セッションストレージ](session-storage.md)
  -  [セキュリティモデル](security-model.md)
  -  [エラーとトラブルシューティング](errors-and-troubleshooting.md)
- -  [`@activityplug/server` パッケージ README](../../packages/server/README.md)
+ -  [`@activityplug/server` パッケージ README]
+
+[`@activityplug/server` パッケージ README]: https://github.com/Nebu1eto/activityplug/blob/main/packages/server/README.md

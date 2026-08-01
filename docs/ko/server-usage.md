@@ -1,7 +1,7 @@
 서버 사용법
 ===========
 
-[English](../en/server-usage.md) | 한국어 | [日本語](../ja/server-usage.md)
+[English](/en/server-usage.md) | 한국어 | [日本語](/ja/server-usage.md)
 
 `@activityplug/server`는 명령줄 프로세스 또는 Node.js 애플리케이션의
 일부로 실행할 수 있습니다. 두 형태 모두 공개 HTTP API, GraphQL,
@@ -38,8 +38,8 @@ pnpm exec activityplug-server \
 ~~~~
 
 `--allow-origin`을 지정하지 않으면 원격 origin 허용 목록이 비어
-있습니다. 이 프로세스가 접속할 수 있는 모든 HTTPS ActivityPub 서버에
-대해 옵션을 반복 지정하십시오.
+있습니다. 접속할 HTTPS ActivityPub 서버마다 옵션을 반복
+지정하십시오.
 
 ~~~~ sh
 pnpm exec activityplug-server \
@@ -84,7 +84,7 @@ CLI는 시작 전에 호스트, 포트, origin, 브라우저 설정, 서명 키,
 서버 구성
 ---------
 
-프로그래밍 방식 설정은 어댑터 구성, 원격 권한, 리스너를 분리합니다.
+프로그래밍 방식으로 구성하면 어댑터, 원격 권한, 리스너를 분리할 수 있습니다.
 
 ~~~~ ts
 import { createMastodonAdapter } from "@activityplug/mastodon";
@@ -180,8 +180,9 @@ try {
 }
 ~~~~
 
-`ok`가 참이면 응답 상태는 `200`, 아니면 `503`입니다. `readiness`
-콜백이 없으면 서버가 시작된 뒤 프로세스를 준비됨으로 보고합니다. 영속
+`ok`가 참이면 응답 상태는 `200`, 거짓이면 `503`입니다.
+`readiness` 콜백이 없으면 서버 시작 후 프로세스를 준비됨으로
+보고합니다. 영속
 의존성을 포함하려면 콜백을 제공하십시오.
 
 ~~~~ ts
@@ -238,7 +239,8 @@ capability 처리를 그대로 유지합니다.
 이를 Bearer credential로 제공합니다.
 
 원시 토큰 가져오기는 `tokenImport.enabled`가 참일 때만 활성화됩니다.
-`guard` 없이 활성화하면 라우트에 접근할 수 있는 누구에게나 열립니다.
+`guard` 없이 활성화하면 라우트에 접근 가능한 모든 클라이언트에
+열립니다.
 프로덕션 애플리케이션은 가져오기를 비활성화하거나 권한 부여 가드를
 제공해야 합니다.
 
@@ -261,8 +263,8 @@ capability 처리를 그대로 유지합니다.
  -  인증 시작 제한
  -  수명이 짧은 인증 챌린지
 
-이 저장소는 프로세스에 한정되며 재시작 시 레코드를 잃습니다. 여러 서버
-복제본을 조정할 수도 없습니다.
+이 저장소는 프로세스에 한정되며 재시작 시 레코드를 잃습니다. 여러
+서버 복제본 사이에서 상태를 공유할 수도 없습니다.
 
 세션이나 브라우저 흐름이 재시작 후에도 유지되거나 여러 복제본에서
 실행되어야 한다면 영속 저장소를 주입하십시오.
@@ -367,11 +369,11 @@ import { configureServerLogging } from "@activityplug/server";
 await configureServerLogging({ level: "debug" });
 ~~~~
 
-허용 옵션은 `level`(LogTape 로그 수준, 기본값 `"info"`),
+사용 가능한 옵션은 `level`(LogTape 로그 수준, 기본값 `"info"`),
 `sink`(사용자 정의 LogTape `Sink`), `force`(LogTape가 이미 구성된
-경우에도 재구성)입니다. 애플리케이션이 자체 LogTape 설정을 갖고 있다면
-`force`가 참이 아닌 한 `configureServerLogging()`은 아무 작업도 하지
-않습니다.
+경우에도 재구성)입니다. 애플리케이션에 자체 LogTape 설정이 있다면
+`force`가 참이 아닌 한 `configureServerLogging()`은 아무 작업도
+하지 않습니다.
 
 
 Openapi 문서
@@ -399,4 +401,6 @@ const doc = createOpenApiDocument({ tokenImport: "guarded" });
  -  [세션 저장소](session-storage.md)
  -  [보안 모델](security-model.md)
  -  [오류와 문제 해결](errors-and-troubleshooting.md)
- -  [`@activityplug/server` 패키지 README](../../packages/server/README.md)
+ -  [`@activityplug/server` 패키지 README]
+
+[`@activityplug/server` 패키지 README]: https://github.com/Nebu1eto/activityplug/blob/main/packages/server/README.md

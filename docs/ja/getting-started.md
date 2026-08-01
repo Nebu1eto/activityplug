@@ -1,13 +1,13 @@
 スタートガイド
 ==============
 
-[English](../en/getting-started.md) | [한국어](../ko/getting-started.md) |
+[English](/en/getting-started.md) | [한국어](/ko/getting-started.md) |
 日本語
 
-このガイドはサーバモードから始めます。コマンドラインサーバがリモート
-transport と origin ポリシを備えているためです。ライブラリモードでも同じ
-ポータブルなクライアント契約を直接利用できますが、Node.js アプリケーション
-側で審査済みの remote authority を用意する必要があります。
+コマンドラインサーバがリモート transport と origin ポリシを備えている
+ため、このガイドはサーバモードから始めます。ライブラリモードでも同じポータブルなクライアント契約を直接利用できます
+が、Node.js アプリケーション側で審査済みの remote authority を用意する
+必要があります。
 
 
 要件
@@ -63,14 +63,18 @@ CLI には現在のアダプタがすべて含まれます。認証とセキュ�
 リポジトリのサンプルを実行する
 ------------------------------
 
-リポジトリのサンプルは統合経路全体を実行します。
+リポジトリのサンプルはすべての統合経路を実行します。
 
- -  [Bot](../../examples/bot/README.md) は Mastodon または Misskey で
+ -  [Bot] は Mastodon または Misskey に対して
     ライブラリモードを使います。
- -  [Proxy client](../../examples/proxy-client/README.md) は HTTP と
-    GraphQL のサーバ API を呼び出します。
- -  [Web client](../../examples/web-client/README.md) はメモリまたは永続
-    ストレージと組み合わせてブラウザ API を使います。
+ -  [Proxy client] は HTTP と GraphQL の
+    サーバ API を呼び出します。
+ -  [Web client] はメモリまたは永続ストレージと
+    組み合わせてブラウザ API を使います。
+
+[Bot]: https://github.com/Nebu1eto/activityplug/blob/main/examples/bot/README.md
+[Proxy client]: https://github.com/Nebu1eto/activityplug/blob/main/examples/proxy-client/README.md
+[Web client]: https://github.com/Nebu1eto/activityplug/blob/main/examples/web-client/README.md
 
 
 次に読むガイド

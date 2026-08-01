@@ -1,13 +1,12 @@
 ストリーミングとメディア
 ========================
 
-[English](../en/streaming-and-media.md) |
-[한국어](../ko/streaming-and-media.md) | 日本語
+[English](/en/streaming-and-media.md) |
+[한국어](/ko/streaming-and-media.md) | 日本語
 
 ActivityPlug はタイムラインと通知の WebSocket を非同期イベントストリーム
 として正規化します。ローカルファイルのアップロードとサーバー側 URL
-取り込みは、対応範囲とセキュリティ特性が異なるため別の操作として提供
-します。
+取り込みは、対応範囲と セキュリティ特性が異なるため別の操作として提供します。
 
 
 ストリーミング対応
@@ -46,7 +45,7 @@ type WebSocketFactory = (
 ) => WebSocket | Promise<WebSocket>;
 ~~~~
 
-ファクトリーはセキュリティ境界であり、次の処理が求められます。
+ファクトリーはセキュリティ境界であり、以下の処理を行う必要があります。
 
  -  デプロイ先の origin allowlist を適用する
  -  接続前に許可された公開アドレスを resolve して pin する
@@ -59,8 +58,8 @@ type WebSocketFactory = (
 
 ブラウザー標準の `WebSocket` コンストラクタは任意の `Authorization`
 ヘッダーを設定できません。トークンを URL に入れてヘッダーの代用としない
-でください。handshake ヘッダーに対応するサーバー側 WebSocket 実装を
-使うか、認証済みストリーミングを提供しない構成にします。
+でください。handshake ヘッダーに対応するサーバー側 WebSocket 実装を使うか、
+認証済みストリーミングを提供しない構成にしてください。
 
 `options.operation` には公開操作の `stream.timeline`、
 `stream.notifications`、または Misskey URL 取り込みの
@@ -233,10 +232,10 @@ HackersPub は GraphQL URL-upload mutation を呼び出します。WebSocket は
 description と sensitivity を拒否します。
 
 Mastodon、Pleroma/Akkoma、Hollo はマッピング済みの URL 取り込み
-endpoint を公開しません。ActivityPlug はリソースをアプリケーション側へ
-ダウンロードして暗黙に再アップロードする fallback を実装しません。
-その処理はネットワーク信頼、リソース制限、失敗のセマンティクスを変更
-します。
+endpoint を公開しません。ActivityPlug
+はリソースをアプリケーション側にダウンロードして暗黙に 再アップロードする
+fallback は実装しません。そのような処理はネットワーク
+信頼、リソース制限、失敗のセマンティクスを変えてしまうためです。
 
 
 失敗の処理

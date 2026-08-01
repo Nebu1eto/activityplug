@@ -1,10 +1,10 @@
 보안 모델
 =========
 
-[English](../en/security-model.md) | 한국어 | [日本語](../ja/security-model.md)
+[English](/en/security-model.md) | 한국어 | [日本語](/ja/security-model.md)
 
 ActivityPlug는 클라이언트가 선택한 원격 ActivityPub origin에 사용자의
-자격 증명을 첨부해 외부 요청을 보낼 수 있습니다. 따라서 안전한 배포를
+자격 증명을 첨부하여 외부 요청을 보냅니다. 따라서 안전한 배포를
 위해서는 대상 선정과 자격 증명이 발급 origin을 벗어나는 모든 조건을
 통제해야 합니다.
 
@@ -29,9 +29,9 @@ route, 저장소 구현을 활성화할지는 애플리케이션 코드에서 �
 5.  세션 및 수명주기 저장소가 인증 상태와 브라우저 보안 상태를
     보관합니다.
 
-외부 ActivityPub 트래픽에 허용된 origin이 자동으로 브라우저 origin,
-OAuth redirect URI, CORS origin, trusted proxy, 자격 증명 수신자가
-되지는 않습니다. 각 경계는 별도로 구성해야 합니다.
+외부 ActivityPub 트래픽에 허용된 origin이 브라우저 origin,
+OAuth redirect URI, CORS origin, trusted proxy, 자격 증명 수신자로
+자동 승격되지는 않습니다. 각 경계는 별도로 구성해야 합니다.
 
 
 원격 origin 정책
@@ -44,9 +44,9 @@ origin 정책을 제공하지 않으면 서버 측 원격 접근은 기본적으
 거부하며 HTTPS origin만 허용합니다.
 
 정책은 모든 외부 작업에서 정규화된 origin과 작업 이름을 전달받습니다.
-redirect 대상도 DNS 확인 전에 다시 검사합니다. 따라서 origin을
-추가하면 해당 정책을 사용하는 작업의 연결만 허용될 뿐, origin을 넘는
-자격 증명 전달까지 허용되지는 않습니다.
+redirect 대상도 DNS 확인 전에 다시 검사합니다. 따라서 origin을 추가하면 해당
+정책을 사용하는 작업의 연결만 허용될 뿐, origin을 넘는 자격 증명 전달까지
+허용되지는 않습니다.
 
 allowlist에는 배포가 실제로 제공할 origin만 포함하십시오. 신뢰할 수
 없는 요청에서 직접 목록을 생성하거나, suffix 일치를 허용하거나,
@@ -104,7 +104,7 @@ budget이 있으면 request와 response stream이 redirect 이후에도 이를
 
 이러한 통제는 server-side request forgery, DNS rebinding, redirect
 pivot, 과도하게 큰 구조화 response, 지나치게 작은 chunk로 이루어진
-stream을 방어합니다. 다만 허용된 원격 서버가 정직하다거나 반환된
+stream을 방어합니다. 다만 허용된 원격 서버가 정직하다거나, 반환된
 ActivityPub content를 애플리케이션 수준의 escaping 없이 안전하게
 표시할 수 있다고 보장하지는 않습니다.
 
@@ -209,8 +209,9 @@ forwarding header를 신뢰하지 않습니다. 예제 배포는 고정된 Caddy
 문자가 포함된 식별자는 거부합니다.
 
 trusted proxy 주소에는 클라이언트 네트워크가 아니라 서버에 직접
-연결되는 proxy의 실제 주소를 설정합니다. 서버가 내부 load balancer
-뒤에 있다는 이유만으로 모든 private range를 신뢰하지 마십시오.
+연결되는 proxy의 실제 주소를 설정하십시오. 서버가 내부 load
+balancer 뒤에 있다는 이유만으로 모든 private range를 신뢰하지
+마십시오.
 
 
 Inbound 제한

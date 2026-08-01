@@ -1,8 +1,8 @@
 세션 저장소
 ===========
 
-[English](../en/session-storage.md) | 한국어 |
-[日本語](../ja/session-storage.md)
+[English](/en/session-storage.md) | 한국어 |
+[日本語](/ja/session-storage.md)
 
 ActivityPlug는 인증 자격 증명과 브라우저 보안 상태를 명시적인 인터페이스
 뒤에 저장합니다. 배포 환경에 따라 인메모리 구현, PostgreSQL, Redis 또는
@@ -44,14 +44,12 @@ Backend 선택
 
 재시작 시 모든 세션을 잃어도 괜찮은 테스트, 예제, 단일 프로세스 개발
 환경에는 인메모리 저장소를 사용합니다. 각 프로세스가 독립된 복사본을
-가지므로, 인메모리 상태는 프로세스 사이를 이동하는 요청을 처리할 수
-없습니다.
+가지므로, 프로세스 사이를 이동하는 요청은 처리할 수 없습니다.
 
-기존 관계형 데이터베이스에서 인증 및 브라우저 수명주기 상태를 함께
-관리하려면 PostgreSQL을 사용합니다. 이 패키지는 여러 번 실행해도
-안전한 테이블 초기화 함수와 동시 실행에 안전한 저장소 연산을
-제공합니다. PostgreSQL의 만료 처리는 범위를 제한한 주기적 sweep으로
-동작합니다.
+기존 관계형 데이터베이스에서 인증 및 브라우저 수명주기 상태를
+함께 관리하려면 PostgreSQL을 사용합니다. 이 패키지는 멱등적인
+테이블 초기화 함수와 동시 실행에 안전한 저장소 연산을 제공합니다. PostgreSQL의
+만료 처리는 범위를 제한한 주기적 sweep으로 동작합니다.
 
 native TTL, 일회용 값, rate limit, 공유 브라우저 스트림 티켓이
 필요하다면 Redis를 사용합니다. Redis 저장소에는 스키마 초기화가
@@ -167,10 +165,10 @@ ActivityPlug는 자격 증명 만료와 저장 만료를 구분합니다. 갱신
 원자성 규칙을 반드시 보존해야 하며, 단순한 key-value 읽기/쓰기로는
 충분하지 않습니다.
 
-잘못되거나 일치하지 않거나 만료된 레코드는 실패 처리됩니다. 저장소
-구현은 연산에서 읽은 값이나 revision이 아직 현재 값인 경우에만 해당
-레코드를 제거하므로, 정리 작업이 동시에 교체된 값을 삭제하는 일은
-없습니다.
+잘못되거나 일치하지 않거나 만료된 레코드는 실패로 처리됩니다.
+저장소 구현은 연산에서 읽은 값이나 revision이 아직 현재 값인
+경우에만 해당 레코드를 제거하므로, 정리 작업이 동시에 교체된 값을
+삭제하는 일은 없습니다.
 
 
 파일 저장소를 제공하지 않는 이유
@@ -183,8 +181,8 @@ compare-and-set, compare-and-delete, 만료 정리, 동시 요청에서의
 안전한 동작을 요구합니다.
 
 일반 JSON 파일은 여러 프로세스에서 이러한 보장을 제공하지 않습니다.
-파일 잠금과 crash-safe 교체를 추가해도 권한, 백업, rotation, 복구
-동작은 배포마다 따로 다뤄야 합니다. 로컬 persistence가 필요한
+파일 잠금과 crash-safe 교체를 추가하더라도 권한, 백업, rotation,
+복구 동작은 배포마다 따로 다뤄야 합니다. 로컬 persistence가 필요한
 테스트에서는 더 약한 프로덕션 계약에 의존하지 말고 PostgreSQL 또는
 Redis 통합 환경을 실행하십시오.
 
@@ -214,7 +212,10 @@ pnpm test:integration
 ---------
 
  -  [인증과 세션](authentication-and-sessions.md)
- -  [PostgreSQL 세션 패키지](../../packages/session-postgres/README.md)
- -  [Redis 세션 패키지](../../packages/session-redis/README.md)
+ -  [PostgreSQL 세션 패키지]
+ -  [Redis 세션 패키지]
  -  [배포](deployment.md)
  -  [보안 모델](security-model.md)
+
+[PostgreSQL 세션 패키지]: https://github.com/Nebu1eto/activityplug/blob/main/packages/session-postgres/README.md
+[Redis 세션 패키지]: https://github.com/Nebu1eto/activityplug/blob/main/packages/session-redis/README.md

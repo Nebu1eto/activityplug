@@ -1,17 +1,18 @@
 ActivityPlug のテスト
 =====================
 
-[English](../en/testing.md) | [한국어](../ko/testing.md) | 日本語
+[English](/en/testing.md) | [한국어](/ko/testing.md) | 日本語
 
 ActivityPlug は、互換性のない Fediverse サーバー間でも維持すべき動作を
 テストします。対象は公開 API 契約、アダプターマッピング、認証、
 capability 検出、opaque な識別子とカーソル、ページネーション、型付き
 エラー、セキュリティ境界、相互運用性の前提です。
 
-テストケースはこれらの動作を保護できる最小限の組み合わせにします。
+テストケースはこれらの動作を保護するのに必要な最小限の組み合わせに
+します。
 ビルドツールの設定、単純な実装詳細、外部ライブラリの動作をテストする
-必要はありません。失敗によって ActivityPlug の契約が変わるか、対応する
-ワークフローが壊れる場合に回帰テストを追加します。
+必要はありません。失敗すると ActivityPlug
+の契約が変わるか、対応するワークフローが壊れる 場合に回帰テストを追加します。
 
 
 テストの階層
@@ -27,8 +28,8 @@ capability 検出、opaque な識別子とカーソル、ページネーショ�
 | production Compose | TLS、プロセス強化、readiness、durable 障害復旧     | ローカルコンテナ               |
 | Fediverse E2E      | 実サーバーに対するアダプター、HTTP、GraphQL の動作 | 分離した Compose profile       |
 
-開発中はコストが低く対象を絞った階層を実行します。変更がその境界を
-越える場合はより広い階層を使います。
+開発中はコストが低く対象を絞った階層を実行します。変更が境界を越える
+場合はより広い階層を使います。
 
 
 Unit テストと component テスト
@@ -63,10 +64,12 @@ pnpm --filter @activityplug/example-web-client test
 ルーティング、機能間のインタラクションを検証します。
 
 共有する決定的なリモートペイロードは
-[`packages/test-fixtures`](../../packages/test-fixtures/) にあります。
+[`packages/test-fixtures`] にあります。
 ActivityPlug の正規化と検出動作の検証に使います。現在の upstream
-サーバーが今も同じ動作をする証拠にはなりません。その確認には
-Fediverse E2E テストを使います。
+サーバーが同じ動作をしている証拠にはなりません。その確認には Fediverse E2E
+テストを使います。
+
+[`packages/test-fixtures`]: https://github.com/Nebu1eto/activityplug/blob/main/packages/test-fixtures/
 
 
 PostgreSQL と Redis の integration テスト
@@ -98,7 +101,7 @@ pnpm test:integration
 docker compose -f docker-compose.dev.yml down
 ~~~~
 
-保存済みの開発データも削除する場合に限り `--volumes` を追加します。
+保存済みの開発データも削除する場合にのみ `--volumes` を追加します。
 
 
 Browser E2E テスト
@@ -122,7 +125,7 @@ Playwright はフロントエンドをビルドし `http://127.0.0.1:4173` で
 不明なルート、ログアウトを検証します。
 
 これらのテストは実サーバーをプロビジョニングせずにプロダクトのブラウザー
-動作を検証します。アダプター E2E テストの代わりにはなりません。
+動作を検証します。アダプターの E2E テストの代替にはなりません。
 
 
 Production compose テスト
@@ -179,12 +182,12 @@ startup、provisioning の失敗は external として記録しますが、
 ActivityPlug のアサーション失敗は external ではありません。
 
 正確な upstream ref と commit は
-[`test/e2e/versions.env`](../../test/e2e/versions.env) に記録されて
+[`test/e2e/versions.env`] に記録されて
 います。取得したソースはリポジトリ外の
 `${XDG_CACHE_HOME:-$HOME/.cache}/activityplug/fediverse-sources` に
 保存します。acquisition はソースをビルドコンテキストへ入れる前に commit
-を検証し、ignored file を削除します。これらの対象を public instance で
-置き換えないでください。
+を検証し、ignored file
+を削除します。これらの対象を公開インスタンスで置き換えないでください。
 
 サーバー固有の変更を調査するときは 1 つの profile を実行します。
 
@@ -218,7 +221,7 @@ pnpm test:e2e
 がアダプタースイート用にプロビジョニング済みの場合に限り
 `ACTIVITYPLUG_FEDIVERSE_REPROVISION_PACKAGE_TARGETS=0` を設定します。
 
-[`packages/e2e-fixtures`](../../packages/e2e-fixtures/) の共通
+[`packages/e2e-fixtures`] の共通
 アサーションは capability に従って実行されます。アダプターが対応を宣言
 し、プロビジョニング済み対象が必要な使い捨て fixture を提供する場合に
 限り、インスタンス・アカウントの読み取り、タイムライン、検索、メディア、
@@ -237,6 +240,9 @@ Compose の各検査を実行しますが、実際の Fediverse matrix はプロ
 ングしません。別の `Fediverse E2E` workflow が schedule または手動の
 workflow dispatch で matrix を実行します。その workflow より前に実
 サーバーの証拠が必要な場合はローカルで matrix を実行します。
+
+[`test/e2e/versions.env`]: https://github.com/Nebu1eto/activityplug/blob/main/test/e2e/versions.env
+[`packages/e2e-fixtures`]: https://github.com/Nebu1eto/activityplug/blob/main/packages/e2e-fixtures/
 
 
 テストの選択と追加

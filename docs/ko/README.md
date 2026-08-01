@@ -1,10 +1,10 @@
 ActivityPlug 문서
 =================
 
-[English](../en/README.md) | 한국어 | [日本語](../ja/README.md)
+[English](/en/README.md) | 한국어 | [日本語](/ja/README.md)
 
 ActivityPlug는 TypeScript 라이브러리, GraphQL·HTTP 서버, 브라우저용 BFF
-route의 세 가지 통합 표면을 제공합니다. 애플리케이션 경계에 맞는 경로부터
+route의 세 가지 통합 표면을 제공합니다. 애플리케이션에 맞는 경로부터
 읽으십시오.
 
 
@@ -57,5 +57,7 @@ ActivityPlug 내부 구조와 확장
 ----------------
 
 모든 workspace 패키지에는 소스와 같은 위치에 README가 있습니다.
-[저장소 README](../../README.ko.md#공개-패키지)에서 공개 패키지와 역할을
+[저장소 README]에서 공개 패키지와 역할을
 확인할 수 있습니다.
+
+[저장소 README]: https://github.com/Nebu1eto/activityplug/blob/main/README.ko.md#공개-패키지

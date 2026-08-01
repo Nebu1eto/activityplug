@@ -1,8 +1,8 @@
 認証とセッション
 ================
 
-[English](../en/authentication-and-sessions.md) |
-[한국어](../ko/authentication-and-sessions.md) | 日本語
+[English](/en/authentication-and-sessions.md) |
+[한국어](/ko/authentication-and-sessions.md) | 日本語
 
 ActivityPlug は、ActivityPub サーバーごとに異なる資格情報を不透明な
 `AuthSession` へ変換します。アプリケーションが扱うのは ActivityPlug の
@@ -23,8 +23,8 @@ ActivityPlug は、ActivityPub サーバーごとに異なる資格情報を不�
 | `emailChallenge` | メールチャレンジを開始し、コードを検証する                                        |
 | `passkey`        | WebAuthn の認証手順を開始して完了する                                             |
 
-ストラテジー間の fallback はありません。選択したアダプターが実装していない
-フローを呼び出すと unsupported-operation エラーになります。OAuth の更新と
+ストラテジー間の fallback はありません。選択したアダプターが実装して
+いないフローを呼び出すと unsupported-operation エラーになります。OAuth の更新と
 失効もアダプターが宣言した capability に依存します。
 
 
@@ -50,8 +50,8 @@ const verified = await client.auth.verifySession(session);
 参照が含まれます。リモートトークンは含まれません。
 
 OAuth では `auth.oauth.registerClient()`、`auth.oauth.start()`、
-`auth.oauth.exchange()` の順に呼び出します。redirect の前後で state と
-PKCE binding を保持し検証してください。サーバー API とブラウザー API は
+`auth.oauth.exchange()` の順に呼び出します。リダイレクトの前後で state と PKCE
+binding を保持し検証してください。サーバー API とブラウザー API は
 この状態管理を行う上位レベルの handler を提供します。
 
 
@@ -140,7 +140,7 @@ access-token の期限と保存期限は意味が異なります。refresh token
 ----------------------
 
 core クライアントとサーバーは、既定でインメモリ認証セッションを使います。
-テストと単一プロセスのローカル開発に適した構成です。再起動後もセッションを
+テストや単一プロセスのローカル開発に適した構成です。再起動後もセッションを
 維持する場合や複数プロセスで共有する場合は PostgreSQL または Redis を使い
 ます。ブラウザーデプロイでは、ブラウザーセッション、OAuth state、
 チャレンジ、ストリームチケット、rate limit 用のストアも必要です。
@@ -156,7 +156,7 @@ core クライアントとサーバーは、既定でインメモリ認証セッ
     ください。
  -  認証セッションや OAuth クライアントシークレットを格納する
     データベースへのアクセスを制限してください。
- -  準備完了を通知する前に `server.ready` を待機してください。
+ -  準備完了の通知前に `server.ready` を待機してください。
  -  PostgreSQL や Redis クライアントを閉じる前に `server.close()` を
     呼び出してください。
  -  複数プロセスで共有が必要なセキュリティ状態には共有ストアを使って

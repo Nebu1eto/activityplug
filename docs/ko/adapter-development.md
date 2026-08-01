@@ -1,8 +1,8 @@
 어댑터 개발
 ===========
 
-[English](../en/adapter-development.md) | 한국어 |
-[日本語](../ja/adapter-development.md)
+[English](/en/adapter-development.md) | 한국어 |
+[日本語](/ja/adapter-development.md)
 
 ActivityPlug 어댑터는 하나의 원격 클라이언트 API 계약을
 `@activityplug/core`의 정규화된 계약에 매핑합니다. 대상 소프트웨어가
@@ -45,27 +45,27 @@ ID는 비어 있으면 안 되며 공백이나 제어 문자를 포함할 수 �
 매핑하는 소프트웨어 계약만 지정하십시오.
 
 `createCapabilitySet()`은 생략된 capability를 `unknown`으로
-채웁니다. 원격 API가 이식 가능한 동작을 제공하지 않는다고
-확인되었다면 이유와 함께 명시적인 `unsupported` 결정을
-사용하십시오. 감지, 버전 또는 프로브에 따라 지원 여부가 달라진다면
-`unknown`을 사용하십시오.
+채웁니다. 원격 API가 이식 가능한 동작을 제공하지 않는다고 확인되었다면
+이유와 함께 명시적으로 `unsupported`를 사용하십시오. 감지, 버전
+또는 프로브에 따라 지원 여부가 달라진다면 `unknown`을
+사용하십시오.
 
 
 작업 그룹 구현
 --------------
 
-어댑터가 매핑하는 선택적 작업 그룹만 추가하십시오. 각 메서드는
-정규화된 입력과 `AdapterOperationContext`를 받습니다. 다음 항목을
+어댑터가 매핑하는 작업 그룹만 추가하십시오. 각 메서드는 정규화된
+입력과 `AdapterOperationContext`를 받습니다. 다음 항목을
 사용합니다.
 
- -  선택된 정규 인스턴스에는 `context.origin`
- -  로깅과 원격 접근을 위한 공개 작업에는 `context.operation`
- -  HTTP에는 `context.fetch`를 사용하고, 전역 fetch는 사용하지 않음
- -  저장된 자격 증명 확인에는 `context.sessionStore`
+ -  선택된 정규 인스턴스: `context.origin`
+ -  로깅과 원격 접근을 위한 공개 작업: `context.operation`
+ -  HTTP 요청: `context.fetch` (전역 fetch는 사용하지 않음)
+ -  저장된 자격 증명 확인: `context.sessionStore`
  -  인스턴스 origin 밖이나 WebSocket 팩토리를 통해 자격 증명을
-    전달하기 전에는 `context.assertCredentialAllowed`
- -  공개 작업의 예산을 공유해야 하는 중첩 작업에는 `context.budget`
- -  인스턴스별 결정에는 `context.capabilities`와
+    전달하기 전 검사: `context.assertCredentialAllowed`
+ -  공개 작업의 예산을 공유해야 하는 중첩 작업: `context.budget`
+ -  인스턴스별 판정: `context.capabilities`와
     `context.detectedSoftware`
 
 `ORIGIN_NOT_ALLOWED`나 `REQUEST_LIMIT_EXCEEDED`를 잡아서 다른
@@ -104,11 +104,11 @@ function accountFromRemote(
 }
 ~~~~
 
-이 예제는 참조 경계를 보여줍니다. 프로덕션 매핑은 전체 원격 응답을
-검증하고 필수 정규화 필드를 모두 채워야 합니다. 엔티티를 만들기
-전에 스키마나 명시적인 검증기를 사용하십시오. 필수 원격 필드가
-없으면 빈 이식 가능 값이 아니라 `REMOTE_PROTOCOL_ERROR` 또는
-`REMOTE_ERROR`입니다.
+이 예제는 참조 경계만 보여줍니다. 프로덕션 매핑에서는 전체 원격
+응답을 검증하고 필수 정규화 필드를 모두 채워야 합니다. 엔티티를
+만들기 전에 스키마나 명시적인 검증기를 사용하십시오. 필수 원격
+필드가 없으면 빈 이식 가능 값이 아니라 `REMOTE_PROTOCOL_ERROR`
+또는 `REMOTE_ERROR`로 처리합니다.
 
 진단에 도움이 된다면 원격 페이로드를 `raw`에 보존하십시오. 안정적인
 어댑터별 추가 항목은 `extensions`에 넣으십시오. 어느 필드도 정규화된
@@ -136,7 +136,7 @@ function accountFromRemote(
 지원하십시오. 이식 가능한 제한 100과 더 낮은 원격 제한을
 적용하십시오.
 
-안정적으로 이어갈 수 없는 검색 API는, 오해를 일으키는 페이지를
+안정적으로 이어서 조회할 수 없는 검색 API는, 잘못된 페이지를
 반환하는 대신 전달된 커서를 typed 오류로 거부해야 합니다.
 
 
@@ -144,15 +144,15 @@ function accountFromRemote(
 ---------
 
 지원하는 전략은 `adapter.auth.strategies`를 통해 노출합니다.
-전략은 OAuth, 토큰 가져오기, 이메일 챌린지 또는 패스키 메서드와
-세션 검증, 지원되는 갱신 및 철회 작업을 구현할 수 있습니다.
+전략은 OAuth, 토큰 가져오기, 이메일 챌린지, 패스키 메서드와
+세션 검증, 갱신, 폐기 작업을 구현할 수 있습니다.
 
 전략이 반환한 토큰 집합은 코어 인증 서비스에 저장됩니다. 원격
-작업은 세션 저장소에서 자격 증명을 확인해야 하며, 일반적인 서비스
-입력으로 호출자가 access token을 제공한다고 가정하면 안 됩니다.
+작업은 세션 저장소에서 자격 증명을 확인해야 하며, 호출자가
+서비스 입력에 access token을 직접 제공한다고 가정하면 안 됩니다.
 사용 전에 세션이 선택된 어댑터와 origin에 속하는지 확인하십시오.
 
-자격 증명을 보낼 때는 다음 원칙을 지킵니다.
+자격 증명을 보낼 때는 다음 원칙을 따릅니다.
 
  -  작업 범위의 `context.fetch`를 사용합니다.
  -  올바른 자격 증명 종류와 표현을 선언합니다.
@@ -176,9 +176,9 @@ capability 결정은 작업과 일치해야 합니다.
     포함한 `UNSUPPORTED_OPERATION` 오류가 있어야 합니다.
  -  클라이언트는 `unknown`을 지원됨으로 취급해서는 안 됩니다.
 
-허용 입력, 미디어 개수와 크기, MIME 타입 또는 소프트웨어 버전
-범위에는 constraint를 사용하십시오. 문서화되지 않은 일부 입력만
-받으면서 넓은 작업 전체를 지원한다고 표시하지 마십시오.
+허용 입력, 미디어 개수와 크기, MIME 타입, 소프트웨어 버전 범위에는
+constraint를 사용하십시오. 일부 입력만 받으면서 작업 전체를
+지원한다고 표시하지 마십시오.
 
 
 오류 매핑
@@ -204,14 +204,14 @@ capability 결정은 작업과 일치해야 합니다.
 ---------------------------------------
 
 스트리밍 작업 메서드는 `AsyncIterable<StreamEvent>`를
-반환합니다. 전역 WebSocket을 읽는 대신 어댑터 옵션을 통해
-`WebSocketFactory`를 받으십시오. 신뢰할 수 있는 작업과 선택적
-인증 값을 팩토리에 전달합니다.
+반환합니다. 전역 WebSocket을 직접 생성하지 말고 어댑터 옵션을 통해
+`WebSocketFactory`를 받으십시오. 신뢰할 수 있는 작업 이름과
+선택적 인증 값을 팩토리에 전달합니다.
 
 비동기 팩토리 생성, 대기 이벤트 수, 대기 바이트, 소켓 종료를
-제한하려면 코어 도우미를 사용하십시오. 모든 메시지를 매핑하기
-전에 검증하십시오. 원격 스트리밍 엔드포인트의 origin이 다르면,
-인증을 전달하기 전에 일치하는 자격 증명 grant를 요구하십시오.
+제한하려면 코어 도우미를 사용하십시오. 모든 메시지를 매핑 전에
+검증하십시오. 원격 스트리밍 엔드포인트의 origin이 다르면, 인증을
+전달하기 전에 일치하는 자격 증명 grant를 요구하십시오.
 
 
 테스트 요구 사항

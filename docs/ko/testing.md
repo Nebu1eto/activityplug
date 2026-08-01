@@ -1,17 +1,17 @@
 ActivityPlug 테스트
 ===================
 
-[English](../en/testing.md) | 한국어 | [日本語](../ja/testing.md)
+[English](/en/testing.md) | 한국어 | [日本語](/ja/testing.md)
 
 ActivityPlug는 서로 호환되지 않는 Fediverse 서버 사이에서도 안정적으로
 유지해야 하는 동작을 테스트합니다. 공개 API contract, 어댑터 mapping,
 인증, capability 감지, opaque identifier와 cursor, pagination, typed
 error, 보안 경계, 상호 운용성 가정이 여기에 해당합니다.
 
-이러한 동작을 보호하는 최소한의 case만 작성합니다. build tool 설정,
-사소한 구현 세부 사항, 외부 라이브러리의 동작은 테스트하지 않습니다.
-실패로 인해 ActivityPlug contract가 바뀌거나 지원 workflow가 깨질 때
-regression test가 필요합니다.
+이러한 동작을 보호하는 데 필요한 최소한의 case만 작성합니다. build
+tool 설정, 사소한 구현 세부 사항, 외부 라이브러리의 동작은
+테스트하지 않습니다. 실패로 ActivityPlug contract가 바뀌거나 지원
+workflow가 깨질 때 regression test가 필요합니다.
 
 
 테스트 계층
@@ -63,10 +63,12 @@ pnpm --filter @activityplug/example-web-client test
 routing, feature interaction을 검증합니다.
 
 공유되는 결정론적 원격 payload는
-[`packages/test-fixtures`](../../packages/test-fixtures/)에 있습니다.
+[`packages/test-fixtures`]에 있습니다.
 ActivityPlug의 정규화와 discovery 동작을 검증할 때 사용합니다. 현재
 upstream 서버가 여전히 같이 동작한다는 증거로는 사용하지 마십시오.
 그 동작은 Fediverse E2E 테스트가 검증합니다.
+
+[`packages/test-fixtures`]: https://github.com/Nebu1eto/activityplug/blob/main/packages/test-fixtures/
 
 
 Postgresql과 Redis integration 테스트
@@ -178,7 +180,7 @@ upstream checkout, build, startup, provisioning 실패는 external로
 표시하지만, ActivityPlug assertion 실패는 그렇지 않습니다.
 
 정확한 upstream ref와 commit은
-[`test/e2e/versions.env`](../../test/e2e/versions.env)에 기록되어
+[`test/e2e/versions.env`]에 기록되어
 있습니다. 가져온 source는 저장소 외부의
 `${XDG_CACHE_HOME:-$HOME/.cache}/activityplug/fediverse-sources`에
 저장됩니다. acquisition 단계는 source가 build context에 들어가기
@@ -218,7 +220,7 @@ suite용으로 이미 프로비저닝된 경우에만
 `ACTIVITYPLUG_FEDIVERSE_REPROVISION_PACKAGE_TARGETS=0`을
 설정합니다.
 
-[`packages/e2e-fixtures`](../../packages/e2e-fixtures/)의 공통
+[`packages/e2e-fixtures`]의 공통
 assertion은 capability에 따라 실행됩니다. 어댑터가 지원을 선언하고
 프로비저닝된 대상이 필요한 일회용 fixture를 제공할 때만 instance와
 account 읽기, timeline, search, media, post, poll, notification,
@@ -238,6 +240,9 @@ Compose 검사를 실행하지만, 실제 Fediverse matrix는 프로비저닝하
 않습니다. 별도의 `Fediverse E2E` workflow가 schedule 또는 수동
 workflow dispatch로 matrix를 실행합니다. 해당 workflow 전에 실제
 서버 증거가 필요하면 로컬에서 matrix를 실행하십시오.
+
+[`test/e2e/versions.env`]: https://github.com/Nebu1eto/activityplug/blob/main/test/e2e/versions.env
+[`packages/e2e-fixtures`]: https://github.com/Nebu1eto/activityplug/blob/main/packages/e2e-fixtures/
 
 
 테스트 선택과 추가
@@ -259,8 +264,8 @@ PostgreSQL 또는 Redis에 의존하는 동작에만 store integration test를
 browser E2E test를 사용합니다. 결과가 실제 upstream protocol 동작에
 의존할 때 Fediverse E2E assertion을 사용합니다.
 
-같은 invariant를 모든 계층에서 중복 검증하지 않습니다. Rolldown,
+같은 invariant를 모든 계층에서 중복 검증하지 마십시오. Rolldown,
 Vitest, React, database client, server implementation을 대신
-테스트하지 않습니다. 파괴적 E2E resource는 테스트가 소유하게 하고,
+테스트하지 마십시오. 파괴적 E2E resource는 테스트가 소유하게 하고,
 선택 기능은 capability에 따라 검증하며, 실제 서버 실행 뒤에는
 container와 volume을 정리합니다.

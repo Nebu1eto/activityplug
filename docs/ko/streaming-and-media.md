@@ -1,12 +1,12 @@
 스트리밍과 미디어
 =================
 
-[English](../en/streaming-and-media.md) | 한국어 |
-[日本語](../ja/streaming-and-media.md)
+[English](/en/streaming-and-media.md) | 한국어 |
+[日本語](/ja/streaming-and-media.md)
 
 ActivityPlug는 타임라인과 알림 WebSocket을 비동기 event stream으로
-정규화합니다. 로컬 파일 업로드와 서버 측 URL 가져오기는 지원 범위와
-보안 속성이 다르므로 별도 작업으로 제공합니다.
+정규화합니다. 로컬 파일 업로드와 서버 측 URL 가져오기는 지원 범위와 보안 속성이
+다르므로 별도 작업으로 제공합니다.
 
 
 스트리밍 지원
@@ -228,9 +228,9 @@ HackersPub는 GraphQL URL-upload mutation을 호출합니다. WebSocket은
 description과 sensitivity를 거부합니다.
 
 Mastodon, Pleroma/Akkoma, Hollo는 매핑된 URL 가져오기 endpoint를
-제공하지 않습니다. ActivityPlug는 리소스를 애플리케이션으로
-내려받아 암묵적으로 다시 업로드하지 않습니다. 그렇게 하면 network
-trust, resource limit, failure semantics가 바뀌기 때문입니다.
+제공하지 않습니다. ActivityPlug는 리소스를 애플리케이션으로 내려받아
+다시 업로드하지 않습니다. 그렇게 하면 network trust, resource limit,
+failure semantics가 달라지기 때문입니다.
 
 
 실패 처리
@@ -250,7 +250,7 @@ trust, resource limit, failure semantics가 바뀌기 때문입니다.
     `REQUEST_LIMIT_EXCEEDED`
 
 어댑터, 인스턴스, 설정을 변경하지 않았다면 `UNSUPPORTED_OPERATION`을
-재시도하지 마십시오. 재연결 정책은 애플리케이션이 담당합니다.
+재시도하지 마십시오. 재연결 정책은 애플리케이션에서 결정합니다.
 어댑터는 stream과 abort 동작을 노출하지만, 반복되는 연결 실패를
 숨기지 않습니다.
 

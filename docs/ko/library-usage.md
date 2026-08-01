@@ -1,13 +1,12 @@
 Activityplug를 라이브러리로 사용하기
 ====================================
 
-[English](../en/library-usage.md) | 한국어 | [日本語](../ja/library-usage.md)
+[English](/en/library-usage.md) | 한국어 | [日本語](/ja/library-usage.md)
 
 라이브러리 모드에서는 TypeScript 애플리케이션이 typed service를 직접
-호출하고 transport, 세션 저장소, 어댑터 선택, 재시도 정책을 직접
-관리합니다. 여러 프로세스나 신뢰할 수 없는 클라이언트가 하나의 경계를
-공유해야 한다면 [API 표면](api-surfaces.md)의 서버 방식을
-사용하십시오.
+호출하며, transport, 세션 저장소, 어댑터 선택, 재시도 정책을
+애플리케이션에서 관리합니다. 여러 프로세스나 신뢰할 수 없는 클라이언트가 하나의
+경계를 공유해야 한다면 [API 표면](api-surfaces.md)의 서버 방식을 사용하십시오.
 
 
 Core와 어댑터 설치
@@ -26,9 +25,9 @@ pnpm add @activityplug/core @activityplug/mastodon
 ---------------
 
 클라이언트에는 서버 제품군을 매핑하는 어댑터, 원격 인스턴스의 origin,
-런타임에서 검증한 transport를 사용하는 `RemoteAuthority`가 필요합니다.
-서버용 transport는 목적지, DNS, 사설 네트워크, redirect, timeout, 응답
-크기 제한을 적용해야 합니다.
+검증된 transport를 사용하는 `RemoteAuthority`가 필요합니다. 서버용
+transport는 목적지, DNS, 사설 네트워크, redirect, timeout, 응답 크기
+제한을 적용해야 합니다.
 
 ~~~~ ts
 import {
@@ -61,10 +60,10 @@ fragment, 지원하지 않는 scheme은 거부합니다. remote authority가 없
 일반 작업 전 서버 탐지
 ----------------------
 
-직접 클라이언트는 어댑터를 자동 선택하지 않습니다. 예상하는 서버
-제품군의 어댑터로 `instances.detect()`를 호출하고, 보고된 software를
-확인한 다음, 탐지된 capability·software profile로 실제 클라이언트를
-만듭니다.
+직접 생성한 클라이언트는 어댑터를 자동 선택하지 않습니다. 예상하는
+서버 제품군의 어댑터로 `instances.detect()`를 호출하고, 보고된
+software를 확인한 다음, 탐지된 capability·software profile로 실제
+클라이언트를 만듭니다.
 
 ~~~~ ts
 import {
@@ -132,9 +131,10 @@ if (hasCapability(client.capabilities, "posts.update")) {
 }
 ~~~~
 
-`supported`만 사용 가능한 상태로 취급하십시오. `unknown`은 지원을
-확인하지 못했다는 뜻입니다. 입력을 받기 전에 허용 게시물 필드, 공개
-범위, 미디어 크기·개수·MIME type 등의 constraint도 확인해야 합니다.
+`supported`만 사용 가능한 상태로 취급하십시오. `unknown`은 지원
+여부를 확인하지 못했다는 뜻입니다. 입력을 받기 전에 허용 게시물
+필드, 공개 범위, 미디어 크기·개수·MIME type 등의 constraint도
+확인해야 합니다.
 
 
 인증
@@ -293,7 +293,7 @@ try {
 }
 ~~~~
 
-factory는 HTTP와 같은 목적지·credential 정책을 적용해야 합니다.
+factory에도 HTTP와 동일한 목적지·credential 정책을 적용해야 합니다.
 Mastodon은 Authorization header를, Pleroma·Akkoma는 token-only
 WebSocket subprotocol을 사용합니다. ActivityPlug는 느린 소비자의 대기
 이벤트·바이트를 제한하지만, 재연결 정책은 결정하지 않습니다.

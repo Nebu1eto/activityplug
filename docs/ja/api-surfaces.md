@@ -1,7 +1,7 @@
 API サーフェス
 ==============
 
-[English](../en/api-surfaces.md) | [한국어](../ko/api-surfaces.md) | 日本語
+[English](/en/api-surfaces.md) | [한국어](/ko/api-surfaces.md) | 日本語
 
 ActivityPlug は同じポータブル操作モデルを TypeScript ライブラリ、HTTP
 API、GraphQL API、ブラウザ境界で提供します。各サーフェスは異なる信頼
@@ -18,8 +18,8 @@ API、GraphQL API、ブラウザ境界で提供します。各サーフェスは
 | GraphQL API           | フィールド選択と単一スキーマが必要                  | 認証操作の `Authorization: Bearer <session-id>` | `/graphql` のスキーマと `createGraphQLSchema()` |
 | ブラウザ API          | Web アプリケーションに BFF 境界が必要               | 署名済み HttpOnly cookie、origin 検査、CSRF     | `@activityplug/server` のブラウザ型と route     |
 
-HTTP と GraphQL は広い公開サーバサーフェスです。ブラウザ API は UI に
-必要な一部の操作とブラウザ向け DTO を提供します。
+HTTP と GraphQL は広い公開サーバサーフェスです。ブラウザ API は UI で
+必要な操作のサブセットとブラウザ向け DTO を提供します。
 
 
 共通の操作モデル
@@ -41,7 +41,7 @@ const page = await client.timelines.public({
 });
 ~~~~
 
-ライブラリは同じプロセスでアダプタを通じたサービスを呼び出します。
+ライブラリは同じプロセス内でアダプタ経由のサービスを呼び出します。
 アプリケーション側で審査済み `RemoteAuthority`、必要な永続ストア、
 アダプタ選択、WebSocket 作成を提供します。
 [ライブラリの使い方](library-usage.md)を参照してください。
@@ -66,8 +66,8 @@ ID をヘッダで送ります。
 Authorization: Bearer <activityplug-session-id>
 ~~~~
 
-リモート Fediverse のアクセストークンは公開 API の bearer credential では
-ありません。トークンインポートはサーバが明示的に有効化する必要があります。
+リモート Fediverse のアクセストークンを公開 API の bearer credential
+として使うことはできません。トークンインポートはサーバが明示的に有効化する必要があります。
 HTTP API のバインド済み WebSocket route も、実行中の OpenAPI とストリーム
 ディスカバリレスポンスを基準にします。
 

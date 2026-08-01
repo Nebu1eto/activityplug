@@ -1,13 +1,12 @@
 ActivityPlug をライブラリとして使う
 ===================================
 
-[English](../en/library-usage.md) | [한국어](../ko/library-usage.md) | 日本語
+[English](/en/library-usage.md) | [한국어](/ko/library-usage.md) | 日本語
 
-ライブラリモードでは TypeScript アプリケーションが typed service を直接
-呼び出し、transport、セッションストア、アダプタ選択、リトライポリシを
-自ら管理します。複数プロセスや信頼できないクライアントが単一の境界を
-共有する場合は、[API サーフェス](api-surfaces.md)のサーバ方式を使い
-ます。
+ライブラリモードでは TypeScript アプリケーションが typed service を
+直接呼び出し、transport、セッションストア、アダプタ選択、リトライ
+ポリシを自ら管理します。複数プロセスや信頼できないクライアントが単一の境界を共有する場合は
+[API サーフェス](api-surfaces.md)のサーバ方式を使います。
 
 
 コアとアダプタをインストールする
@@ -59,9 +58,9 @@ fetch を明示的に選べます。
 通常操作の前にサーバを検出する
 ------------------------------
 
-直接クライアントはアダプタを自動選択しません。想定するサーバファミリの
-アダプタで検出し、software を確認してから、検出済み capability と
-software profile を渡してクライアントを作り直します。
+直接クライアントはアダプタを自動選択しません。想定するサーバファミリ
+のアダプタで検出し、software を確認してから、検出済みの capability と
+software profile を渡してクライアントを再作成します。
 
 ~~~~ ts
 import {
@@ -129,7 +128,7 @@ if (hasCapability(client.capabilities, "posts.update")) {
 }
 ~~~~
 
-利用可能と判断できるのは `supported` だけです。入力を受け取る前に、投稿
+利用可能と見なせるのは `supported` だけです。入力を受け取る前に、投稿
 フィールド、公開範囲、メディアサイズ、件数、MIME type の constraint も
 確認してください。
 
@@ -258,8 +257,9 @@ try {
 }
 ~~~~
 
-メッセージではなく code と context を使います。リトライはアプリケーション
-とリモートサーバの idempotency 条件で安全な場合に限ります。
+メッセージ文字列ではなく code と context で分岐します。リトライは
+アプリケーションとリモートサーバの idempotency 条件で安全な場合に限り
+ます。
 
 
 ストリームを明示的に扱う

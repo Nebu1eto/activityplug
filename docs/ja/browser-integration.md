@@ -1,14 +1,14 @@
 ブラウザ統合
 ============
 
-[English](../en/browser-integration.md) |
-[한국어](../ko/browser-integration.md) | 日本語
+[English](/en/browser-integration.md) |
+[한국어](/ko/browser-integration.md) | 日本語
 
 ActivityPlug のブラウザ境界はブラウザ向けバックエンド (BFF) です。
 ActivityPlug の認証セッションを HttpOnly cookie の背後に保持し、同一
 origin の Web アプリケーション向けに `/v1/browser/*` API を公開します。
-ブラウザコードは基盤となる ActivityPlug セッション ID を受信も送信も
-しません。
+ブラウザコードは ActivityPlug セッション ID を受信することも送信する
+こともありません。
 
 
 ブラウザ境界を使う場面
@@ -22,8 +22,8 @@ origin の Web アプリケーション向けに `/v1/browser/*` API を公開�
  -  安全でない mutation リクエストに CSRF チェックを適用する
  -  WebSocket URL にセッション ID を含めず認証済みストリームを開く
 
-credential を保護できるネイティブアプリケーション、信頼済みサーバ、
-その他のクライアントは公開 HTTP API または GraphQL API を使えます。
+credential を自前で保護できるネイティブアプリケーション、信頼済み
+サーバ、その他のクライアントは公開 HTTP API や GraphQL API を使えます。
 
 
 サーバ設定
@@ -258,8 +258,8 @@ OAuth 交換で ActivityPlug セッションを作成できてもブラウザセ
 成功したプロダクトルートは値を `{ "data": ... }` で包みます。セッション
 初期化ルートと認証ルートはペイロードを直接返します。
 
-ブラウザサーフェスは公開 HTTP API・GraphQL API より意図的に小さく設計
-されています。選択したアダプタがサポートしない操作は capability を使って
+ブラウザサーフェスは公開 HTTP API や GraphQL API より意図的に小さく
+設計されています。選択したアダプタがサポートしない操作は capability を使って
 非表示または無効にしてください。
 
 
@@ -278,8 +278,8 @@ await fetch("/v1/browser/logout", {
 });
 ~~~~
 
-アップストリームのトークン失効に失敗してもローカルログアウトが優先
-されます。サーバは関連付けられた認証セッションとブラウザセッションを
+アップストリームのトークン失効に失敗した場合でもローカルログアウトが
+優先されます。サーバは関連付けられた認証セッションとブラウザセッションを
 削除し、その後 cookie を消去します。
 
 

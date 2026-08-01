@@ -1,12 +1,12 @@
 セッションストレージ
 ====================
 
-[English](../en/session-storage.md) | [한국어](../ko/session-storage.md) |
+[English](/en/session-storage.md) | [한국어](/ko/session-storage.md) |
 日本語
 
 ActivityPlug は、認証資格情報とブラウザーのセキュリティ状態を明示的な
-インターフェースを介して保存します。デプロイではインメモリ実装、
-PostgreSQL、Redis、またはそれらを意図的に組み合わせた構成を選べます。
+インターフェースを介して保存します。デプロイではインメモリ実装、PostgreSQL、Redis、またはこれらを意図的に
+組み合わせた構成を選べます。
 
 
 ストアの役割
@@ -43,9 +43,10 @@ OAuth セッションが参照する credential lease の backing store とし�
 Backend の選択
 --------------
 
-再起動時にすべてのセッションが失われてもよいテスト・サンプル・単一
-プロセスの開発環境ではインメモリストアを使います。各プロセスが独立した
-コピーを持つため、プロセス間でリクエストを受け渡す構成には対応できません。
+再起動時にすべてのセッションが失われても構わないテスト、サンプル、
+単一プロセスの開発環境ではインメモリストアを使います。各プロセスが独立
+したコピーを持つため、プロセス間でリクエストを受け渡す構成には対応
+できません。
 
 既存のリレーショナルデータベースで認証状態とブラウザーのライフサイクル
 状態を管理する場合は PostgreSQL を使います。このパッケージは繰り返し
@@ -58,9 +59,8 @@ native TTL、1 回限りの値、rate limit、共有ブラウザーストリー�
 prefix を使います。
 
 混合デプロイでは、認証セッションとブラウザーセッションを PostgreSQL に
-置き、有効期間の短いブラウザー状態を Redis に置けます。1 つの論理
-ストアを複数の backend に分割したり、プロセスごとに異なる prefix を
-使ったりしないでください。
+置き、有効期間の短いブラウザー状態を Redis に置けます。1 つの論理ストアを複数の
+backend に分割したり、プロセスごとに異なる prefix を使ったりしないでください。
 
 
 サーバー設定
@@ -162,8 +162,8 @@ ActivityPlug は資格情報の期限と保存期限を区別します。更新�
 を使います。ブラウザー OAuth コールバック状態は claim、release、consume
 操作を使います。公開 API の OAuth コールバック状態とストリームチケットは
 1 回限りの consume を使います。一部のキャッシュ値も 1 回限りの読み取りを
-使います。契約に準拠するストアはこれらの原子性規則を維持する必要があり、
-単純な key-value 読み書きだけでは不十分です。
+使います。契約に準拠するストアはこれらの原子性規則を守る必要があり、単純な
+key-value の読み書きだけでは不十分です。
 
 不正、不一致、期限切れのレコードは失敗として扱います。ストア実装は、
 操作で読み取った値または revision が現在も有効な場合に限って不正な
@@ -180,11 +180,10 @@ ActivityPlug はファイルベースのセッションストアを提供しま�
 compare-and-set、compare-and-delete、期限切れのクリーンアップ、同時
 リクエストでの安全な動作も要求されます。
 
-通常の JSON ファイルでは複数プロセスにまたがってこれらを保証できません。
+通常の JSON ファイルでは複数プロセスにわたってこれらを保証できません。
 ファイルロックと crash-safe な置換を追加しても、権限、バックアップ、
-rotation、復旧の処理はデプロイごとに設計が必要です。ローカルの
-persistence が必要なテストでは、弱いプロダクション契約に依存せず
-PostgreSQL または Redis の統合環境を使います。
+rotation、復旧の処理はデプロイごとに設計が必要です。ローカルの永続化が必要なテストでは、弱いプロダクション契約に依存
+せず PostgreSQL または Redis の統合環境を使います。
 
 
 ローカル統合サービス
@@ -213,7 +212,10 @@ pnpm test:integration
 ----------------
 
  -  [認証とセッション](authentication-and-sessions.md)
- -  [PostgreSQL セッションパッケージ](../../packages/session-postgres/README.md)
- -  [Redis セッションパッケージ](../../packages/session-redis/README.md)
+ -  [PostgreSQL セッションパッケージ]
+ -  [Redis セッションパッケージ]
  -  [デプロイ](deployment.md)
  -  [セキュリティモデル](security-model.md)
+
+[PostgreSQL セッションパッケージ]: https://github.com/Nebu1eto/activityplug/blob/main/packages/session-postgres/README.md
+[Redis セッションパッケージ]: https://github.com/Nebu1eto/activityplug/blob/main/packages/session-redis/README.md

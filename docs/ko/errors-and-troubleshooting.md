@@ -1,12 +1,12 @@
 오류 및 문제 해결
 =================
 
-[English](../en/errors-and-troubleshooting.md) | 한국어 |
-[日本語](../ja/errors-and-troubleshooting.md)
+[English](/en/errors-and-troubleshooting.md) | 한국어 |
+[日本語](/ja/errors-and-troubleshooting.md)
 
 ActivityPlug는 typed 오류 계약으로 `ActivityPlugError`를 사용합니다.
-동일한 코드가 프로세스 내 서비스, 공개 HTTP API, GraphQL API를
-관통합니다. 브라우저 경계는 이를 더 좁은 제품 지향 코드 집합으로
+동일한 코드를 프로세스 내 서비스, 공개 HTTP API, GraphQL API에서
+사용합니다. 브라우저 경계는 이를 더 좁은 제품 지향 코드 집합으로
 매핑합니다.
 
 
@@ -42,15 +42,15 @@ try {
 | 코드                     | 의미                                              | 일반적인 조치                                        |
 | ------------------------ | ------------------------------------------------- | ---------------------------------------------------- |
 | `ADAPTER_NOT_FOUND`      | 구성된 어댑터가 요청과 일치하지 않음              | 어댑터 ID와 서버 어댑터 목록 확인                    |
-| `AUTH_REQUIRED`          | 작업에 인증이 필요함                              | 인증하거나 브라우저 세션 갱신                        |
+| `AUTH_REQUIRED`          | 작업에 인증이 필요함                              | 인증하거나 브라우저 세션을 갱신                      |
 | `AUTH_EXPIRED`           | 저장된 또는 원격 자격 증명이 만료됨               | 다시 인증하고 동일한 자격 증명으로 재시도하지 않음   |
-| `AUTH_UNSUPPORTED`       | 어댑터가 요청된 인증 전략을 지원하지 않음         | 기능이 지원하는 전략 선택                            |
-| `CAPABILITY_UNKNOWN`     | 지원 여부를 안전하게 판단할 수 없음               | 작업을 피하거나 시도 전에 사용자에게 확인            |
-| `UNSUPPORTED_OPERATION`  | 어댑터가 해당 작업을 구현하지 않음을 명시함       | 작업을 비활성화하고 기능 사유 사용                   |
+| `AUTH_UNSUPPORTED`       | 어댑터가 요청된 인증 전략을 지원하지 않음         | 어댑터가 지원하는 전략 선택                          |
+| `CAPABILITY_UNKNOWN`     | 지원 여부를 안전하게 판단할 수 없음               | 작업을 피하거나 사용자에게 확인 후 시도              |
+| `UNSUPPORTED_OPERATION`  | 어댑터가 해당 작업을 지원하지 않음을 명시함       | 작업을 비활성화하고 capability 사유를 참고           |
 | `VALIDATION_FAILED`      | 입력, ID, origin 또는 구성 값이 잘못됨            | 요청을 수정하고 동일한 입력으로 재시도하지 않음      |
 | `NOT_FOUND`              | 요청한 원격 또는 로컬 엔티티가 없음               | 오래된 참조를 제거하거나 포함 리소스 갱신            |
 | `CONFLICT`               | 현재 원격 또는 로컬 상태가 변경을 막음            | 재시도 여부를 결정하기 전에 상태 갱신                |
-| `RATE_LIMITED`           | 로컬 또는 원격 속도 제한이 요청을 거부함          | 있으면 `Retry-After` 준수                            |
+| `RATE_LIMITED`           | 로컬 또는 원격 속도 제한이 요청을 거부함          | `Retry-After`가 있으면 준수                          |
 | `REMOTE_PROTOCOL_ERROR`  | upstream 응답이 예상 프로토콜을 위반함            | 어댑터, origin, 작업을 기록하고 upstream 호환성 확인 |
 | `REMOTE_ERROR`           | upstream 서버가 다른 실패를 반환함                | upstream 상태와 로그를 확인하고 안전할 때만 재시도   |
 | `NETWORK_ERROR`          | 원격 연결 실패                                    | DNS, TLS, 라우팅, origin 정책 확인                   |
@@ -104,9 +104,9 @@ GraphQL 매핑
 ------------
 
 GraphQL 구문, 본문 형태, 검증 실패는 일반 GraphQL 오류와 함께
-HTTP 400을 반환합니다. 요청을 읽거나 분석하는 동안
-`ActivityPlugError`가 발생하면 HTTP 상태는 위 표를 따르고, 세부
-정보는 `extensions.activityplug` 아래에 나타납니다.
+HTTP 400을 반환합니다. 요청을 처리하는 동안 `ActivityPlugError`가
+발생하면 HTTP 상태는 위 표를 따르고, 세부 정보는
+`extensions.activityplug` 아래에 나타납니다.
 
 ~~~~ json
 {
@@ -189,7 +189,7 @@ CLI 사용자는 `--allow-origin`을 반복 지정해야 합니다. CLI 허용
 ### 비공개 또는 루프백 주소가 거부됨
 
 허용된 origin도 차단된 주소로 해석될 수 있습니다. 배포가 비공개
-네트워크에 접속하도록 의도된 경우에만
+네트워크에 접속해야 하는 경우에만
 `allowPrivateNetworks: true` 또는 `--allow-private-networks`를
 사용하십시오. 명시적인 origin 정책을 유지하십시오. 주소 허용이
 이를 대체하지는 않습니다.
@@ -284,7 +284,7 @@ Mastodon 호환 및 Misskey 어댑터의 스트리밍에는 WebSocket 팩토리
 확인하십시오. 기본 상태 구현은 데이터베이스나 Redis를 탐색하지
 않습니다.
 
-가능하면 의존성 검사를 짧게 유지하고 일반 요청 풀과
+의존성 검사를 가능한 한 짧게 유지하고 일반 요청 풀과
 분리하십시오. 프로덕션 웹 클라이언트 예제는 별도로 제한된
 PostgreSQL 및 Redis 준비 상태 클라이언트를 사용합니다.
 

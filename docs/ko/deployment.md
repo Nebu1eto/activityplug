@@ -1,7 +1,7 @@
 배포
 ====
 
-[English](../en/deployment.md) | 한국어 | [日本語](../ja/deployment.md)
+[English](/en/deployment.md) | 한국어 | [日本語](/ja/deployment.md)
 
 ActivityPlug는 두 가지 Docker Compose 참조 스택을 제공합니다.
 
@@ -14,8 +14,8 @@ ActivityPlug는 두 가지 Docker Compose 참조 스택을 제공합니다.
 
 두 스택 모두 Caddy에서 TLS를 종료하며 브라우저 애플리케이션과
 `/health`만 공개합니다. 루프백 인터페이스에 바인딩하고 Caddy의 로컬
-인증 기관을 사용합니다. 인터넷에 그대로 공개하는 배포 구성이 아니라,
-프로덕션 형태를 갖춘 참조 구성으로 사용해야 합니다.
+인증 기관을 사용합니다. 인터넷에 그대로 공개하기 위한 배포 구성이 아니라,
+프로덕션 형태를 갖춘 참조 구성입니다.
 
 
 사전 요구 사항
@@ -28,10 +28,10 @@ ActivityPlug는 두 가지 Docker Compose 참조 스택을 제공합니다.
  -  선택한 컨테이너 이미지가 있는 레지스트리에 대한 접근 권한
  -  원격 ActivityPub 서버를 위한 명시적인 HTTPS origin 허용 목록
 
-패키지 스크립트는 저장소 루트에서 실행합니다. 프로덕션 Compose
-파일을 직접 실행하지 마십시오. 실행기는 Docker를 시작하기 전에
-이미지 고정값과 필수 비밀을 검증합니다. 다른 Compose 구성 명령은
-보간된 비밀을 출력할 수 있으므로 `config --quiet`만 허용합니다.
+패키지 스크립트는 저장소 루트에서 실행합니다. 프로덕션 Compose 파일을 직접
+실행하지 마십시오. 실행기는 Docker를 시작하기 전에 이미지 고정값과 필수 비밀을
+검증합니다. 다른 Compose 구성 명령은 보간된 비밀을 출력할 수 있으므로
+`config --quiet`만 허용합니다.
 
 
 저장소 모드 선택
@@ -44,8 +44,8 @@ Redis는 스트림 티켓, OAuth 시작 제한, 수명이 짧은 인증 challeng
 저장합니다. Redis의 append-only 영속성과 named volume은 참조 스택이
 소유한 상태를 보존합니다.
 
-프로세스가 종료될 때 모든 세션과 일시적인 보안 레코드를 잃어도
-되는 경우에만 memory 스택을 사용합니다. PostgreSQL이나 Redis에
+프로세스 종료 시 모든 세션과 일시적인 보안 레코드를 잃어도 되는
+경우에만 memory 스택을 사용합니다. PostgreSQL이나 Redis에
 의존하지 않으며 `/health`는 서버 프로세스만 확인합니다.
 
 두 스택 모두 익명 브라우저 세션을 `stateless`로 설정합니다. 따라서
@@ -94,7 +94,7 @@ node --input-type=module -e \
   "import { randomBytes } from 'node:crypto'; console.log(randomBytes(32).toString('base64url'))"
 ~~~~
 
-각 비밀마다 이 명령을 별도로 실행합니다. 결과를 추적되는 파일이나
+비밀마다 이 명령을 따로 실행합니다. 결과를 버전 관리 대상 파일이나
 셸 기록에 저장하지 마십시오.
 
 
@@ -156,8 +156,8 @@ HTTP API를 공개하지 않습니다.
 5.  프록시가 공개할 서버 경로를 명시적으로 결정합니다.
 
 공개 origin은 자격 증명, 경로, query, fragment가 없는 순수 HTTPS
-origin이어야 합니다. 이 값이 브라우저에 표시되는 origin과 다르면
-same-origin 검사와 OAuth callback binding이 실패합니다.
+origin이어야 합니다. 이 값이 브라우저에 표시되는 origin과 다르면 same-origin
+검사와 OAuth callback binding이 실패합니다.
 
 
 네트워크 및 컨테이너 경계
@@ -214,8 +214,8 @@ health endpoint의 성공은 프로세스와 구성된 저장소가 준비되었
 `stateless`로 전환하려면, 먼저 두 쿠키 형식을 모두 디코딩할 수
 있는 릴리스를 모든 인스턴스에 배포하되 모드는 `stored`로
 유지합니다. 배포가 완료된 뒤 전체 fleet을 동시에 `stateless`로
-전환합니다. 이전 decoder가 남아 있는 혼합 fleet은 새 쿠키 형식을
-안정적으로 처리할 수 없습니다. 나중에 fleet을 `stored`로 되돌리면,
+전환합니다. 이전 decoder만 있는 인스턴스가 남아 있으면 새 쿠키 형식을 안정적으로
+처리할 수 없습니다. 나중에 fleet을 `stored`로 되돌리면,
 업그레이드된 인스턴스는 유효한 stateless 익명 쿠키를 구성된 세션
 저장소에 등록한 뒤 stored-session 쿠키를 발급합니다.
 
@@ -231,8 +231,8 @@ Compose의 `POSTGRES_PASSWORD`만 변경해도 기존 PostgreSQL volume의
 바꾸면 readiness가 실패합니다.
 
 `down` 스크립트는 `--volumes`를 전달하지 않으므로 named data와
-Caddy 인증 기관 상태가 유지됩니다. 이러한 volume의 삭제는 별도의
-파괴적 작업이며, 문서화된 종료 절차에 포함되지 않습니다.
+Caddy 인증 기관 상태가 유지됩니다. volume 삭제는 별도의 파괴적 작업이며,
+문서화된 종료 절차에 포함되지 않습니다.
 
 
 운영상 제한
@@ -245,8 +245,8 @@ balancer, 공개 hostname용 인증서 자동화, 원격 백업, monitoring,
 여러 호스트의 orchestration을 제공하지 않습니다.
 
 예제 서버는 raw token import를 비활성화하고 명시적인 원격 origin
-allowlist를 요구합니다. 검토된 애플리케이션 요구 사항이 더 좁은
-인증 및 운영 정책을 정의하지 않는 한, 이 기본값을 유지합니다.
+allowlist를 요구합니다. 검토된 애플리케이션 요구 사항에 따라 더 좁은 인증 및
+운영 정책을 정의하지 않는 한, 이 기본값을 유지하십시오.
 
 
 관련 문서

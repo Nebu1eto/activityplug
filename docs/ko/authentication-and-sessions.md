@@ -1,8 +1,8 @@
 인증과 세션
 ===========
 
-[English](../en/authentication-and-sessions.md) | 한국어 |
-[日本語](../ja/authentication-and-sessions.md)
+[English](/en/authentication-and-sessions.md) | 한국어 |
+[日本語](/ja/authentication-and-sessions.md)
 
 ActivityPlug는 ActivityPub 서버마다 다른 자격 증명 방식을 불투명한
 `AuthSession`으로 통합합니다. 애플리케이션은 ActivityPlug 세션 식별자만
@@ -13,7 +13,7 @@ ActivityPlug는 ActivityPub 서버마다 다른 자격 증명 방식을 불투�
 인증 전략
 ---------
 
-어댑터는 원격 서버가 지원하는 전략을 공개하며, 클라이언트에서
+어댑터는 원격 서버가 지원하는 전략을 노출하며,
 `auth.availableStrategies`로 확인할 수 있습니다.
 
 | 전략             | 애플리케이션 흐름                                                                     |
@@ -24,7 +24,7 @@ ActivityPlug는 ActivityPub 서버마다 다른 자격 증명 방식을 불투�
 | `passkey`        | WebAuthn 인증 절차를 시작하고 완료합니다.                                             |
 
 전략 사이에 fallback은 없습니다. 어댑터가 구현하지 않은 흐름을 호출하면
-unsupported-operation 오류가 발생합니다. OAuth 갱신과 폐기도 어댑터가
+`UNSUPPORTED_OPERATION` 오류가 발생합니다. OAuth 갱신과 폐기도 어댑터가
 선언한 capability에 따라 지원 여부가 결정됩니다.
 
 
@@ -124,7 +124,7 @@ claim한 뒤 교환에 성공하면 consume됩니다. 따라서 동시에 처리
 어댑터가 지원하면 원격 자격 증명 폐기를 요청한 뒤, 로컬 인증 상태를
 제거합니다.
 
-일부 OAuth 서버는 redirect 이후에도 필요한 클라이언트 시크릿을
+일부 OAuth 서버는 redirect 이후에 사용할 클라이언트 시크릿을
 반환합니다. ActivityPlug는 이 값을 `OAuthClientSecretStore`에 따로
 저장하고, 인증 세션에는 불투명 자격 증명 참조만 보관합니다. 기본
 서버는 구성된 client-secret 저장소에서 credential-lease 저장소를

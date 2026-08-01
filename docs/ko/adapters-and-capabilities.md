@@ -1,11 +1,11 @@
 어댑터와 capability
 ===================
 
-[English](../en/adapters-and-capabilities.md) | 한국어 |
-[日本語](../ja/adapters-and-capabilities.md)
+[English](/en/adapters-and-capabilities.md) | 한국어 |
+[日本語](/ja/adapters-and-capabilities.md)
 
 ActivityPlug 어댑터는 특정 서버 계열의 API를 공통 클라이언트 계약으로
-변환합니다. 이 계약이 모든 서버가 모든 작업을 구현한다는 뜻은 아닙니다.
+변환합니다. 이 계약이 모든 서버에서 모든 작업을 사용할 수 있다는 뜻은 아닙니다.
 Capability 판정은 선택한 어댑터·인스턴스에서 애플리케이션이 의존할 수
 있는 동작을 나타냅니다.
 
@@ -22,16 +22,16 @@ Capability 판정은 선택한 어댑터·인스턴스에서 애플리케이션�
 | `@activityplug/hollo`      | `hollo`      | Hollo           | 확장된 Mastodon 호환 |
 
 `@activityplug/mastodon-base`는 Mastodon 호환 어댑터 작성자를 위한
-구현 패키지입니다. 호출자가 어댑터 identity, 지원 소프트웨어 이름,
-계열별 동작을 제공하므로, 범용 자동 소프트웨어 감지용으로 쓰기에는
-적합하지 않습니다.
+구현 패키지입니다. 호출자가 어댑터 identity, 지원 소프트웨어 이름, 계열별 동작을
+제공해야 하므로, 범용 자동 소프트웨어 감지에는 적합하지
+않습니다.
 
 요청에서 어댑터를 지정하지 않으면 ActivityPlug 서버는 등록된 어댑터를
-순서대로 시험합니다. 감지된 소프트웨어 identity가 어댑터 메타데이터의
-ID, kind, `supportedSoftware` 중 하나와 일치할 때 프로필을
-받아들입니다. 어댑터 ID를 지정하면 해당 어댑터를 바로 선택하고, 계열
-이름 일치 검사 없이 인스턴스 discovery를 실행합니다. discovery는
-형식이 잘못되었거나 호환되지 않는 응답을 여전히 거부할 수 있습니다.
+순서대로 시험합니다. 감지된 소프트웨어 identity가 어댑터 메타데이터의 ID, kind,
+`supportedSoftware` 중 하나와 일치하면 프로필을 받아들입니다. 어댑터 ID를
+지정하면 해당 어댑터를 바로 선택하고, 계열 이름 일치 검사 없이 인스턴스
+discovery를 실행합니다. discovery는 형식이 잘못되었거나 호환되지 않는 응답을
+여전히 거부할 수 있습니다.
 
 
 Capability 판정
@@ -55,11 +55,11 @@ interface CapabilityDecision {
  -  `supported`: 선택한 어댑터와 확인된 근거가 작업을 허용합니다.
  -  `unsupported`: 어댑터가 작업을 제공하지 않는 명시적인 이유가
     있습니다.
- -  `unknown`: 소프트웨어 identity나 안정적인 버전을 알 수 없어,
-    어댑터가 지원 여부를 입증할 수 없는 경우가 대부분입니다.
+ -  `unknown`: 대부분 소프트웨어 identity나 안정적인 버전을 알 수
+    없어, 어댑터가 지원 여부를 확정할 수 없는 경우입니다.
 
-선택 기능은 `supported`일 때만 노출하십시오. `unknown`은 낙관적인
-지원을 뜻하지 않습니다.
+기능을 `supported`일 때만 노출하십시오. `unknown`을 낙관적으로
+지원되는 것으로 취급하지 마십시오.
 
 ~~~~ ts
 const profile = await client.instances.detect();
@@ -78,10 +78,10 @@ switch (decision.status) {
 }
 ~~~~
 
-`constraints`는 지원되는 작업의 범위를 좁힐 수 있습니다. 게시물
-생성은 허용 입력 형태를 기록하고, 미디어 capability는 바이트,
-항목 수, MIME type 한도를 선언할 수 있습니다. 서버가 표현할 수 없는
-입력을 만들기 전에 제약을 확인하십시오.
+`constraints`는 지원되는 작업의 범위를 좁힙니다. 게시물 생성은
+허용 입력 형태를 기록하고, 미디어 capability는 바이트, 항목 수,
+MIME type 한도를 선언할 수 있습니다. 서버가 처리할 수 없는 입력을
+만들기 전에 제약을 확인하십시오.
 
 
 정적 계층과 감지 계층
@@ -99,8 +99,8 @@ static < nodeinfo < oauth < instance < probe
 ~~~~
 
 `unknown`이 아닌 판정은 이전 `unknown` 판정을 대체합니다. `unknown`
-판정은 기존 `supported`·`unsupported` 결과를 지우지 않습니다. 확실성이
-같으면 순위가 높은 소스가 우선합니다.
+판정은 기존 `supported`·`unsupported` 결과를 덮어쓰지 않습니다.
+확실성이 같으면 순위가 높은 소스가 우선합니다.
 
 감지한 계열·버전에 따라 달라지는 Mastodon 호환 동작의 예는 다음과
 같습니다.
@@ -125,8 +125,9 @@ static < nodeinfo < oauth < instance < probe
 ---------
 
 다음 표는 어댑터별 동작 범위를 요약합니다. `예`는 해당 기능군을
-매핑한다는 뜻이며, 그 안의 모든 작업이 조건 없이 지원된다는 뜻은
-아닙니다. 작업·버전별 판정은 유효 capability 집합을 확인하십시오.
+매핑한다는 뜻이며, 모든 작업이 조건 없이 지원된다는 뜻은
+아닙니다. 작업·버전별 세부 판정은 유효 capability 집합을
+확인하십시오.
 
 | 기능군                    | Mastodon         | Pleroma/Akkoma   | Misskey        | HackersPub  | Hollo  |
 | ------------------------- | ---------------- | ---------------- | -------------- | ----------- | ------ |
@@ -168,8 +169,8 @@ capability 이름이 포함됩니다.
  -  인증 WebSocket에서 신뢰할 수 있는 Misskey 버전 감지 요구
  -  원격 API에 신뢰할 수 있는 커서가 없을 때 검색 커서 거부
 
-이 실패는 `null`, 빈 collection, 조용히 바뀐 입력이 아니라 타입이
-지정된 오류로 나타납니다.
+이러한 실패는 `null`, 빈 collection, 조용히 바뀐 입력이 아니라
+typed 오류로 나타납니다.
 
 
 어댑터 선택
@@ -177,8 +178,8 @@ capability 이름이 포함됩니다.
 
 지원하려는 소프트웨어 계열의 구체 패키지를 사용하십시오. 여러 인스턴스를
 다루는 서비스는 필요한 어댑터를 모두 등록하고 신뢰할 수 있는 감지가
-선택하도록 합니다. 어댑터 자체의 인스턴스 감지를 실행하지 않은 채
-신뢰할 수 없는 소프트웨어 이름 문자열로 어댑터를 고르지 마십시오.
+선택하도록 합니다. 어댑터의 인스턴스 감지를 실행하지 않고 신뢰할 수 없는
+소프트웨어 이름 문자열로 어댑터를 선택하지 마십시오.
 
 선택적 UI·API 동작에는 다음 순서를 적용합니다.
 

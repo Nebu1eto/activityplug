@@ -1,7 +1,7 @@
 API 표면
 ========
 
-[English](../en/api-surfaces.md) | 한국어 | [日本語](../ja/api-surfaces.md)
+[English](/en/api-surfaces.md) | 한국어 | [日本語](/ja/api-surfaces.md)
 
 ActivityPlug는 동일한 이식 가능 작업 모델을 TypeScript 라이브러리,
 HTTP API, GraphQL API, 브라우저 경계로 제공합니다. 각 표면은 서로 다른
@@ -149,4 +149,4 @@ UI에 필요한 forward cursor를 제공합니다. 어댑터별 `raw`·`extensio
 5.  대상 인스턴스의 capability를 런타임에 확인합니다.
 
 저장소 소스와 예제는 동작을 설명하지만, 원격 클라이언트가 보낼 수 있는
-값은 배포된 버전의 생성 계약이 결정합니다.
+값의 기준은 배포된 버전의 계약입니다.
