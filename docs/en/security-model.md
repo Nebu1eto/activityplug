@@ -1,7 +1,7 @@
 Security model
 ==============
 
-English | [한국어](../ko/security-model.md) | [日本語](../ja/security-model.md)
+English | [한국어](/ko/security-model.md) | [日本語](/ja/security-model.md)
 
 ActivityPlug accepts client-selected remote ActivityPub origins and can attach
 user credentials to outbound requests. A safe deployment must therefore

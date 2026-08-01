@@ -1,6 +1,9 @@
 node_modules/
 dist/
 coverage/
+docs/api/
+docs/.vitepress/cache/
+docs/.vitepress/dist/
 .pnpm-store/
 .worktrees/
 .dev/

@@ -1,7 +1,7 @@
 Core concepts
 =============
 
-English | [한국어](../ko/concepts.md) | [日本語](../ja/concepts.md)
+English | [한국어](/ko/concepts.md) | [日本語](/ja/concepts.md)
 
 ActivityPlug presents one set of TypeScript, HTTP, GraphQL, and browser-facing
 contracts over servers whose client APIs differ. The following concepts define

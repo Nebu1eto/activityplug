@@ -1,8 +1,8 @@
 Session storage
 ===============
 
-English | [한국어](../ko/session-storage.md) |
-[日本語](../ja/session-storage.md)
+English | [한국어](/ko/session-storage.md) |
+[日本語](/ja/session-storage.md)
 
 ActivityPlug stores authentication credentials and browser security state
 behind explicit interfaces. A deployment can use in-memory implementations,
@@ -206,7 +206,10 @@ Related documentation
 ---------------------
 
  -  [Authentication and sessions](authentication-and-sessions.md)
- -  [PostgreSQL session package](../../packages/session-postgres/README.md)
- -  [Redis session package](../../packages/session-redis/README.md)
+ -  [PostgreSQL session package]
+ -  [Redis session package]
  -  [Deployment](deployment.md)
  -  [Security model](security-model.md)
+
+[PostgreSQL session package]: https://github.com/Nebu1eto/activityplug/blob/main/packages/session-postgres/README.md
+[Redis session package]: https://github.com/Nebu1eto/activityplug/blob/main/packages/session-redis/README.md

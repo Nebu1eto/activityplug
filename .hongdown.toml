@@ -4,6 +4,7 @@ exclude = [
   "**/node_modules/**",
   "**/dist/**",
   "**/coverage/**",
+  "docs/api/**",
   ".git/**",
   ".claude/**",
   "CLAUDE.md",

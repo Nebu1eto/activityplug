@@ -1,8 +1,8 @@
 Adapters and capabilities
 =========================
 
-English | [한국어](../ko/adapters-and-capabilities.md) |
-[日本語](../ja/adapters-and-capabilities.md)
+English | [한국어](/ko/adapters-and-capabilities.md) |
+[日本語](/ja/adapters-and-capabilities.md)
 
 ActivityPlug adapters translate one server family's API into a shared client
 contract. The contract does not imply that every server implements every

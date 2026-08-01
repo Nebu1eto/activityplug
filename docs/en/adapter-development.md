@@ -1,8 +1,8 @@
 Adapter development
 ===================
 
-English | [한국어](../ko/adapter-development.md) |
-[日本語](../ja/adapter-development.md)
+English | [한국어](/ko/adapter-development.md) |
+[日本語](/ja/adapter-development.md)
 
 An ActivityPlug adapter maps one remote client API contract to the normalized
 contracts in `@activityplug/core`. Implement only behavior that the target

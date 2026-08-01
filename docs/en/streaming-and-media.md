@@ -1,8 +1,8 @@
 Streaming and media
 ===================
 
-English | [한국어](../ko/streaming-and-media.md) |
-[日本語](../ja/streaming-and-media.md)
+English | [한국어](/ko/streaming-and-media.md) |
+[日本語](/ja/streaming-and-media.md)
 
 ActivityPlug normalizes timeline and notification WebSockets as asynchronous
 event streams. It also separates local-file upload from server-side URL

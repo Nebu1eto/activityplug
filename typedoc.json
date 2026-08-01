@@ -1,0 +1,40 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "name": "ActivityPlug API",
+  "entryPoints": [
+    "packages/core",
+    "packages/mastodon-base",
+    "packages/mastodon",
+    "packages/pleroma",
+    "packages/misskey",
+    "packages/hollo",
+    "packages/hackerspub",
+    "packages/server",
+    "packages/session-postgres",
+    "packages/session-redis"
+  ],
+  "entryPointStrategy": "packages",
+  "packageOptions": {
+    "entryPoints": ["src/index.ts"],
+    "readme": "none",
+    "skipErrorChecking": true,
+    "validation": {
+      "notExported": false
+    }
+  },
+  "out": "docs/api",
+  "plugin": ["typedoc-plugin-markdown", "typedoc-vitepress-theme"],
+  "readme": "none",
+  "exclude": ["**/README.md"],
+  "excludePrivate": true,
+  "excludeInternal": true,
+  "includeVersion": true,
+  "cleanOutputDir": true,
+  "docsRoot": "docs",
+  "sidebar": {
+    "autoConfiguration": true,
+    "format": "vitepress",
+    "pretty": true,
+    "collapsed": true
+  }
+}

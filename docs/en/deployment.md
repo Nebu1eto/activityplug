@@ -1,7 +1,7 @@
 Deployment
 ==========
 
-English | [한국어](../ko/deployment.md) | [日本語](../ja/deployment.md)
+English | [한국어](/ko/deployment.md) | [日本語](/ja/deployment.md)
 
 ActivityPlug includes two Docker Compose reference stacks:
 

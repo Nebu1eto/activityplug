@@ -1,7 +1,7 @@
 Architecture
 ============
 
-English | [한국어](../ko/architecture.md) | [日本語](../ja/architecture.md)
+English | [한국어](/ko/architecture.md) | [日本語](/ja/architecture.md)
 
 ActivityPlug separates portable product contracts from remote API mappings and
 delivery transports. The same adapter-backed service behavior can be called

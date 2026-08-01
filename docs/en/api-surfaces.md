@@ -1,7 +1,7 @@
 API surfaces
 ============
 
-English | [한국어](../ko/api-surfaces.md) | [日本語](../ja/api-surfaces.md)
+English | [한국어](/ko/api-surfaces.md) | [日本語](/ja/api-surfaces.md)
 
 ActivityPlug exposes the same portable operation model through a TypeScript
 library, an HTTP API, a GraphQL API, and a browser boundary. They serve

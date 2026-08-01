@@ -1,0 +1,70 @@
+:root {
+  --vp-c-brand-1: #6929c4;
+  --vp-c-brand-2: #8a3ffc;
+  --vp-c-brand-3: #5a1fb0;
+  --vp-c-brand-soft: rgba(105, 41, 196, 0.14);
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(120deg, #6929c4 20%, #a56eff 80%);
+  --vp-home-hero-image-background-image: radial-gradient(
+    circle,
+    rgba(138, 63, 252, 0.3) 0%,
+    rgba(105, 41, 196, 0) 68%
+  );
+  --vp-home-hero-image-filter: blur(44px);
+}
+
+.dark {
+  --vp-c-brand-1: #be95ff;
+  --vp-c-brand-2: #d4bbff;
+  --vp-c-brand-3: #a56eff;
+  --vp-c-brand-soft: rgba(190, 149, 255, 0.16);
+}
+
+.VPHero .VPImage {
+  filter: drop-shadow(0 24px 42px rgba(105, 41, 196, 0.24));
+}
+
+.VPFeature .VPImage {
+  color: var(--vp-c-text-1);
+}
+
+.dark .VPFeature .VPImage {
+  filter: invert(1);
+}
+
+.VPDoc
+  > .container
+  > .content
+  > .content-container
+  > main
+  > .vp-doc
+  > div
+  > p:first-of-type:has(> a[href^="/en/"]):has(> a[href^="/ko/"]),
+.VPDoc
+  > .container
+  > .content
+  > .content-container
+  > main
+  > .vp-doc
+  > div
+  > p:first-of-type:has(> a[href^="/en/"]):has(> a[href^="/ja/"]),
+.VPDoc
+  > .container
+  > .content
+  > .content-container
+  > main
+  > .vp-doc
+  > div
+  > p:first-of-type:has(> a[href^="/ko/"]):has(> a[href^="/ja/"]) {
+  display: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .VPHero .VPImage {
+    transition: filter 250ms ease;
+  }
+
+  .VPHero .image-container:hover .VPImage {
+    filter: drop-shadow(0 28px 48px rgba(105, 41, 196, 0.3));
+  }
+}

@@ -1,7 +1,7 @@
 Using ActivityPlug as a library
 ===============================
 
-English | [한국어](../ko/library-usage.md) | [日本語](../ja/library-usage.md)
+English | [한국어](/ko/library-usage.md) | [日本語](/ja/library-usage.md)
 
 This guide explains how a TypeScript application uses ActivityPlug directly.
 Library mode gives the application typed service methods and leaves transport,

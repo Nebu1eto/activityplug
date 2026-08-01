@@ -1,8 +1,8 @@
 Browser integration
 ===================
 
-English | [한국어](../ko/browser-integration.md) |
-[日本語](../ja/browser-integration.md)
+English | [한국어](/ko/browser-integration.md) |
+[日本語](/ja/browser-integration.md)
 
 The ActivityPlug browser boundary is a backend-for-frontend (BFF). It keeps the
 ActivityPlug authentication session behind an HttpOnly cookie and exposes a

@@ -1,6 +1,7 @@
 packages:
   - packages/*
   - examples/*
+  - tools/*
 allowBuilds:
   esbuild: true
   lefthook: true

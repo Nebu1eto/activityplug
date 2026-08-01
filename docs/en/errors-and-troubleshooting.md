@@ -1,8 +1,8 @@
 Errors and troubleshooting
 ==========================
 
-English | [한국어](../ko/errors-and-troubleshooting.md) |
-[日本語](../ja/errors-and-troubleshooting.md)
+English | [한국어](/ko/errors-and-troubleshooting.md) |
+[日本語](/ja/errors-and-troubleshooting.md)
 
 ActivityPlug uses `ActivityPlugError` as its typed error contract. The same
 codes pass through the in-process service, public HTTP API, and GraphQL API.

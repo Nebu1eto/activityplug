@@ -29,6 +29,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm format:check
+      - run: pnpm docs:build
       - run: pnpm typecheck
       - run: pnpm --filter @activityplug/example-web-client build:server
       - run: pnpm lint

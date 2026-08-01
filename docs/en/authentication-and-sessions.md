@@ -1,8 +1,8 @@
 Authentication and sessions
 ===========================
 
-English | [한국어](../ko/authentication-and-sessions.md) |
-[日本語](../ja/authentication-and-sessions.md)
+English | [한국어](/ko/authentication-and-sessions.md) |
+[日本語](/ja/authentication-and-sessions.md)
 
 ActivityPlug converts credentials accepted by different ActivityPub servers
 into an opaque `AuthSession`. Applications use the session identifier with

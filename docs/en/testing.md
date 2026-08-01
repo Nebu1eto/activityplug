@@ -1,7 +1,7 @@
 Testing ActivityPlug
 ====================
 
-English | [한국어](../ko/testing.md) | [日本語](../ja/testing.md)
+English | [한국어](/ko/testing.md) | [日本語](/ja/testing.md)
 
 ActivityPlug tests the behavior that must remain stable across incompatible
 Fediverse servers: public API contracts, adapter mapping, authentication,
@@ -62,10 +62,12 @@ Its tests run in `jsdom` and cover browser contracts, state, rendering, routing,
 and feature interactions.
 
 Shared deterministic remote payloads live in
-[`packages/test-fixtures`](../../packages/test-fixtures/). Use them to verify
+[`packages/test-fixtures`]. Use them to verify
 ActivityPlug normalization and discovery behavior. Do not use them as evidence
 that a current upstream server still behaves the same way; that is the purpose
 of Fediverse E2E testing.
+
+[`packages/test-fixtures`]: https://github.com/Nebu1eto/activityplug/blob/main/packages/test-fixtures/
 
 
 PostgreSQL and Redis integration tests
@@ -176,7 +178,7 @@ or provisioning failures are marked as external; ActivityPlug assertion
 failures are not.
 
 Exact upstream refs and commits are recorded in
-[`test/e2e/versions.env`](../../test/e2e/versions.env). Acquired source is
+[`test/e2e/versions.env`]. Acquired source is
 stored outside the repository under
 `${XDG_CACHE_HOME:-$HOME/.cache}/activityplug/fediverse-sources`. The
 acquisition step verifies the commit and cleans ignored files before the source
@@ -214,7 +216,7 @@ uses destructive fixtures. Set
 target payload is already provisioned for the adapter suite.
 
 The common assertions in
-[`packages/e2e-fixtures`](../../packages/e2e-fixtures/) are capability-gated.
+[`packages/e2e-fixtures`] are capability-gated.
 They cover instance and account reads, timelines, search, media, posts, polls,
 notifications, follow requests, lists, filters, scheduled posts, and social
 actions only when the adapter declares support and the provisioned target
@@ -232,6 +234,9 @@ Compose checks, but it does not provision the real Fediverse matrix. The
 separate `Fediverse E2E` workflow runs the matrix on its schedule or through a
 manual workflow dispatch. Run the matrix locally when a change needs
 real-server evidence before that workflow runs.
+
+[`test/e2e/versions.env`]: https://github.com/Nebu1eto/activityplug/blob/main/test/e2e/versions.env
+[`packages/e2e-fixtures`]: https://github.com/Nebu1eto/activityplug/blob/main/packages/e2e-fixtures/
 
 
 Choosing and adding tests

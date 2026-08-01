@@ -1,8 +1,8 @@
 Getting started
 ===============
 
-English | [한국어](../ko/getting-started.md) |
-[日本語](../ja/getting-started.md)
+English | [한국어](/ko/getting-started.md) |
+[日本語](/ja/getting-started.md)
 
 This guide starts with server mode because its command-line server provides a
 complete remote transport and origin policy. Library mode gives trusted
@@ -63,12 +63,16 @@ Try the repository examples
 
 The repository examples exercise complete integration paths:
 
- -  [Bot](../../examples/bot/README.md) uses library mode with Mastodon or
+ -  [Bot] uses library mode with Mastodon or
     Misskey.
- -  [Proxy client](../../examples/proxy-client/README.md) calls the HTTP and
+ -  [Proxy client] calls the HTTP and
     GraphQL server APIs.
- -  [Web client](../../examples/web-client/README.md) uses the browser API with
+ -  [Web client] uses the browser API with
     either in-memory or durable storage.
+
+[Bot]: https://github.com/Nebu1eto/activityplug/blob/main/examples/bot/README.md
+[Proxy client]: https://github.com/Nebu1eto/activityplug/blob/main/examples/proxy-client/README.md
+[Web client]: https://github.com/Nebu1eto/activityplug/blob/main/examples/web-client/README.md
 
 
 Choose the next guide

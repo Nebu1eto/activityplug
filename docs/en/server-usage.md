@@ -1,7 +1,7 @@
 Server usage
 ============
 
-English | [한국어](../ko/server-usage.md) | [日本語](../ja/server-usage.md)
+English | [한국어](/ko/server-usage.md) | [日本語](/ja/server-usage.md)
 
 `@activityplug/server` can run as a command-line process or as part of a Node.js
 application. Both forms expose the public HTTP API, GraphQL, and WebSocket
@@ -400,4 +400,6 @@ Next steps
  -  [Session storage](session-storage.md)
  -  [Security model](security-model.md)
  -  [Errors and troubleshooting](errors-and-troubleshooting.md)
- -  [`@activityplug/server` package README](../../packages/server/README.md)
+ -  [`@activityplug/server` package README]
+
+[`@activityplug/server` package README]: https://github.com/Nebu1eto/activityplug/blob/main/packages/server/README.md
