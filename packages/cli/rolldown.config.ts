@@ -3,7 +3,7 @@ import { dts } from "rolldown-plugin-dts";
 
 export default defineConfig({
   input: {
-    index: "src/index.ts",
+    bin: "src/bin.ts",
   },
   external: /^[^./]/,
   platform: "node",

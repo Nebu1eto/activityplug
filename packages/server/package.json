@@ -18,9 +18,6 @@
     "url": "git+https://github.com/Nebu1eto/activityplug.git",
     "directory": "packages/server"
   },
-  "bin": {
-    "activityplug-server": "./dist/bin.mjs"
-  },
   "files": [
     "dist/*.mjs",
     "dist/*.d.mts",

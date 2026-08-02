@@ -4,6 +4,7 @@
   "commit": false,
   "fixed": [
     [
+      "@activityplug/cli",
       "@activityplug/core",
       "@activityplug/hackerspub",
       "@activityplug/hollo",

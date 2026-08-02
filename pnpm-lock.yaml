@@ -190,6 +190,27 @@ importers:
         specifier: 4.1.10
         version: 4.1.10(@types/node@26.1.1)(jsdom@29.1.1)(vite@8.1.5(@types/node@26.1.1)(esbuild@0.28.1)(tsx@4.23.1)(yaml@2.9.0))
 
+  packages/cli:
+    dependencies:
+      '@activityplug/core':
+        specifier: workspace:^
+        version: link:../core
+      '@activityplug/server':
+        specifier: workspace:^
+        version: link:../server
+      '@hono/node-server':
+        specifier: ^2.0.11
+        version: 2.0.11(hono@4.12.31)
+      '@logtape/logtape':
+        specifier: ^2.2.4
+        version: 2.2.4
+      graphql:
+        specifier: ^17.0.2
+        version: 17.0.2
+      hono:
+        specifier: ^4.12.31
+        version: 4.12.31
+
   packages/core:
     dependencies:
       zod:

@@ -20,18 +20,24 @@
 サーバを実行する
 ----------------
 
-サーバと peer dependency をインストールします。
-
-~~~~ sh
-pnpm add @activityplug/server @activityplug/core @hono/node-server @logtape/logtape graphql hono
-~~~~
-
 以下の `https://social.example` を、ActivityPlug プロセスから到達できる
 実際の Fediverse サーバの正規 HTTPS origin に置き換えてください。
 コマンドラインサーバは `127.0.0.1:4000` で起動し、明示的に渡された
 origin のみ許可します。
 
 ~~~~ sh
+npx @activityplug/cli \
+  --allow-origin https://social.example
+~~~~
+
+`npx` はパッケージと実行時の依存関係を必要に応じて取得するため、事前に
+インストールする必要はありません。
+
+CLI をプロジェクトに追加する場合は、CLI パッケージをインストールし、
+`activityplug-server` コマンドを実行します。
+
+~~~~ sh
+pnpm add @activityplug/cli
 pnpm exec activityplug-server \
   --allow-origin https://social.example
 ~~~~

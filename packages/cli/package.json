@@ -1,0 +1,49 @@
+{
+  "name": "@activityplug/cli",
+  "version": "0.1.0",
+  "description": "Command-line server for ActivityPlug.",
+  "keywords": [
+    "activitypub",
+    "cli",
+    "fediverse",
+    "server"
+  ],
+  "homepage": "https://github.com/Nebu1eto/activityplug",
+  "bugs": {
+    "url": "https://github.com/Nebu1eto/activityplug/issues"
+  },
+  "license": "Apache-2.0 OR MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nebu1eto/activityplug.git",
+    "directory": "packages/cli"
+  },
+  "bin": {
+    "activityplug-server": "./dist/bin.mjs"
+  },
+  "files": [
+    "dist/*.mjs",
+    "dist/*.d.mts",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "scripts": {
+    "build": "rolldown -c rolldown.config.ts --configLoader native",
+    "pack:dry-run": "pnpm pack --dry-run",
+    "prepack": "pnpm build"
+  },
+  "dependencies": {
+    "@activityplug/core": "workspace:^",
+    "@activityplug/server": "workspace:^",
+    "@hono/node-server": "^2.0.11",
+    "@logtape/logtape": "^2.2.4",
+    "graphql": "^17.0.2",
+    "hono": "^4.12.31"
+  },
+  "engines": {
+    "node": ">=26"
+  }
+}

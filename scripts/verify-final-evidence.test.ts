@@ -51,9 +51,11 @@ async function fixtureRoot(): Promise<string> {
   await mkdir(join(directory, "docs", "ko"), { recursive: true });
   await mkdir(join(directory, "docs", "ja"), { recursive: true });
   await mkdir(join(directory, "artifacts", "verification"), { recursive: true });
-  await writeDocumentationTriplet(directory, "docs/en/production-compose");
+  await writeDocumentationTriplet(directory, "README");
+  await writeDocumentationTriplet(directory, "docs/en/deployment");
   await Promise.all(
     [
+      "cli",
       "core",
       "hackerspub",
       "hollo",
@@ -71,7 +73,7 @@ async function fixtureRoot(): Promise<string> {
         join(packageDirectory, "package.json"),
         JSON.stringify({ name: `@activityplug/${name}` }),
       );
-      await writeDocumentationTriplet(directory, `packages/${name}/README`);
+      await writeFile(join(packageDirectory, "README.md"), "# English\n");
     }),
   );
   return directory;
@@ -173,7 +175,7 @@ describe("documentation siblings", () => {
 
 test("always includes published documentation even without a branch diff", () => {
   expect(getPublishedDocumentationPaths()).toEqual(
-    expect.arrayContaining(["docs/en/production-compose.md", "packages/core/README.md"]),
+    expect.arrayContaining(["README.md", "docs/en/deployment.md"]),
   );
 });
 

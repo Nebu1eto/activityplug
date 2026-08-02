@@ -21,8 +21,9 @@ TypeScript 계약으로 통합합니다. 라이브러리로 직접 가져다 쓸
 어댑터를 설치한 뒤, 런타임에 맞는 remote authority를 지정합니다.
 
 여러 클라이언트가 하나의 통제된 API 경계를 공유해야 한다면 **서버
-모드**를 사용합니다. `@activityplug/server`는 GraphQL·HTTP API, 명령줄
-서버, 원격 origin 정책, 선택적 브라우저 route를 제공합니다.
+모드**를 사용합니다. `@activityplug/server`는 GraphQL·HTTP API, 원격
+origin 정책, 선택적 브라우저 route를 제공하며, `@activityplug/cli`는 같은
+서버를 명령줄에서 실행합니다.
 
 웹 애플리케이션에서 ActivityPlug session identifier와 원격 credential을
 브라우저 저장소에 남기지 않아야 한다면 **브라우저 API**를 사용합니다.
@@ -49,7 +50,8 @@ TypeScript 계약으로 통합합니다. 라이브러리로 직접 가져다 쓸
 | [`@activityplug/hollo`](packages/hollo/README.md)                       | Hollo 어댑터                                                                       |
 | [`@activityplug/hackerspub`](packages/hackerspub/README.md)             | HackersPub 어댑터                                                                  |
 | [`@activityplug/mastodon-base`](packages/mastodon-base/README.md)       | Mastodon 호환 어댑터의 공통 기반                                                   |
-| [`@activityplug/server`](packages/server/README.md)                     | GraphQL·HTTP·브라우저·명령줄 서버 표면                                             |
+| [`@activityplug/server`](packages/server/README.md)                     | GraphQL·HTTP·브라우저 서버 표면                                                    |
+| [`@activityplug/cli`](packages/cli/README.md)                           | 명령줄 서버                                                                        |
 | [`@activityplug/session-postgres`](packages/session-postgres/README.md) | 서버 배포용 PostgreSQL lifecycle store                                             |
 | [`@activityplug/session-redis`](packages/session-redis/README.md)       | 서버 배포용 Redis 단기 store와 제한                                                |
 

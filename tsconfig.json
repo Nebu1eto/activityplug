@@ -1,6 +1,7 @@
 {
   "files": [],
   "references": [
+    { "path": "./packages/cli" },
     { "path": "./packages/core" },
     { "path": "./packages/e2e-fixtures" },
     { "path": "./packages/server" },

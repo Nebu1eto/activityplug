@@ -3,38 +3,29 @@
 
 [English](/en/server-usage.md) | 한국어 | [日本語](/ja/server-usage.md)
 
-`@activityplug/server`는 명령줄 프로세스 또는 Node.js 애플리케이션의
-일부로 실행할 수 있습니다. 두 형태 모두 공개 HTTP API, GraphQL,
-WebSocket 스트림을 제공합니다. 프로그래밍 방식으로 구성하면 영속 저장소,
-의존성 준비 상태 검사, 사용자 정의 제한, 브라우저 BFF도 사용할 수
-있습니다.
-
-
-서버 설치
----------
-
-Node.js 26 이상이 필요합니다.
-
-~~~~ sh
-pnpm add @activityplug/server @activityplug/core @hono/node-server @logtape/logtape graphql hono
-~~~~
-
-사용할 어댑터를 추가합니다.
-
-~~~~ sh
-pnpm add @activityplug/mastodon
-~~~~
+`@activityplug/cli`로 ActivityPlug를 명령줄 프로세스로 실행할 수 있습니다.
+애플리케이션에서는 `@activityplug/server`로 서버를 프로그래밍 방식으로
+구성할 수 있습니다. 두 형태 모두 공개 HTTP API, GraphQL, WebSocket
+스트림을 제공합니다. 프로그래밍 방식으로 구성하면 영속 저장소, 의존성 준비
+상태 검사, 사용자 정의 제한, 브라우저 BFF도 사용할 수 있습니다.
 
 
 CLI 실행
 --------
 
-CLI에는 패키지로 제공되는 모든 어댑터가 포함되어 있으며 루프백 포트
-4000에서 수신합니다.
+Node.js 26 이상이 필요합니다. CLI에는 패키지로 제공되는 모든 어댑터가
+포함되어 있으며 루프백 포트 4000에서 수신합니다. `npx`가 런타임 의존성을
+필요할 때 가져오므로 서버를 미리 설치할 필요가 없습니다.
 
 ~~~~ sh
-pnpm exec activityplug-server \
+npx @activityplug/cli \
   --allow-origin https://social.example
+~~~~
+
+`pnpm dlx`로도 같은 패키지를 실행할 수 있습니다.
+
+~~~~ sh
+pnpm dlx @activityplug/cli --allow-origin https://social.example
 ~~~~
 
 `--allow-origin`을 지정하지 않으면 원격 origin 허용 목록이 비어
@@ -42,7 +33,7 @@ pnpm exec activityplug-server \
 지정하십시오.
 
 ~~~~ sh
-pnpm exec activityplug-server \
+npx @activityplug/cli \
   --host 0.0.0.0 \
   --port 8080 \
   --allow-origin https://social.example \
@@ -59,7 +50,7 @@ origin을 지정하고 `ACTIVITYPLUG_BROWSER_COOKIE_SIGNING_KEY`를 설정하십
 `--browser-memory-stores`를 필요로 합니다.
 
 ~~~~ sh
-pnpm exec activityplug-server \
+npx @activityplug/cli \
   --allow-origin https://social.example \
   --browser-origin https://localhost:8443 \
   --browser-memory-stores
@@ -70,7 +61,7 @@ pnpm exec activityplug-server \
 경우에만 신뢰됩니다. 프록시가 여러 대이면 옵션을 반복합니다.
 
 ~~~~ sh
-pnpm exec activityplug-server \
+npx @activityplug/cli \
   --allow-origin https://social.example \
   --browser-origin https://app.example \
   --trusted-proxy 10.0.0.2 \
@@ -79,6 +70,32 @@ pnpm exec activityplug-server \
 
 CLI는 시작 전에 호스트, 포트, origin, 브라우저 설정, 서명 키, 신뢰하는
 프록시 주소를 검증합니다. 전체 옵션은 `--help`로 확인하십시오.
+
+
+서버 설치
+---------
+
+애플리케이션에서 서버 패키지를 import하려면 해당 패키지와 peer
+dependency를 설치하십시오.
+
+~~~~ sh
+pnpm add @activityplug/server @activityplug/core @hono/node-server @logtape/logtape graphql hono
+~~~~
+
+애플리케이션이 import하는 어댑터를 추가하십시오.
+
+~~~~ sh
+pnpm add @activityplug/mastodon
+~~~~
+
+프로젝트에서 CLI를 실행하려면 CLI 패키지를 설치한 뒤 `pnpm exec`로
+명령을 실행하십시오.
+
+~~~~ sh
+pnpm add @activityplug/cli
+pnpm exec activityplug-server \
+  --allow-origin https://social.example
+~~~~
 
 
 서버 구성

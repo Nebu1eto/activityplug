@@ -21,8 +21,9 @@ directly. Install `@activityplug/core` with the adapter for that server and
 provide a remote authority appropriate for the runtime.
 
 Use **server mode** when several clients need one controlled API boundary. The
-`@activityplug/server` package provides GraphQL and HTTP APIs, a command-line
-server, remote-origin policy enforcement, and optional browser routes.
+`@activityplug/server` package provides GraphQL and HTTP APIs, remote-origin
+policy enforcement, and optional browser routes. `@activityplug/cli` runs the
+same server from the command line.
 
 Use the **browser API** when a web application must keep ActivityPlug session
 identifiers and remote credentials out of browser storage. The browser routes
@@ -48,7 +49,8 @@ Public packages
 | [`@activityplug/hollo`](packages/hollo/README.md)                       | Hollo adapter                                                                                |
 | [`@activityplug/hackerspub`](packages/hackerspub/README.md)             | HackersPub adapter                                                                           |
 | [`@activityplug/mastodon-base`](packages/mastodon-base/README.md)       | Shared foundation for Mastodon-compatible adapters                                           |
-| [`@activityplug/server`](packages/server/README.md)                     | GraphQL, HTTP, browser, and command-line server surfaces                                     |
+| [`@activityplug/server`](packages/server/README.md)                     | GraphQL, HTTP, and browser server surfaces                                                   |
+| [`@activityplug/cli`](packages/cli/README.md)                           | Command-line server                                                                          |
 | [`@activityplug/session-postgres`](packages/session-postgres/README.md) | PostgreSQL lifecycle stores for server deployments                                           |
 | [`@activityplug/session-redis`](packages/session-redis/README.md)       | Redis short-lived stores and limits for server deployments                                   |
 

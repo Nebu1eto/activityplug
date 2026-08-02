@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 
 export const publishablePackages = [
+  "cli",
   "core",
   "hackerspub",
   "hollo",
@@ -94,7 +95,7 @@ function archivePath(entry: string): string {
 }
 
 function collectExportSpecifiers(packageName: string, exportsField: unknown): string[] {
-  if (exportsField === undefined) return [packageName];
+  if (exportsField === undefined) return [];
   if (
     typeof exportsField === "string" ||
     Array.isArray(exportsField) ||
@@ -162,14 +163,19 @@ export async function inspectTarball(
     }
     for (const readme of ["README.md"] as const) {
       const contents = await readFile(join(packageRoot, readme), "utf8");
+      const exportSpecifiers = collectExportSpecifiers(manifest.name, manifest.exports);
+      if (exportSpecifiers.length === 0 && binPaths.length === 0) {
+        throw new Error(`${basename(tarball)} declares neither exports nor bin`);
+      }
       if (contents.trim() === "") {
         throw new Error(`${basename(tarball)} contains an empty ${readme}`);
       }
       if (
         !contents.includes(`pnpm add ${manifest.name}`) ||
-        !contents.includes(`import * as activityplug from "${manifest.name}";`) ||
         !/^(?:```|~~~~) ?sh$/m.test(contents) ||
-        !/^(?:```|~~~~) ?ts$/m.test(contents)
+        (exportSpecifiers.length > 0 &&
+          (!contents.includes(`import * as activityplug from "${manifest.name}";`) ||
+            !/^(?:```|~~~~) ?ts$/m.test(contents)))
       ) {
         throw new Error(`${basename(tarball)} contains malformed ${readme}`);
       }

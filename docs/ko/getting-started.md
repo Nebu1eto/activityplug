@@ -20,18 +20,24 @@ Node.js 애플리케이션에서 검증된 remote authority를 제공해야 합�
 서버 실행
 ---------
 
-서버와 peer dependency를 설치합니다.
-
-~~~~ sh
-pnpm add @activityplug/server @activityplug/core @hono/node-server @logtape/logtape graphql hono
-~~~~
-
 아래 `https://social.example`을 ActivityPlug 프로세스가 접근할 수 있는
 실제 Fediverse 서버의 canonical HTTPS origin으로 바꾸십시오. 명령줄
 서버는 `127.0.0.1:4000`에서 시작하며, 명시적으로 전달한 origin만
 허용합니다.
 
 ~~~~ sh
+npx @activityplug/cli \
+  --allow-origin https://social.example
+~~~~
+
+`npx`는 패키지와 런타임 의존성을 필요할 때 내려받으므로 별도의 설치
+단계가 필요하지 않습니다.
+
+CLI를 프로젝트에 추가하려면 CLI 패키지를 설치한 뒤
+`activityplug-server` 명령을 실행하십시오.
+
+~~~~ sh
+pnpm add @activityplug/cli
 pnpm exec activityplug-server \
   --allow-origin https://social.example
 ~~~~

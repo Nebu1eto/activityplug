@@ -23,8 +23,9 @@ TypeScript 契約で扱えるようにします。アプリケーションにラ
 
 複数のクライアントが単一の制御された API 境界を共有する場合は**サーバ
 モード**を使います。`@activityplug/server` は GraphQL・HTTP API、
-コマンドラインサーバ、リモート origin ポリシの適用、オプションのブラウザ
-route を提供します。
+リモート origin ポリシの適用、オプションのブラウザ route を提供します。
+同じサーバをコマンドラインから実行する場合は `@activityplug/cli` を
+使います。
 
 Web アプリケーションが ActivityPlug の session identifier やリモートの
 credential をブラウザストレージに保存すべきでない場合は**ブラウザ API**
@@ -52,7 +53,8 @@ credential をブラウザストレージに保存すべきでない場合は**�
 | [`@activityplug/hollo`](packages/hollo/README.md)                       | Hollo アダプタ                                                                       |
 | [`@activityplug/hackerspub`](packages/hackerspub/README.md)             | HackersPub アダプタ                                                                  |
 | [`@activityplug/mastodon-base`](packages/mastodon-base/README.md)       | Mastodon 互換アダプタの共通基盤                                                      |
-| [`@activityplug/server`](packages/server/README.md)                     | GraphQL・HTTP・ブラウザ・コマンドラインのサーバサーフェス                            |
+| [`@activityplug/server`](packages/server/README.md)                     | GraphQL・HTTP・ブラウザのサーバサーフェス                                            |
+| [`@activityplug/cli`](packages/cli/README.md)                           | コマンドラインサーバ                                                                 |
 | [`@activityplug/session-postgres`](packages/session-postgres/README.md) | サーバ配備用の PostgreSQL lifecycle store                                            |
 | [`@activityplug/session-redis`](packages/session-redis/README.md)       | サーバ配備用の Redis 短期 store と limit                                             |
 

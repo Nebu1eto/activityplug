@@ -3,11 +3,27 @@
 
 `@activityplug/server` exposes ActivityPlug through a versioned HTTP API,
 GraphQL, WebSocket streams, and an optional browser backend-for-frontend (BFF).
-It also provides the `activityplug-server` command for local use and the
-`createActivityPlugServer()` API for applications that own their configuration
-and storage.
+Applications that own their configuration and storage construct it through the
+`createActivityPlugServer()` API. The `activityplug-server` command lives in
+`@activityplug/cli`.
 
 Node.js 26 or newer is required. The package uses ECMAScript modules.
+
+
+Command-line server
+-------------------
+
+`@activityplug/cli` provides the `activityplug-server` command. It bundles the
+Mastodon, Misskey, Pleroma, Hollo, and HackersPub adapters and uses
+process-local stores:
+
+~~~~ sh
+npx @activityplug/cli \
+  --allow-origin https://social.example
+~~~~
+
+See the `@activityplug/cli` README for its options. Applications that need
+durable stores should construct the server through this package instead.
 
 
 Installation
@@ -33,48 +49,6 @@ import * as activityplug from "@activityplug/server";
 
 The examples below use named imports so their required configuration is
 visible.
-
-
-Command-line server
--------------------
-
-The command includes the Mastodon, Misskey, Pleroma, Hollo, and HackersPub
-adapters. It listens on `127.0.0.1:4000` by default.
-
-~~~~ sh
-pnpm exec activityplug-server \
-  --allow-origin https://social.example
-~~~~
-
-Every remote origin must be allowed explicitly. Repeat `--allow-origin` for
-additional HTTPS origins. Use `--host` and `--port` to change the listener.
-Private and loopback remote addresses also require
-`--allow-private-networks`.
-
-Run the following command for the generated option reference:
-
-~~~~ sh
-pnpm exec activityplug-server --help
-~~~~
-
-The CLI uses process-local stores. Browser mode is therefore intended for
-development only:
-
-~~~~ sh
-export ACTIVITYPLUG_BROWSER_COOKIE_SIGNING_KEY="$(
-  openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
-)"
-
-pnpm exec activityplug-server \
-  --allow-origin https://social.example \
-  --browser-origin https://app.example \
-  --browser-memory-stores
-~~~~
-
-`--browser-origin` requires HTTPS, a signing key containing at least 32 bytes,
-and the explicit `--browser-memory-stores` acknowledgement. Use
-`--trusted-proxy` only with exact proxy IP addresses controlled by your
-deployment.
 
 
 Programmatic server

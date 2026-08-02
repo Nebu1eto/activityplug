@@ -147,10 +147,7 @@ export async function getChangedDocumentationPaths(
 
 /** Lists published Markdown that must retain translation parity on every ref. */
 export function getPublishedDocumentationPaths(): string[] {
-  return [
-    "docs/en/production-compose.md",
-    ...publishablePackages.map((directory) => `packages/${directory}/README.md`),
-  ].toSorted();
+  return ["README.md", "docs/en/deployment.md"].toSorted();
 }
 
 /** Rejects documentation without complete Korean and Japanese siblings. */
@@ -401,6 +398,8 @@ function documentationSiblingPath(path: string, language: string): string {
 function isPublishableEnglishMarkdown(path: string): boolean {
   return (
     !path.startsWith(".changeset/") &&
+    !path.startsWith("examples/") &&
+    !path.startsWith("packages/") &&
     path.endsWith(".md") &&
     !path.endsWith(".ko.md") &&
     !path.endsWith(".ja.md") &&

@@ -142,6 +142,24 @@ describe("inspectTarball", () => {
     );
   });
 
+  test("rejects a package that publishes neither exports nor bin", async () => {
+    const { tarball, licenses } = await fixtureTarball(undefined, { exports: undefined });
+    await expect(inspectTarball(tarball, licenses)).rejects.toThrow(
+      "declares neither exports nor bin",
+    );
+  });
+
+  test("accepts an executable package without a library export", async () => {
+    const { tarball, licenses } = await fixtureTarball(undefined, {
+      bin: { fixture: "./dist/index.mjs" },
+      exports: undefined,
+      types: undefined,
+    });
+    await expect(inspectTarball(tarball, licenses)).resolves.toMatchObject({
+      name: "@activityplug/fixture",
+    });
+  });
+
   test("rejects invalid published declarations in a clean-room consumer", async () => {
     const { tarball, licenses } = await fixtureTarball(
       undefined,

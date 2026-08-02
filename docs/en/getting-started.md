@@ -20,17 +20,23 @@ repository uses pnpm 11.
 Run the server
 --------------
 
-Install the server and its peer dependencies:
-
-~~~~ sh
-pnpm add @activityplug/server @activityplug/core @hono/node-server @logtape/logtape graphql hono
-~~~~
-
 Replace `https://social.example` below with the canonical HTTPS origin of a
 Fediverse server that the ActivityPlug process may contact. The command-line
 server starts on `127.0.0.1:4000` and allows only the origins passed explicitly:
 
 ~~~~ sh
+npx @activityplug/cli \
+  --allow-origin https://social.example
+~~~~
+
+`npx` downloads the package and its runtime dependencies on demand, so no
+installation step is required.
+
+To add the command to a project instead, install the CLI package and run the
+`activityplug-server` command:
+
+~~~~ sh
+pnpm add @activityplug/cli
 pnpm exec activityplug-server \
   --allow-origin https://social.example
 ~~~~

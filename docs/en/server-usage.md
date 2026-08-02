@@ -3,36 +3,29 @@ Server usage
 
 English | [한국어](/ko/server-usage.md) | [日本語](/ja/server-usage.md)
 
-`@activityplug/server` can run as a command-line process or as part of a Node.js
-application. Both forms expose the public HTTP API, GraphQL, and WebSocket
-streams. Programmatic construction also supports durable stores, dependency
-readiness checks, custom limits, and the browser BFF.
-
-
-Install the server
-------------------
-
-Node.js 26 or newer is required.
-
-~~~~ sh
-pnpm add @activityplug/server @activityplug/core @hono/node-server @logtape/logtape graphql hono
-~~~~
-
-Add the adapters imported by your application:
-
-~~~~ sh
-pnpm add @activityplug/mastodon
-~~~~
+`@activityplug/cli` runs ActivityPlug as a command-line process. Applications
+can construct a server programmatically with `@activityplug/server`. Both forms
+expose the public HTTP API, GraphQL, and WebSocket streams. Programmatic
+construction also supports durable stores, dependency readiness checks, custom
+limits, and the browser BFF.
 
 
 Run the CLI
 -----------
 
-The CLI contains all packaged adapters and listens on loopback port 4000:
+Node.js 26 or newer is required. The CLI contains all packaged adapters and
+listens on loopback port 4000. `npx` resolves the runtime dependencies on
+demand, so the server needs no prior installation:
 
 ~~~~ sh
-pnpm exec activityplug-server \
+npx @activityplug/cli \
   --allow-origin https://social.example
+~~~~
+
+`pnpm dlx` can run the same package:
+
+~~~~ sh
+pnpm dlx @activityplug/cli --allow-origin https://social.example
 ~~~~
 
 The remote origin allowlist is empty unless `--allow-origin` is supplied.
@@ -40,7 +33,7 @@ Repeat the option for every HTTPS ActivityPub server that this process may
 contact.
 
 ~~~~ sh
-pnpm exec activityplug-server \
+npx @activityplug/cli \
   --host 0.0.0.0 \
   --port 8080 \
   --allow-origin https://social.example \
@@ -57,7 +50,7 @@ requires `--browser-memory-stores` to confirm that in-memory browser stores
 are intentional:
 
 ~~~~ sh
-pnpm exec activityplug-server \
+npx @activityplug/cli \
   --allow-origin https://social.example \
   --browser-origin https://localhost:8443 \
   --browser-memory-stores
@@ -68,7 +61,7 @@ proxy addresses whose `X-Forwarded-For` header is trusted. Repeat the option
 for each proxy:
 
 ~~~~ sh
-pnpm exec activityplug-server \
+npx @activityplug/cli \
   --allow-origin https://social.example \
   --browser-origin https://app.example \
   --trusted-proxy 10.0.0.2 \
@@ -78,6 +71,32 @@ pnpm exec activityplug-server \
 The CLI validates the host, port, origins, browser settings, signing key, and
 trusted proxy addresses before it starts. Use `--help` for the full generated
 reference.
+
+
+Install the server
+------------------
+
+Install the server package and its peer dependencies when an application
+imports it:
+
+~~~~ sh
+pnpm add @activityplug/server @activityplug/core @hono/node-server @logtape/logtape graphql hono
+~~~~
+
+Add the adapters imported by your application:
+
+~~~~ sh
+pnpm add @activityplug/mastodon
+~~~~
+
+To run the CLI from a project, install the CLI package and invoke its command
+through `pnpm exec`:
+
+~~~~ sh
+pnpm add @activityplug/cli
+pnpm exec activityplug-server \
+  --allow-origin https://social.example
+~~~~
 
 
 Construct the server
