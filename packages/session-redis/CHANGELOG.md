@@ -1,5 +1,15 @@
 @activityplug/session-Redis
 
+## 1.0.1
+
+### Patch Changes
+
+- 716e3e0: Require `ioredis` 6 as the peer dependency. Applications that install
+  `@activityplug/session-redis` must upgrade their own `ioredis` dependency
+  because the previous 5.x range is no longer accepted.
+  - @activityplug/core@1.0.1
+  - @activityplug/server@1.0.1
+
 ## 1.0.0
 
 ### Patch Changes
@@ -9,7 +19,7 @@
   - @activityplug/server@1.0.0
   - # @activityplug/core@1.0.0
 
-  1.0.0-rc.0
+    1.0.0-rc.0
 
 ---
 

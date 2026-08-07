@@ -1,5 +1,12 @@
 @activityplug/example-proxy-client
 
+## 0.0.2
+
+### Patch Changes
+
+- @activityplug/core@1.0.1
+- @activityplug/server@1.0.1
+
 ## 0.0.1
 
 ### Patch Changes
@@ -9,7 +16,7 @@
   - @activityplug/server@1.0.0
   - # @activityplug/core@1.0.0
 
-  0.0.1-rc.0
+    0.0.1-rc.0
 
 ---
 
