@@ -65,6 +65,17 @@ export function registerBrowserAuthRoutes(config: {
     now,
     randomBytes,
   } = config;
+  app.get("/v1/browser/auth/detect-server", async (context) => {
+    sessions.assertSameOrigin(context.req.raw, publicOrigin);
+    const origin = context.req.query("origin") ?? "";
+    const profile = await options.service.instances.detect({ origin });
+    return context.json({
+      adapter: profile.ref.adapter,
+      origin: profile.ref.origin,
+      software: profile.software.name,
+    });
+  });
+
   app.post("/v1/browser/auth/start", async (context) => {
     const requestContext = await resolveRequest(context.req.raw);
     sessions.assertSameOrigin(context.req.raw, publicOrigin);

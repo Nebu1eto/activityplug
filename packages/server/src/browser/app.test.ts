@@ -11,7 +11,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 
 import { InMemoryAuthSessionStore } from "../auth/session-store.js";
-import { createTestService, testViewerAccount } from "../http/app-test-utils.js";
+import { createTestService, testInstance, testViewerAccount } from "../http/app-test-utils.js";
 import {
   InMemoryBrowserSessionStore,
   InMemoryOAuthStartLimiter,
@@ -662,6 +662,42 @@ describe("browser boundary public origin", () => {
 });
 
 describe("browser boundary authentication", () => {
+  it("detects the server adapter through the browser boundary", async () => {
+    const detect = vi.fn(async () => testInstance);
+    const base = createTestService();
+    const boundary = createBoundary({
+      service: createTestService({ instances: { ...base.instances, detect } }),
+    });
+
+    const response = await boundary.app.request(
+      `${publicOrigin}/v1/browser/auth/detect-server?origin=${encodeURIComponent("https://example.test")}`,
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      adapter: "mastodon",
+      origin: "https://example.test",
+      software: "mastodon",
+    });
+    expect(detect).toHaveBeenCalledWith({ origin: "https://example.test" });
+  });
+
+  it("rejects server detection from another public origin", async () => {
+    const detect = vi.fn(async () => testInstance);
+    const base = createTestService();
+    const boundary = createBoundary({
+      service: createTestService({ instances: { ...base.instances, detect } }),
+    });
+
+    const response = await boundary.app.request(
+      `${publicOrigin}/v1/browser/auth/detect-server?origin=${encodeURIComponent("https://example.test")}`,
+      { headers: { origin: "https://other.test" } },
+    );
+
+    expect(response.status).toBe(403);
+    expect(detect).not.toHaveBeenCalled();
+  });
+
   it("promotes a stateless anonymous session only when authentication starts", async () => {
     const browserSessions = new InMemoryBrowserSessionStore();
     const admit = vi.spyOn(browserSessions, "admit");
