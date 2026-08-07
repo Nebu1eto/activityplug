@@ -37,20 +37,42 @@ origin を離れる条件の 両方を制御する必要があります。
 リモート origin ポリシー
 ------------------------
 
-origin ポリシーを指定しない場合、サーバー側のリモートアクセスは既定で
-拒否されます。`createOriginPolicy()` は各 origin を正規化した後、
-完全一致の allowlist を作成します。サンプル product server は
-`ACTIVITYPLUG_ALLOWED_REMOTE_ORIGINS` を必須とし、wildcard を拒否して
-HTTPS origin だけを受理します。
+`OriginPolicy` はリストではなく関数です。正規化された origin と操作名を
+受け取り、通過させるか例外を投げます。そのためデータベース照会や実行中に
+変化する拒否リストなど、デプロイが必要とする方法で到達可否を決められます。
 
-ポリシーはすべての外部操作について、正規化された origin と操作名を
-受け取ります。redirect 先も DNS 解決の前に再検査します。したがって origin
-を追加して許可されるのは、そのポリシーを使う操作の 接続だけであり、cross-origin
-の資格情報転送までは許可されません。
+サーバーは 2 つの実装を提供します。
 
-allowlist にはデプロイが実際に利用する origin だけを含めます。信頼
-できないリクエストから直接生成したり、suffix 一致を許可したり、
-wildcard リストに変換したりしないでください。
+ -  `createOriginPolicy(origins)` は各 origin を正規化した後、列挙した
+    origin だけを受理します。wildcard や suffix 一致は行わないため、
+    `https://social.example` が `https://sub.social.example` を許可する
+    ことはありません。
+ -  `createOpenOriginPolicy()` はすべての HTTPS origin を受理します。
+    事前に列挙できない ActivityPub サーバーと federation する場合に
+    使います。
+
+allowlist が空の場合は開放ポリシーが選ばれ、`createActivityPlugServer()`
+に `originPolicy` を渡さないときの既定値も開放ポリシーです。サンプル
+product server も同じ動作です。`ACTIVITYPLUG_ALLOWED_REMOTE_ORIGINS` を
+設定するとその origin に限定され、設定しなければすべての HTTPS origin を
+受理します。値に `*` をそのまま書くことは今も拒否します。変数を未設定に
+するだけで同じ意図を表せるためです。
+
+開放ポリシーは無条件に通すわけではありません。HTTP と HTTPS 以外の
+scheme、資格情報・パス・query・fragment を含む origin、そして開発中の
+ループバックホストを除く平文 HTTP を拒否します。アドレス水準の保護は
+ポリシーとは独立しています。検証済み transport が DNS を解決し、
+`allowPrivateNetworks` を有効にしない限りプライベート、ループバック、
+リンクローカル、マルチキャストなど無効なアドレス範囲を拒否し、検証済みの
+数値アドレスへ接続し、redirect のホップごとにポリシーを再評価します。
+
+到達の許可は資格情報の転送とは別です。origin を許可すると、そのポリシー
+を使う操作でそのサーバーへ接続できるようになるだけで、あるサーバーの
+資格情報を別のサーバーへ送ることは許可しません。
+
+接続先が決まっているなら、より狭いポリシーを選んでください。開放ポリシー
+はサーバー側のリクエスト面を広げるため、信頼できないクライアントが接続先
+を選べる環境では拒否リストやレート制限を併用してください。
 
 
 検証済み HTTP transport

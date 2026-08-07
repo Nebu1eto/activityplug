@@ -32,6 +32,11 @@ export type BrowserAnonymousSessionMode = "stored" | "stateless";
 
 export interface BrowserBoundaryOptions {
   readonly publicOrigin: string;
+  /**
+   * Permits an HTTP loopback {@link publicOrigin} for local development.
+   * Defaults to true unless `NODE_ENV` is `production`.
+   */
+  readonly allowInsecureLoopback?: boolean;
   readonly cookieSigningKey: Uint8Array;
   readonly browserSessions: BrowserSessionStore;
   readonly streamTickets: StreamTicketStore;

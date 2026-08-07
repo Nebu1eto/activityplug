@@ -41,7 +41,12 @@ const defaultStoredSessionCreationWindowMilliseconds = 60_000;
 export function createBrowserBoundary(
   options: BrowserBoundaryOptions & BrowserBoundaryDependencies,
 ): BrowserBoundary {
-  const publicOrigin = normalizePublicOrigin(options.publicOrigin);
+  const publicOrigin = normalizePublicOrigin(
+    options.publicOrigin,
+    options.allowInsecureLoopback === undefined
+      ? {}
+      : { allowInsecureLoopback: options.allowInsecureLoopback },
+  );
   const signingKey = validateSigningKey(options.cookieSigningKey);
   const now = options.now ?? (() => new Date());
   const randomBytes = options.randomBytes ?? ((length: number) => nodeRandomBytes(length));

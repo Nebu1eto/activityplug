@@ -58,6 +58,19 @@ const activityPlug = createActivityPlugServer({
 失い、レプリカ間で連携できません。本番環境では永続ストアを指定してください。
 [セッションストレージ](session-storage.md)を参照してください。
 
+ローカル開発では公開 origin に `http://localhost`、`http://127.0.0.1`、
+`http://[::1]` を使えます。`NODE_ENV` が `production` でなければブラウザ
+境界はこれらの HTTP ループバック origin を受け入れ、
+`allowInsecureLoopback` でこの既定を双方向に上書きできます。それ以外の
+origin は HTTPS を使う必要があります。
+
+このモードでもセッション Cookie は `__Host-` 接頭辞と `Secure` 属性を保ち
+ます。Chromium と Firefox はループバックアドレスを信頼できる対象として扱い、
+平文 HTTP でもこの Cookie を保存するため、TLS なしでブラウザセッションが
+動作します。Safari などの WebKit ブラウザはこの Cookie を破棄するため、
+ループバックの HTTP origin では WebKit のセッションを認証できません。
+WebKit を試す場合はローカルの HTTPS Compose スタックを使ってください。
+
 ブラウザセッションのデフォルト有効期間は 7 日です。匿名セッションは
 デフォルトでステートレスです。匿名の `stored` モードではアトミックな
 グローバル制限、クライアント単位制限、レート制限が割り当てに適用されます。

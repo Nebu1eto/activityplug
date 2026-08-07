@@ -38,31 +38,46 @@ Start Vite from the repository root:
 pnpm --filter @activityplug/example-web-client dev
 ~~~~
 
-Vite serves the frontend and proxies `/v1/browser` to
-`http://127.0.0.1:4000`. This command alone is useful for UI work, but
-authentication and API operations require a separately configured product
-server. The server requires an HTTPS public origin, a cookie-signing key,
-explicit allowed remote origins, and trusted proxy addresses. Durable mode also
-requires PostgreSQL and Redis connection URLs.
+That command runs the product server inside Vite, so the frontend and the
+browser API answer on one origin and sign-in works without further setup. The
+defaults are in-memory storage, a per-run cookie-signing key, and a public
+origin matching the port Vite actually bound. Every variable below still
+overrides its default.
 
-Start the product server separately with in-memory stores:
+Sharing one origin is a requirement rather than a convenience. The browser
+boundary compares the request `Origin` header against
+`ACTIVITYPLUG_PUBLIC_ORIGIN` and rejects a mismatch with
+`FORBIDDEN: Cross-origin browser request was rejected.`, so serving the API on
+its own port makes every browser call fail.
+
+To run the product server on its own, set the public origin to the origin the
+browser loads:
 
 ~~~~ sh
 ACTIVITYPLUG_STORAGE=memory \
-ACTIVITYPLUG_PUBLIC_ORIGIN=https://localhost \
+ACTIVITYPLUG_PUBLIC_ORIGIN=http://localhost:4000 \
 ACTIVITYPLUG_COOKIE_SIGNING_KEY="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')" \
-ACTIVITYPLUG_ALLOWED_REMOTE_ORIGINS=https://social.example \
-ACTIVITYPLUG_TRUSTED_PROXY_ADDRESSES=127.0.0.1 \
 pnpm --filter @activityplug/example-web-client start:server
 ~~~~
 
+`http://localhost`, `http://127.0.0.1`, and `http://[::1]` are accepted as the
+public origin unless `NODE_ENV` is `production`, which lets the whole flow run
+over plain HTTP during development. Chromium and Firefox store the `__Host-`
+session cookie on loopback addresses without TLS, so sign-in works there.
+Safari and other WebKit browsers reject that cookie over plain HTTP; use the
+HTTPS Compose stack below to test them. Any other public origin must use HTTPS.
+
 `ACTIVITYPLUG_ALLOWED_REMOTE_ORIGINS` is a comma-separated list of exact HTTPS
-origins. The signing key must be unpadded base64url containing at least 32
-bytes. `ACTIVITYPLUG_TRUSTED_PROXY_ADDRESSES` must list the IP addresses of
-trusted reverse proxies. The server listens on `0.0.0.0:4000` and is intended
-to run behind an HTTPS reverse proxy whose origin matches
-`ACTIVITYPLUG_PUBLIC_ORIGIN`; Vite's HTTP proxy alone is not that production
-boundary.
+origins. Leave it unset to admit every HTTPS origin, which is what a client
+that connects to arbitrary Fediverse servers needs. A literal `*` is rejected,
+because an unset variable already expresses that intent. The signing key must
+be unpadded base64url containing at least 32 bytes.
+`ACTIVITYPLUG_TRUSTED_PROXY_ADDRESSES` lists the IP addresses of trusted
+reverse proxies. Leave it unset when clients reach the server directly, which
+makes the boundary use the verified transport peer address instead of a
+forwarding header. The standalone server listens on `0.0.0.0:4000` and is
+intended to run behind an HTTPS reverse proxy whose origin matches
+`ACTIVITYPLUG_PUBLIC_ORIGIN`.
 
 Storage defaults to `durable`. When `ACTIVITYPLUG_STORAGE` is omitted or set to
 `durable`, also set `DATABASE_URL` and `REDIS_URL` before running
@@ -113,6 +128,8 @@ Main files
  -  [`src/server.ts`](src/server.ts) assembles adapters, origin policy,
     DNS-pinned WebSocket support, browser security controls, and memory or
     durable lifecycle stores.
+ -  [`vite-product-server.ts`](vite-product-server.ts) runs that server inside
+    the Vite dev server so both share one origin.
  -  [`src/api/client.ts`](src/api/client.ts) is the browser API client.
  -  [`src/api/contracts.ts`](src/api/contracts.ts) validates browser DTOs before
     the UI consumes them.

@@ -630,6 +630,37 @@ describe("browser boundary sessions", () => {
   });
 });
 
+describe("browser boundary public origin", () => {
+  it("accepts HTTP loopback origins for development and serves them end to end", async () => {
+    for (const origin of ["http://localhost:4000", "http://127.0.0.1:4000", "http://[::1]:4000"]) {
+      const boundary = createDefaultModeBoundary({ publicOrigin: origin });
+      const response = await boundary.app.request(`${origin}/v1/browser/session`, {
+        headers: { origin },
+      });
+      expect(response.status).toBe(200);
+      await boundary.close();
+    }
+  });
+
+  it("rejects HTTP loopback origins once the boundary opts out", () => {
+    expect(() =>
+      createDefaultModeBoundary({
+        publicOrigin: "http://localhost:4000",
+        allowInsecureLoopback: false,
+      }),
+    ).toThrow("Browser public origin must be an absolute HTTPS origin.");
+  });
+
+  it("rejects non-loopback HTTP origins even when loopback is allowed", () => {
+    expect(() =>
+      createDefaultModeBoundary({
+        publicOrigin: "http://product.example",
+        allowInsecureLoopback: true,
+      }),
+    ).toThrow("Browser public origin must be an absolute HTTPS origin or an HTTP loopback origin.");
+  });
+});
+
 describe("browser boundary authentication", () => {
   it("promotes a stateless anonymous session only when authentication starts", async () => {
     const browserSessions = new InMemoryBrowserSessionStore();

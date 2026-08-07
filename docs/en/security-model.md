@@ -37,20 +37,42 @@ recipient. Configure each boundary separately.
 Remote origin policy
 --------------------
 
-Server-side remote access fails closed when no origin policy is supplied.
-`createOriginPolicy()` builds an exact allowlist after canonicalizing each
-origin. The example product server requires
-`ACTIVITYPLUG_ALLOWED_REMOTE_ORIGINS`, rejects wildcards, and accepts only
-HTTPS origins.
+An `OriginPolicy` is a function, not a list. It receives the canonical origin
+and the operation name, and it either resolves or throws. A deployment can
+therefore decide reachability however it needs to, including a lookup against a
+database or a denylist that changes at runtime.
 
-The policy receives the canonical origin and operation name for every outbound
-operation. Redirect targets are checked again before DNS resolution. Adding an
-origin therefore grants reachability for the operations that use the policy;
-it does not grant cross-origin credential forwarding.
+Two implementations ship with the server:
 
-Keep the allowlist limited to origins that the deployment intends to serve.
-Do not derive it directly from an untrusted request, accept suffix matches, or
-convert it to a wildcard list.
+ -  `createOriginPolicy(origins)` admits exactly the listed origins after
+    canonicalizing each one. It performs no wildcard or suffix matching, so
+    `https://social.example` never admits `https://sub.social.example`.
+ -  `createOpenOriginPolicy()` admits every HTTPS origin. Use it when the
+    deployment federates with ActivityPub servers that cannot be enumerated in
+    advance.
+
+An empty allowlist selects the open policy, and that is the default when
+`createActivityPlugServer()` receives no `originPolicy`. The example product
+server behaves the same way: setting `ACTIVITYPLUG_ALLOWED_REMOTE_ORIGINS`
+restricts it to those origins, and leaving it unset admits every HTTPS origin.
+A literal `*` is still rejected, because an unset variable already expresses
+that intent.
+
+The open policy is not an unconditional pass. It rejects schemes other than
+HTTP and HTTPS, origins carrying credentials, a path, a query, or a fragment,
+and plaintext HTTP for anything other than a loopback host during development.
+Address-level protection is independent of it: the vetted transport resolves
+DNS, rejects private, loopback, link-local, multicast, and otherwise invalid
+address ranges unless `allowPrivateNetworks` is enabled, connects to the
+verified numeric address, and evaluates the policy again on every redirect hop.
+
+Reachability is not credential forwarding. Admitting an origin lets the server
+contact it for the operations that use the policy; it does not authorize
+sending one server's credentials to another.
+
+Choose the narrower policy when the set of destinations is known. An open
+policy widens the server-side request surface, so pair it with a denylist,
+rate limits, or both when untrusted clients can choose the destination.
 
 
 Vetted HTTP transport

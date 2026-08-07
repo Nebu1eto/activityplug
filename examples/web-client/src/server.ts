@@ -38,6 +38,9 @@ import { Redis } from "ioredis";
 import { Pool } from "pg";
 
 const adapterIds = ["mastodon", "pleroma", "hollo", "misskey", "hackerspub"] as const;
+// `URL.hostname` keeps IPv6 hosts bracketed, so the loopback address is listed
+// in its bracketed form.
+const loopbackHostnames = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const durableReadinessTimeoutMilliseconds = 2_000;
 const durableStoreConnectionTimeoutMilliseconds = 10_000;
 const durableStoreOperationTimeoutMilliseconds = 15_000;
@@ -74,7 +77,9 @@ export async function createProductServer(
   environment: Readonly<Record<string, string | undefined>> = process.env,
 ): Promise<ProductServerRuntime> {
   const configuration = parseConfiguration(environment);
-  const originPolicy = createOriginPolicy(configuration.allowedRemoteOrigins);
+  const originPolicy = createOriginPolicy(configuration.allowedRemoteOrigins, {
+    allowInsecureLoopback: configuration.allowInsecureLoopback,
+  });
   const webSocket = createNodePinnedWebSocketFactory({ originPolicy, lookup: nodeLookupAddresses });
   const adapters = [
     createMastodonAdapter({ webSocket }),
@@ -107,6 +112,7 @@ export async function createProductServer(
       tokenImport: { enabled: false },
       browser: {
         publicOrigin: configuration.publicOrigin,
+        allowInsecureLoopback: configuration.allowInsecureLoopback,
         cookieSigningKey: configuration.cookieSigningKey,
         anonymousSessionMode: configuration.anonymousSessionMode,
         browserSessions: resources.browserSessions,
@@ -114,7 +120,12 @@ export async function createProductServer(
         streamTickets: resources.streamTickets,
         authStartLimiter: resources.authStartLimiter,
         authChallenges: resources.authChallenges,
-        clientIp: createCaddyClientIpResolver(configuration.trustedProxyAddresses),
+        // With no trusted proxy configured the boundary falls back to the
+        // verified transport peer address, which is what a direct development
+        // listener provides.
+        ...(configuration.trustedProxyAddresses.length === 0
+          ? {}
+          : { clientIp: createCaddyClientIpResolver(configuration.trustedProxyAddresses) }),
         csrf: { headerName: "X-ActivityPlug-CSRF" },
       },
     });
@@ -190,6 +201,7 @@ export async function createProductServer(
 
 interface ProductConfiguration {
   readonly publicOrigin: string;
+  readonly allowInsecureLoopback: boolean;
   readonly cookieSigningKey: Uint8Array;
   readonly anonymousSessionMode: BrowserAnonymousSessionMode;
   readonly storageMode: ProductStorageMode;
@@ -228,7 +240,13 @@ function parseConfiguration(
     storageMode === "durable"
       ? requiredEnvironmentValue(environment["REDIS_URL"], "REDIS_URL")
       : undefined;
-  const publicOrigin = parsePublicOrigin(environment["ACTIVITYPLUG_PUBLIC_ORIGIN"]);
+  // Loopback development origins stay available until a deployment declares
+  // itself as production.
+  const allowInsecureLoopback = environment["NODE_ENV"] !== "production";
+  const publicOrigin = parsePublicOrigin(
+    environment["ACTIVITYPLUG_PUBLIC_ORIGIN"],
+    allowInsecureLoopback,
+  );
   const cookieSigningKey = parseCookieSigningKey(environment["ACTIVITYPLUG_COOKIE_SIGNING_KEY"]);
   const anonymousSessionMode = parseAnonymousSessionMode(
     environment["ACTIVITYPLUG_ANONYMOUS_SESSION_MODE"],
@@ -241,6 +259,7 @@ function parseConfiguration(
   );
   return {
     publicOrigin,
+    allowInsecureLoopback,
     cookieSigningKey,
     anonymousSessionMode,
     storageMode,
@@ -263,12 +282,18 @@ function parseAnonymousSessionMode(value: string | undefined): BrowserAnonymousS
   throw new RangeError("ACTIVITYPLUG_ANONYMOUS_SESSION_MODE must be either stored or stateless.");
 }
 
-function parsePublicOrigin(value: string | undefined): string {
+function parsePublicOrigin(value: string | undefined, allowInsecureLoopback: boolean): string {
   const origin = parseCanonicalOrigin(value, "ACTIVITYPLUG_PUBLIC_ORIGIN");
-  if (new URL(origin).protocol !== "https:") {
-    throw new RangeError("ACTIVITYPLUG_PUBLIC_ORIGIN must use HTTPS.");
+  const url = new URL(origin);
+  if (url.protocol === "https:") return origin;
+  if (allowInsecureLoopback && url.protocol === "http:" && loopbackHostnames.has(url.hostname)) {
+    return origin;
   }
-  return origin;
+  throw new RangeError(
+    allowInsecureLoopback
+      ? "ACTIVITYPLUG_PUBLIC_ORIGIN must use HTTPS or an HTTP loopback origin."
+      : "ACTIVITYPLUG_PUBLIC_ORIGIN must use HTTPS.",
+  );
 }
 
 function parseCookieSigningKey(value: string | undefined): Uint8Array {
@@ -286,15 +311,17 @@ function parseCookieSigningKey(value: string | undefined): Uint8Array {
 }
 
 function parseAllowedRemoteOrigins(value: string | undefined): readonly string[] {
-  if (value === undefined || value.trim() === "") {
-    throw new RangeError("ACTIVITYPLUG_ALLOWED_REMOTE_ORIGINS is required.");
-  }
+  // An unset list selects the open policy, which admits any HTTPS origin so the
+  // product server can reach ActivityPub hosts that are not known in advance.
+  if (value === undefined || value.trim() === "") return [];
   const origins = value.split(",").map((entry) => entry.trim());
   if (origins.some((origin) => origin === "")) {
     throw new RangeError("ACTIVITYPLUG_ALLOWED_REMOTE_ORIGINS must list explicit origins.");
   }
   if (origins.some((origin) => origin.includes("*"))) {
-    throw new RangeError("ACTIVITYPLUG_ALLOWED_REMOTE_ORIGINS must not contain wildcards.");
+    throw new RangeError(
+      "ACTIVITYPLUG_ALLOWED_REMOTE_ORIGINS must not contain wildcards; leave it unset to allow every HTTPS origin.",
+    );
   }
   const canonicalOrigins = origins.map((origin) => parseCanonicalOrigin(origin, "remote origin"));
   if (canonicalOrigins.some((origin) => new URL(origin).protocol !== "https:")) {
@@ -304,9 +331,9 @@ function parseAllowedRemoteOrigins(value: string | undefined): readonly string[]
 }
 
 function parseTrustedProxyAddresses(value: string | undefined): readonly string[] {
-  if (value === undefined || value.trim() === "") {
-    throw new RangeError("ACTIVITYPLUG_TRUSTED_PROXY_ADDRESSES is required.");
-  }
+  // An unset list means the server is reached directly, so the boundary uses
+  // the verified transport peer address instead of a forwarding header.
+  if (value === undefined || value.trim() === "") return [];
   const addresses = value.split(",").map((entry) => entry.trim());
   if (addresses.some((address) => address === "")) {
     throw new RangeError("ACTIVITYPLUG_TRUSTED_PROXY_ADDRESSES must list explicit IP addresses.");

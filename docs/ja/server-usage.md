@@ -138,9 +138,13 @@ const listener = activityPlug.start({
 です。Node 固定ファクトリは設定済み origin ポリシと DNS アドレス検査を
 WebSocket 接続に適用します。
 
-`originPolicy` を省略するとサーバはすべてのリモート origin を拒否します。
-厳密な許可リストには `createOriginPolicy()` を使うか、アプリケーション
-固有の同等チェックを行う `OriginPolicy` を指定してください。
+`originPolicy` を省略するとサーバはすべての HTTPS origin を受理します。
+事前に列挙できないサーバと federation するデプロイに適しています。厳密な
+許可リストには `createOriginPolicy()` を、開放動作を明示するには
+`createOpenOriginPolicy()` を使い、アプリケーション固有のチェックが必要
+なら `assertAllowed` を実装した `OriginPolicy` を指定してください。許可
+リストが空の場合は開放ポリシーが選ばれます。
+[セキュリティモデル](security-model.md)を参照してください。
 
 `allowPrivateNetworks: true` はプライベートアドレスやループバックアドレス
 への接続を意図的に許可する場合にのみ設定してください。origin 許可リスト

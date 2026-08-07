@@ -57,6 +57,18 @@ to in-memory implementations. All in-memory stores lose state on restart and
 cannot coordinate replicas. Supply durable stores for production. See
 [session storage](session-storage.md).
 
+Local development may use `http://localhost`, `http://127.0.0.1`, or
+`http://[::1]` as the public origin. The boundary accepts these HTTP loopback
+origins unless `NODE_ENV` is `production`, and `allowInsecureLoopback`
+overrides that default in either direction. Every other origin must use HTTPS.
+
+Session cookies keep the `__Host-` prefix and the `Secure` attribute in this
+mode. Chromium and Firefox treat loopback addresses as potentially trustworthy
+and store such cookies over plain HTTP, so browser sessions work there without
+TLS. Safari and other WebKit browsers discard them, so a loopback HTTP origin
+cannot authenticate a WebKit session. Use the local HTTPS Compose stack when
+testing WebKit.
+
 The default browser-session lifetime is seven days. Anonymous sessions are
 stateless by default. In `stored` anonymous mode, allocation is subject to
 atomic global, per-client, and rate limits. Without a custom `clientIp`

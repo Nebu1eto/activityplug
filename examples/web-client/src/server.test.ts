@@ -82,6 +82,105 @@ describe("createProductServer", () => {
     await expect(runtime.close()).resolves.toBeUndefined();
   });
 
+  it("admits arbitrary HTTPS origins when no remote allowlist is configured", async () => {
+    const factory = vi.mocked(createActivityPlugServer);
+    const originalFactory = factory.getMockImplementation();
+    if (originalFactory === undefined)
+      throw new Error("ActivityPlug server factory is unavailable.");
+    let originPolicy: Parameters<typeof createActivityPlugServer>[0]["originPolicy"];
+    factory.mockImplementation((options) => {
+      originPolicy = options.originPolicy;
+      return originalFactory(options);
+    });
+    const environment = validTestEnvironment();
+    delete environment["ACTIVITYPLUG_ALLOWED_REMOTE_ORIGINS"];
+    const runtime = await createProductServer({ ...environment, ACTIVITYPLUG_STORAGE: "memory" });
+
+    try {
+      void runtime.app;
+      if (originPolicy === undefined) throw new Error("Origin policy was not configured.");
+      await expect(
+        originPolicy.assertAllowed("https://unknown.example", "instance.detect"),
+      ).resolves.toBeUndefined();
+      await expect(
+        originPolicy.assertAllowed("http://unknown.example", "instance.detect"),
+      ).rejects.toMatchObject({ code: "ORIGIN_NOT_ALLOWED" });
+    } finally {
+      factory.mockImplementation(originalFactory);
+      await runtime.close();
+    }
+  });
+
+  it("keeps an exact allowlist when remote origins are configured", async () => {
+    const factory = vi.mocked(createActivityPlugServer);
+    const originalFactory = factory.getMockImplementation();
+    if (originalFactory === undefined)
+      throw new Error("ActivityPlug server factory is unavailable.");
+    let originPolicy: Parameters<typeof createActivityPlugServer>[0]["originPolicy"];
+    factory.mockImplementation((options) => {
+      originPolicy = options.originPolicy;
+      return originalFactory(options);
+    });
+    const runtime = await createProductServer({
+      ...validTestEnvironment(),
+      ACTIVITYPLUG_STORAGE: "memory",
+    });
+
+    try {
+      void runtime.app;
+      if (originPolicy === undefined) throw new Error("Origin policy was not configured.");
+      await expect(
+        originPolicy.assertAllowed("https://mastodon.example", "instance.detect"),
+      ).resolves.toBeUndefined();
+      await expect(
+        originPolicy.assertAllowed("https://unknown.example", "instance.detect"),
+      ).rejects.toMatchObject({ code: "ORIGIN_NOT_ALLOWED" });
+    } finally {
+      factory.mockImplementation(originalFactory);
+      await runtime.close();
+    }
+  });
+
+  it("serves browser sessions without a trusted-proxy list", async () => {
+    const factory = vi.mocked(createActivityPlugServer);
+    const originalFactory = factory.getMockImplementation();
+    if (originalFactory === undefined)
+      throw new Error("ActivityPlug server factory is unavailable.");
+    let browser: Parameters<typeof createActivityPlugServer>[0]["browser"];
+    factory.mockImplementation((options) => {
+      browser = options.browser;
+      return originalFactory(options);
+    });
+    const environment = validTestEnvironment();
+    delete environment["ACTIVITYPLUG_TRUSTED_PROXY_ADDRESSES"];
+    const runtime = await createProductServer({ ...environment, ACTIVITYPLUG_STORAGE: "memory" });
+
+    try {
+      void runtime.app;
+      // Without a proxy the boundary must fall back to the transport peer
+      // address rather than trusting a forwarding header.
+      expect(browser?.clientIp).toBeUndefined();
+      await expect(runtime.app.request("https://product.example/health")).resolves.toMatchObject({
+        status: 200,
+      });
+    } finally {
+      factory.mockImplementation(originalFactory);
+      await runtime.close();
+    }
+  });
+
+  it("accepts HTTP loopback public origins outside production", async () => {
+    for (const origin of ["http://localhost:4000", "http://127.0.0.1:4000", "http://[::1]:4000"]) {
+      const runtime = await createProductServer({
+        ...validTestEnvironment(),
+        ACTIVITYPLUG_STORAGE: "memory",
+        ACTIVITYPLUG_PUBLIC_ORIGIN: origin,
+      });
+      await expect(runtime.app.request(`${origin}/health`)).resolves.toMatchObject({ status: 200 });
+      await runtime.close();
+    }
+  });
+
   it("uses stateless anonymous sessions by default and enables stored issuance explicitly", async () => {
     const stateless = await createProductServer({
       ...validTestEnvironment(),
@@ -482,11 +581,18 @@ describe("createProductServer", () => {
         ...validTestEnvironment(),
         ACTIVITYPLUG_ALLOWED_REMOTE_ORIGINS: "https://mastodon.example,*",
       }),
-    ).rejects.toThrow("ACTIVITYPLUG_ALLOWED_REMOTE_ORIGINS must not contain wildcards.");
+    ).rejects.toThrow("ACTIVITYPLUG_ALLOWED_REMOTE_ORIGINS must not contain wildcards");
     await expect(
       createProductServer({
         ...validTestEnvironment(),
         ACTIVITYPLUG_PUBLIC_ORIGIN: "http://product.example",
+      }),
+    ).rejects.toThrow("ACTIVITYPLUG_PUBLIC_ORIGIN must use HTTPS or an HTTP loopback origin.");
+    await expect(
+      createProductServer({
+        ...validTestEnvironment(),
+        NODE_ENV: "production",
+        ACTIVITYPLUG_PUBLIC_ORIGIN: "http://localhost:4000",
       }),
     ).rejects.toThrow("ACTIVITYPLUG_PUBLIC_ORIGIN must use HTTPS.");
     await expect(

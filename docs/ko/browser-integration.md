@@ -58,6 +58,19 @@ const activityPlug = createActivityPlugServer({
 사이에서 조정할 수 없습니다. 프로덕션에서는 영속 저장소를 제공하십시오.
 [세션 저장소](session-storage.md)를 참고하십시오.
 
+로컬 개발에서는 공개 origin으로 `http://localhost`, `http://127.0.0.1`,
+`http://[::1]`을 사용할 수 있습니다. `NODE_ENV`가 `production`이 아니면
+브라우저 경계가 이 HTTP loopback origin을 허용하며,
+`allowInsecureLoopback`으로 기본값을 양방향 모두 덮어쓸 수 있습니다.
+그 밖의 origin은 HTTPS를 사용해야 합니다.
+
+이 모드에서도 세션 쿠키는 `__Host-` 접두사와 `Secure` 속성을 유지합니다.
+Chromium과 Firefox는 loopback 주소를 신뢰 가능한 대상으로 취급해 평문
+HTTP에서도 이런 쿠키를 저장하므로, TLS 없이 브라우저 세션이 동작합니다.
+Safari를 비롯한 WebKit 브라우저는 이 쿠키를 버리므로 loopback HTTP
+origin으로는 WebKit 세션을 인증할 수 없습니다. WebKit을 시험할 때는 로컬
+HTTPS Compose 스택을 사용하십시오.
+
 기본 브라우저 세션 수명은 7일입니다. 익명 세션은 기본적으로 상태
 비저장입니다. `stored` 익명 모드에서는 할당에 원자적 전역·클라이언트별
 속도 제한이 적용됩니다. 사용자 정의 `clientIp` 확인자가 없으면 서버는

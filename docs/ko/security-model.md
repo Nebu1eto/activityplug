@@ -37,20 +37,43 @@ OAuth redirect URI, CORS origin, trusted proxy, 자격 증명 수신자로
 원격 origin 정책
 ----------------
 
-origin 정책을 제공하지 않으면 서버 측 원격 접근은 기본적으로
-거부됩니다. `createOriginPolicy()`는 각 origin을 정규화한 뒤 정확히
-일치하는 allowlist를 만듭니다. 예제 product server는
-`ACTIVITYPLUG_ALLOWED_REMOTE_ORIGINS`를 필수로 요구하고, wildcard를
-거부하며 HTTPS origin만 허용합니다.
+`OriginPolicy`는 목록이 아니라 함수입니다. 정규화된 origin과 작업
+이름을 받아 통과시키거나 예외를 던집니다. 따라서 데이터베이스 조회나
+실행 중에 바뀌는 차단 목록처럼, 배포가 필요한 방식으로 연결 가능
+여부를 결정할 수 있습니다.
 
-정책은 모든 외부 작업에서 정규화된 origin과 작업 이름을 전달받습니다.
-redirect 대상도 DNS 확인 전에 다시 검사합니다. 따라서 origin을 추가하면 해당
-정책을 사용하는 작업의 연결만 허용될 뿐, origin을 넘는 자격 증명 전달까지
-허용되지는 않습니다.
+서버는 두 가지 구현을 제공합니다.
 
-allowlist에는 배포가 실제로 제공할 origin만 포함하십시오. 신뢰할 수
-없는 요청에서 직접 목록을 생성하거나, suffix 일치를 허용하거나,
-wildcard 목록으로 대체하지 마십시오.
+ -  `createOriginPolicy(origins)`는 각 origin을 정규화한 뒤 나열된
+    origin만 허용합니다. wildcard나 suffix 일치는 적용하지 않으므로
+    `https://social.example`이 `https://sub.social.example`을 허용하는
+    일은 없습니다.
+ -  `createOpenOriginPolicy()`는 모든 HTTPS origin을 허용합니다. 미리
+    열거할 수 없는 ActivityPub 서버와 federation해야 할 때 사용합니다.
+
+allowlist가 비어 있으면 개방 정책이 선택되며, `createActivityPlugServer()`에
+`originPolicy`를 전달하지 않았을 때의 기본값도 개방 정책입니다. 예제
+product server도 같은 방식으로 동작합니다.
+`ACTIVITYPLUG_ALLOWED_REMOTE_ORIGINS`를 설정하면 해당 origin으로
+제한되고, 설정하지 않으면 모든 HTTPS origin을 허용합니다. 값에 `*`를
+직접 적는 것은 여전히 거부합니다. 변수를 비워 두는 것으로 이미 같은
+의도를 표현하기 때문입니다.
+
+개방 정책이 무조건 통과시키는 것은 아닙니다. HTTP와 HTTPS가 아닌
+scheme, 자격 증명·경로·query·fragment를 포함한 origin, 그리고 개발
+중 loopback host를 제외한 평문 HTTP를 거부합니다. 주소 수준 보호는
+정책과 독립적입니다. 검증된 transport가 DNS를 확인하고,
+`allowPrivateNetworks`를 켜지 않는 한 사설·loopback·link-local·
+multicast를 비롯한 유효하지 않은 주소 대역을 거부하며, 검증된 숫자
+주소로 연결하고, redirect 홉마다 정책을 다시 평가합니다.
+
+연결 허용은 자격 증명 전달과 다릅니다. origin을 허용하면 해당 정책을
+사용하는 작업에서 그 서버에 접속할 수 있을 뿐, 한 서버의 자격 증명을
+다른 서버로 보내도록 허용하지는 않습니다.
+
+접속 대상이 정해져 있다면 더 좁은 정책을 선택하십시오. 개방 정책은
+서버 측 요청 표면을 넓히므로, 신뢰할 수 없는 클라이언트가 대상을
+선택할 수 있는 환경에서는 차단 목록이나 속도 제한을 함께 두십시오.
 
 
 검증된 HTTP transport

@@ -212,9 +212,7 @@ function browserCliOptions(
     return {};
   }
   const origin = canonicalizeOrigin(inputOrigin);
-  if (new URL(origin).protocol !== "https:") {
-    throw new RangeError("Browser origin must use HTTPS.");
-  }
+  assertBrowserCliOrigin(origin, environment);
   if (encodedKey === undefined) {
     throw new RangeError(
       "ACTIVITYPLUG_BROWSER_COOKIE_SIGNING_KEY is required with --browser-origin.",
@@ -234,6 +232,31 @@ function browserCliOptions(
       trustedProxyAddresses: trustedProxyAddresses.map(normalizeIpAddress),
     },
   };
+}
+
+// `URL.hostname` keeps IPv6 hosts bracketed, so the loopback address is listed
+// in its bracketed form.
+const browserCliLoopbackHostnames = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+function assertBrowserCliOrigin(
+  origin: string,
+  environment: Readonly<Record<string, string | undefined>>,
+): void {
+  const url = new URL(origin);
+  if (url.protocol === "https:") return;
+  const allowInsecureLoopback = environment["NODE_ENV"] !== "production";
+  if (
+    allowInsecureLoopback &&
+    url.protocol === "http:" &&
+    browserCliLoopbackHostnames.has(url.hostname)
+  ) {
+    return;
+  }
+  throw new RangeError(
+    allowInsecureLoopback
+      ? "Browser origin must use HTTPS or an HTTP loopback origin."
+      : "Browser origin must use HTTPS.",
+  );
 }
 
 function decodeBrowserSigningKey(encoded: string): Uint8Array {

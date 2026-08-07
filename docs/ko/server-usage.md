@@ -135,9 +135,13 @@ const listener = activityPlug.start({
 Node 고정 팩터리는 구성된 origin 정책과 DNS 주소 검사를 WebSocket
 연결에 적용합니다.
 
-`originPolicy`를 생략하면 서버는 모든 원격 origin을 거부합니다. 정확한
-허용 목록에는 `createOriginPolicy()`를 사용하거나, 애플리케이션에 맞는
-동등한 검사를 수행하는 `OriginPolicy`를 제공하십시오.
+`originPolicy`를 생략하면 서버는 모든 HTTPS origin을 허용합니다. 미리
+나열할 수 없는 서버와 federation하는 배포에 적합합니다. 정확한 허용
+목록에는 `createOriginPolicy()`를, 개방 동작을 명시하려면
+`createOpenOriginPolicy()`를 사용하고, 애플리케이션에 맞는 검사가
+필요하면 `assertAllowed`를 구현한 `OriginPolicy`를 제공하십시오. 허용
+목록이 비어 있으면 개방 정책이 선택됩니다.
+[보안 모델](security-model.md)을 참고하십시오.
 
 `allowPrivateNetworks: true`는 배포가 비공개·루프백 주소에 의도적으로
 접근해야 할 때만 설정하십시오. origin 허용 목록을 완화하지는 않습니다.

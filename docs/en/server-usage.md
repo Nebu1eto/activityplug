@@ -137,9 +137,12 @@ Adapters that implement streaming need an injected WebSocket factory. The
 Node-pinned factory applies the configured origin policy and DNS address checks
 to WebSocket connections.
 
-If `originPolicy` is omitted, the server rejects all remote origins. Use
-`createOriginPolicy()` for an exact allowlist or provide an `OriginPolicy` with
-equivalent application-specific checks.
+If `originPolicy` is omitted, the server admits every HTTPS origin, which suits
+a deployment that federates with servers it cannot list in advance. Use
+`createOriginPolicy()` for an exact allowlist, `createOpenOriginPolicy()` to
+state the open behavior explicitly, or provide an `OriginPolicy` whose
+`assertAllowed` applies application-specific checks. An empty allowlist selects
+the open policy. See [security model](security-model.md).
 
 Set `allowPrivateNetworks: true` only when the deployment intentionally
 reaches private or loopback addresses. It does not weaken the origin

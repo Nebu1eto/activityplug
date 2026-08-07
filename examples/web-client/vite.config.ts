@@ -1,13 +1,12 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
+import { productServerPlugin } from "./vite-product-server.js";
+
 export default defineConfig({
-  plugins: [react()],
-  server: {
-    proxy: {
-      "/v1/browser": "http://127.0.0.1:4000",
-    },
-  },
+  // The product server runs inside the dev server so the frontend and the
+  // browser API share one origin.
+  plugins: [react(), productServerPlugin()],
   build: {
     rollupOptions: {
       input: "index.html",

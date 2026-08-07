@@ -47,6 +47,7 @@ import { createActivityPlugApp } from "../http/app.js";
 import { type TokenImportOptions } from "../http/app.js";
 import { type GraphQLLimits } from "../security/graphql-limits.js";
 import { createNodePinnedDispatcher, nodeLookupAddresses } from "../security/node-egress.js";
+import { createOpenOriginPolicy } from "../security/origin-policy.js";
 import { createServerRemoteAuthority } from "../security/remote-authority.js";
 import { resolveRequestLimits, type RequestLimits } from "../security/request-limits.js";
 import {
@@ -2657,42 +2658,10 @@ function toPublicSession(session: AuthSession): AuthSession {
   };
 }
 
-async function defaultOriginFetchPolicy(context: OriginFetchPolicyContext): Promise<void> {
-  const url = parseServerFetchOrigin(context);
-  if (url.protocol !== "https:" && url.protocol !== "http:") {
-    throw blockedOrigin(context, "Server-side remote fetches require an HTTP or HTTPS origin.");
-  }
-  throw blockedOrigin(
-    context,
-    "Server-side remote fetches require an explicit origin policy for this server.",
-  );
-}
-
-const defaultOriginPolicy: OriginPolicy = {
-  assertAllowed: async (origin, operation) => {
-    await defaultOriginFetchPolicy({ origin, operation });
-  },
-};
-
-function parseServerFetchOrigin(context: OriginFetchPolicyContext): URL {
-  try {
-    return new URL(context.origin);
-  } catch (cause) {
-    throw new ActivityPlugError(
-      "VALIDATION_FAILED",
-      "Origin must be an absolute URL.",
-      { origin: context.origin, operation: context.operation },
-      { cause },
-    );
-  }
-}
-
-function blockedOrigin(context: OriginFetchPolicyContext, message: string): ActivityPlugError {
-  return new ActivityPlugError("ORIGIN_NOT_ALLOWED", message, {
-    origin: context.origin,
-    operation: context.operation,
-  });
-}
+// Without a configured policy the server admits any HTTPS origin, plus HTTP
+// loopback origins outside production. Deployments that must restrict
+// reachability supply `originPolicy` explicitly.
+const defaultOriginPolicy: OriginPolicy = createOpenOriginPolicy();
 
 function hasDurableStorage(sessions: AuthSessionStore): boolean {
   return !(sessions instanceof InMemoryAuthSessionStore);

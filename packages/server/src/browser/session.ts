@@ -366,15 +366,53 @@ function assertAdmittedBudgetOperation(
   );
 }
 
-export function normalizePublicOrigin(origin: string): string {
+/**
+ * Hostnames that browsers treat as potentially trustworthy over plain HTTP.
+ *
+ * `URL.hostname` keeps IPv6 hosts in bracketed form, so the literal loopback
+ * address is listed with its brackets.
+ */
+const loopbackHostnames = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/**
+ * Reports whether the process runs outside a production deployment.
+ *
+ * The browser boundary uses this to decide whether an insecure loopback public
+ * origin may replace the HTTPS origin that a deployment requires.
+ */
+export function isDevelopmentRuntime(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
+  return environment["NODE_ENV"] !== "production";
+}
+
+export interface PublicOriginOptions {
+  /**
+   * Permits `http://localhost`, `http://127.0.0.1`, and `http://[::1]` public
+   * origins. Defaults to {@link isDevelopmentRuntime}.
+   */
+  readonly allowInsecureLoopback?: boolean;
+}
+
+export function normalizePublicOrigin(origin: string, options: PublicOriginOptions = {}): string {
+  const allowInsecureLoopback = options.allowInsecureLoopback ?? isDevelopmentRuntime();
+  const requirement = allowInsecureLoopback
+    ? "Browser public origin must be an absolute HTTPS origin or an HTTP loopback origin."
+    : "Browser public origin must be an absolute HTTPS origin.";
   let url: URL;
   try {
     url = new URL(origin);
   } catch {
-    throw new TypeError("Browser public origin must be an absolute HTTPS origin.");
+    throw new TypeError(requirement);
   }
-  if (url.protocol !== "https:" || url.origin !== url.href.replace(/\/$/u, "")) {
-    throw new TypeError("Browser public origin must be an absolute HTTPS origin.");
+  if (url.origin !== url.href.replace(/\/$/u, "")) {
+    throw new TypeError(requirement);
+  }
+  const secure = url.protocol === "https:";
+  const insecureLoopback =
+    allowInsecureLoopback && url.protocol === "http:" && loopbackHostnames.has(url.hostname);
+  if (!secure && !insecureLoopback) {
+    throw new TypeError(requirement);
   }
   if (url.username !== "" || url.password !== "") {
     throw new TypeError("Browser public origin must not contain credentials.");

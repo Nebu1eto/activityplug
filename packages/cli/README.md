@@ -17,9 +17,10 @@ Run the server without installing it in a project:
 npx @activityplug/cli --allow-origin https://social.example
 ~~~~
 
-The server listens on `127.0.0.1:4000` by default. Each remote origin must be
-listed with `--allow-origin` and must use HTTPS. Repeat the option to allow
-more than one origin.
+The server listens on `127.0.0.1:4000` by default. Each `--allow-origin` value
+must use HTTPS, and the option can be repeated to allow more than one origin.
+Omitting it entirely admits every HTTPS origin, which suits a client that
+connects to arbitrary Fediverse servers.
 
 The available options are:
 
@@ -28,9 +29,9 @@ The available options are:
  -  `--port PORT` sets the listener port to an integer from 1 through 65535.
     The default is `4000`.
  -  `--allow-origin ORIGIN` allows one HTTPS remote origin. The option can be
-    repeated.
+    repeated. Omit it to allow every HTTPS origin.
  -  `--allow-private-networks` permits requests to private and loopback remote
-    addresses. Those origins must still be allowed with `--allow-origin`.
+    addresses. Those origins must still pass the origin policy.
  -  `--browser-origin ORIGIN` enables browser BFF routes for a public HTTPS
     origin.
  -  `--browser-memory-stores` explicitly selects process-local browser stores.

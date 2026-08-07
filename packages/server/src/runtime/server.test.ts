@@ -1798,7 +1798,7 @@ describe("createActivityPlugServer", () => {
     });
   });
 
-  it("requires an explicit server-side origin policy by default", async () => {
+  it("admits arbitrary HTTPS origins by default and still rejects plaintext HTTP", async () => {
     const server = createActivityPlugServer({
       adapters: [instanceAdapter("mastodon", "mastodon")],
       sessions: new InMemoryAuthSessionStore(),
@@ -1806,14 +1806,11 @@ describe("createActivityPlugServer", () => {
 
     await expect(
       server.service.instances.get({ adapter: "mastodon", origin: "https://example.com" }),
-    ).rejects.toThrowError(expect.objectContaining({ code: "ORIGIN_NOT_ALLOWED" }));
-    await expect(
-      server.service.instances.get({ adapter: "mastodon", origin: "http://127.0.0.1" }),
-    ).rejects.toThrowError(expect.objectContaining({ code: "ORIGIN_NOT_ALLOWED" }));
-    await expect(
-      server.service.instances.get({ adapter: "mastodon", origin: "http://[::ffff:127.0.0.1]" }),
-    ).rejects.toThrowError(expect.objectContaining({ code: "ORIGIN_NOT_ALLOWED" }));
+    ).resolves.toMatchObject({ software: { name: "mastodon" } });
+    // Non-loopback plaintext HTTP stays outside the default policy, and the
+    // vetted transport keeps rejecting prohibited address ranges separately.
     for (const origin of [
+      "http://example.com",
       "http://100.64.0.1",
       "http://198.18.0.1",
       "http://224.0.0.1",
