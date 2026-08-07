@@ -401,13 +401,15 @@ describe("createProductServer", () => {
       await expect(appBeforeFailedStart.request("/health")).resolves.toMatchObject({ status: 503 });
       await expect(runtime.start({ hostname: "127.0.0.1", port: 0 })).rejects.toThrow();
       expect(end).toHaveBeenCalledTimes(6);
+      // The retry never reaches the ActivityPlug server: initialization fails
+      // while the durable stores are still being prepared, so only the pooled
+      // resources are discarded the second time around.
       expect(events).toEqual([
         "resources",
         "activityPlug",
         "resources",
         "resources",
         "resources",
-        "activityPlug",
         "resources",
         "resources",
       ]);

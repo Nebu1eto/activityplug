@@ -161,8 +161,12 @@ export async function createProductServer(
       const port = options.port ?? 4000;
       let listeningServer: ReturnType<ActivityPlugServer["start"]>["server"] | undefined;
       try {
-        const productServer = server();
+        // Creating the ActivityPlug server starts background security-state
+        // cleanup that queries the lifecycle tables, so the schema must exist
+        // first. `stores()` only constructs the pools; it never queries them.
+        stores();
         await durableResources?.initialize();
+        const productServer = server();
         if (lifecycle !== "starting") throw new Error("Product server runtime has been closed.");
         const started = productServer.start({ hostname, port });
         listeningServer = started.server;

@@ -122,6 +122,12 @@ importers:
       '@activityplug/session-redis':
         specifier: workspace:*
         version: link:../../packages/session-redis
+      '@hono/node-server':
+        specifier: ^2.0.11
+        version: 2.0.11(hono@4.12.31)
+      '@logtape/logtape':
+        specifier: ^2.2.4
+        version: 2.2.4
       '@simplewebauthn/browser':
         specifier: 13.3.0
         version: 13.3.0
@@ -131,6 +137,12 @@ importers:
       dompurify:
         specifier: 3.4.12
         version: 3.4.12
+      graphql:
+        specifier: ^17.0.2
+        version: 17.0.2
+      hono:
+        specifier: ^4.12.31
+        version: 4.12.31
       ioredis:
         specifier: 5.11.1
         version: 5.11.1

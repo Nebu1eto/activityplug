@@ -97,6 +97,9 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # `src/server.test.ts` imports `@activityplug/server` by name, so the
+      # workspace build outputs must exist before Vitest resolves the import.
+      - run: pnpm --filter @activityplug/example-web-client... --sort build
       - run: pnpm --filter @activityplug/example-web-client test
 
   web-dom:
@@ -112,6 +115,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @activityplug/example-web-client... --sort build
       - run: pnpm --filter @activityplug/example-web-client test:dom
 
   web-playwright:
@@ -157,6 +161,10 @@ jobs:
       - name: Start and verify production Compose stacks
         run: |
           set -euo pipefail
+          # Asserts the container-level hardening the production Compose files
+          # promise: a non-root user, a read-only root filesystem, restart and
+          # resource ceilings, dropped capabilities, and a writable /tmp only.
+          # Caddy alone may keep NET_BIND_SERVICE so it can bind port 443.
           assert_app_hardening() {
             container="$1"
             is_caddy="$2"
@@ -177,6 +185,10 @@ jobs:
             fi
           }
           assert_public_browser_boundary() {
+            # Drives the public browser boundary end to end over the published
+            # HTTPS origin: the anonymous session contract and its hardened
+            # `__Host-` cookie, a CSRF-protected logout, the same call rejected
+            # without the CSRF header, and an unlisted route that must 404.
             local certificate="$1"
             local origin="$2"
             local session_headers="$smoke_directory/session.headers"
@@ -279,10 +291,13 @@ jobs:
               "$origin/v1/browser/not-listed")
             test "$unlisted_status" = 404
           }
+          # Recreates one durable data service and waits until the public edge
+          # serves healthy again, proving the stack recovers on its own.
           wait_for_durable_data_service() {
             node --experimental-strip-types scripts/run-production-compose.ts durable up --wait "$1"
             wait_for_public_health
           }
+          # Polls the public HTTPS health endpoint until it succeeds.
           wait_for_public_health() {
             for _ in $(seq 1 30); do
               if pnpm compose:health >/dev/null 2>&1; then
@@ -293,6 +308,8 @@ jobs:
             echo "public durable health did not recover" >&2
             return 1
           }
+          # Waits for the public edge to report 503 while a data dependency is
+          # down, proving readiness tracks dependencies instead of masking them.
           assert_unready() {
             for _ in $(seq 1 30); do
               status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
@@ -305,11 +322,14 @@ jobs:
             echo "public durable health did not become unavailable" >&2
             return 1
           }
+          # Resolves the current container id for one durable Compose service.
           compose_service_container() {
             docker ps -q \
               --filter label=com.docker.compose.project=activityplug-durable \
               --filter "label=com.docker.compose.service=$1"
           }
+          # Runs one SQL statement inside the PostgreSQL container, reading the
+          # credentials from its own environment so they stay out of the logs.
           postgres_sql() {
             local container="$1"
             local sql="$2"
@@ -319,6 +339,8 @@ jobs:
                 --no-psqlrc --no-align --tuples-only --quiet \
                 --set=ON_ERROR_STOP=1 --command "$1"' sh "$sql"
           }
+          # Runs one Redis command inside the Redis container, reading the
+          # password from its own environment so it stays out of the logs.
           redis_command() {
             local container="$1"
             shift
@@ -326,6 +348,7 @@ jobs:
               'exec redis-cli --no-auth-warning --raw --user default \
                 --pass "$REDIS_PASSWORD" "$@"' sh "$@"
           }
+          # Stage 1: start the durable stack and verify its public boundary.
           smoke_directory=$(mktemp -d)
           trap 'rm -rf "$smoke_directory"' EXIT
           pnpm compose:up
@@ -334,6 +357,8 @@ jobs:
           assert_public_browser_boundary .dev/caddy-root.crt https://localhost:8443
           rm -rf "$smoke_directory"
           trap - EXIT
+          # The data network must stay internal, and the edge proxy must never
+          # join it, so PostgreSQL and Redis stay unreachable from the internet.
           docker network inspect activityplug-durable_product-data \
             --format '{{.Internal}}' | grep -Fx true
           durable_web=$(docker ps -q \
@@ -352,6 +377,8 @@ jobs:
             echo "durable web must not join the data network" >&2
             exit 1
           fi
+          # Stage 2: write a marker to each data service so the recovery checks
+          # below can prove the named volumes survive container replacement.
           durable_postgres=$(compose_service_container postgres)
           durable_redis=$(compose_service_container redis)
           test -n "$durable_postgres"
@@ -363,6 +390,9 @@ jobs:
               VALUES ('compose-marker') ON CONFLICT (marker) DO NOTHING;" >/dev/null
           test "$(redis_command "$durable_redis" SET \
             activityplug:compose:persistence-probe compose-marker)" = OK
+          # Stage 3: remove each data service in turn. The edge must report
+          # unready while it is gone, the app container must survive untouched,
+          # and the marker must still be present once the service returns.
           for service in postgres redis; do
             node --experimental-strip-types scripts/run-production-compose.ts durable stop "$service"
             assert_unready
@@ -382,6 +412,8 @@ jobs:
                 activityplug:compose:persistence-probe)" = compose-marker
             fi
           done
+          # Stage 4: the memory stack must serve the same public boundary while
+          # creating no data network at all.
           smoke_directory=$(mktemp -d)
           trap 'rm -rf "$smoke_directory"' EXIT
           pnpm compose:memory:up
@@ -407,6 +439,9 @@ jobs:
       - name: Remove production Compose services
         if: always()
         run: |
+          # Cleanup must never mask a teardown failure, so every step records
+          # its own status and the job fails if any container, network, or
+          # volume outlives the run.
           status=0
           node --experimental-strip-types scripts/run-production-compose.ts \
             durable down --volumes --remove-orphans || status=1

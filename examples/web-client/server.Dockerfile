@@ -14,7 +14,11 @@ COPY examples/web-client ./examples/web-client
 RUN pnpm install --frozen-lockfile
 RUN pnpm -r --filter @activityplug/example-web-client... --sort build
 RUN pnpm --filter @activityplug/example-web-client build:server
-RUN pnpm --filter @activityplug/example-web-client deploy --prod --legacy /out
+# `--legacy` keeps workspace dependencies as symlinks into /workspace, which do
+# not survive the copy into the runtime stage. Injecting them materializes each
+# workspace package inside /out so the runtime image resolves them on its own.
+RUN pnpm --config.inject-workspace-packages=true \
+  --filter @activityplug/example-web-client deploy --prod /out
 RUN ACTIVITYPLUG_STORAGE=memory \
     ACTIVITYPLUG_PUBLIC_ORIGIN=https://localhost \
     ACTIVITYPLUG_TRUSTED_PROXY_ADDRESSES=127.0.0.1 \
