@@ -18,7 +18,7 @@ it("rejects override policy in every workspace manifest", async () => {
       writeManifest(join(root, "package.json"), {
         devDependencies: { graphql: "^17.0.2", typescript: "^7.0.2" },
         engines: { node: ">=26 <27", pnpm: ">=11 <12" },
-        packageManager: "pnpm@11.12.0",
+        packageManager: "pnpm@11.20.0",
       }),
       writeManifest(join(root, "examples/peer/package.json"), {
         name: "@fixture/peer",

@@ -68,7 +68,7 @@ Set these values for both modes:
 | ------------------------------------- | -------------------------------------------------------------------- |
 | `ACTIVITYPLUG_NODE_IMAGE`             | A Node image reference with a lowercase 64-character SHA-256 digest  |
 | `ACTIVITYPLUG_CADDY_IMAGE`            | A Caddy image reference with a lowercase 64-character SHA-256 digest |
-| `ACTIVITYPLUG_PNPM_VERSION`           | Exactly `11.12.0`                                                    |
+| `ACTIVITYPLUG_PNPM_VERSION`           | Exactly `11.20.0`                                                    |
 | `ACTIVITYPLUG_COOKIE_SIGNING_KEY`     | Unpadded base64url containing at least 32 decoded bytes              |
 | `ACTIVITYPLUG_ALLOWED_REMOTE_ORIGINS` | A comma-separated list of explicit HTTPS origins, without wildcards  |
 

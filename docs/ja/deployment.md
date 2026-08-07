@@ -71,7 +71,7 @@ web-client サンプルは環境変数 `ACTIVITYPLUG_STORAGE`（`durable` また
 | ------------------------------------- | ------------------------------------------------------------- |
 | `ACTIVITYPLUG_NODE_IMAGE`             | 小文字 64 桁の SHA-256 digest を含む Node イメージ参照        |
 | `ACTIVITYPLUG_CADDY_IMAGE`            | 小文字 64 桁の SHA-256 digest を含む Caddy イメージ参照       |
-| `ACTIVITYPLUG_PNPM_VERSION`           | `11.12.0` と完全に一致する値                                  |
+| `ACTIVITYPLUG_PNPM_VERSION`           | `11.20.0` と完全に一致する値                                  |
 | `ACTIVITYPLUG_COOKIE_SIGNING_KEY`     | デコード後に 32 バイト以上となる padding なしの base64url     |
 | `ACTIVITYPLUG_ALLOWED_REMOTE_ORIGINS` | wildcard を含まない明示的な HTTPS origin のカンマ区切りリスト |
 

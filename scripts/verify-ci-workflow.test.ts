@@ -34,7 +34,7 @@ describe("CI workflow", () => {
 
     expect(compose?.env).toMatchObject({
       ACTIVITYPLUG_ALLOWED_REMOTE_ORIGINS: "https://mastodon.example",
-      ACTIVITYPLUG_PNPM_VERSION: "11.12.0",
+      ACTIVITYPLUG_PNPM_VERSION: "11.20.0",
     });
     expect(compose?.env?.["ACTIVITYPLUG_COOKIE_SIGNING_KEY"]).toMatch(/^[A-Za-z0-9_-]{43,}$/);
     expect(compose?.env?.["ACTIVITYPLUG_POSTGRES_PASSWORD"]).toMatch(/^[A-Za-z0-9_-]{32,}$/);

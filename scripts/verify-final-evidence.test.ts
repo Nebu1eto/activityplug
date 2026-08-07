@@ -23,7 +23,7 @@ const headSha = "b".repeat(40);
 const safeEnvironment = {
   ACTIVITYPLUG_CADDY_IMAGE: `caddy:2.11@sha256:${digest}`,
   ACTIVITYPLUG_NODE_IMAGE: `node:26@sha256:${digest}`,
-  ACTIVITYPLUG_PNPM_VERSION: "11.12.0",
+  ACTIVITYPLUG_PNPM_VERSION: "11.20.0",
   ACTIVITYPLUG_POSTGRES_IMAGE: `postgres:18@sha256:${digest}`,
   ACTIVITYPLUG_POSTGRES_PASSWORD: "QWN0aXZpdHlQbHVnLXRlc3QtcG9zdGdyZXMtcGFzc3dvcmQ",
   ACTIVITYPLUG_REDIS_IMAGE: `redis:8@sha256:${digest}`,

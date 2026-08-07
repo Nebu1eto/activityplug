@@ -84,7 +84,7 @@ it("fails production preflight before Compose sees missing or mutable images", (
       ACTIVITYPLUG_CADDY_IMAGE: `caddy:2.11@sha256:${digest}`,
       ACTIVITYPLUG_POSTGRES_IMAGE: `postgres:18@sha256:${digest}`,
       ACTIVITYPLUG_REDIS_IMAGE: `redis:8@sha256:${digest}`,
-      ACTIVITYPLUG_PNPM_VERSION: "11.12.0",
+      ACTIVITYPLUG_PNPM_VERSION: "11.20.0",
       ACTIVITYPLUG_POSTGRES_PASSWORD: "A".repeat(32),
       ACTIVITYPLUG_REDIS_PASSWORD: "B".repeat(32),
     }),
@@ -98,7 +98,7 @@ it("requires durable data passwords without exposing their values", () => {
     ACTIVITYPLUG_CADDY_IMAGE: `caddy:2.11@sha256:${digest}`,
     ACTIVITYPLUG_POSTGRES_IMAGE: `postgres:18@sha256:${digest}`,
     ACTIVITYPLUG_REDIS_IMAGE: `redis:8@sha256:${digest}`,
-    ACTIVITYPLUG_PNPM_VERSION: "11.12.0",
+    ACTIVITYPLUG_PNPM_VERSION: "11.20.0",
   };
 
   const missing = verifyProductionEnvironment(environment);
@@ -138,7 +138,7 @@ it("requires only web images for memory-mode Compose", () => {
       {
         ACTIVITYPLUG_NODE_IMAGE: `node:26@sha256:${digest}`,
         ACTIVITYPLUG_CADDY_IMAGE: `caddy:2.11@sha256:${digest}`,
-        ACTIVITYPLUG_PNPM_VERSION: "11.12.0",
+        ACTIVITYPLUG_PNPM_VERSION: "11.20.0",
       },
       "memory",
     ),

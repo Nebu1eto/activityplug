@@ -68,7 +68,7 @@ Redis는 스트림 티켓, OAuth 시작 제한, 수명이 짧은 인증 challeng
 | ------------------------------------- | -------------------------------------------------------- |
 | `ACTIVITYPLUG_NODE_IMAGE`             | 소문자 64자리 SHA-256 digest가 있는 Node 이미지 참조     |
 | `ACTIVITYPLUG_CADDY_IMAGE`            | 소문자 64자리 SHA-256 digest가 있는 Caddy 이미지 참조    |
-| `ACTIVITYPLUG_PNPM_VERSION`           | 정확히 `11.12.0`                                         |
+| `ACTIVITYPLUG_PNPM_VERSION`           | 정확히 `11.20.0`                                         |
 | `ACTIVITYPLUG_COOKIE_SIGNING_KEY`     | 디코딩한 값이 32바이트 이상인 padding 없는 base64url     |
 | `ACTIVITYPLUG_ALLOWED_REMOTE_ORIGINS` | wildcard 없이 명시적인 HTTPS origin을 쉼표로 구분한 목록 |
 

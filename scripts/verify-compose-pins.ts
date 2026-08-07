@@ -138,8 +138,8 @@ export function verifyProductionEnvironment(
       violations.push(`${variable} must not use the latest tag`);
     }
   }
-  if (environment["ACTIVITYPLUG_PNPM_VERSION"] !== "11.12.0") {
-    violations.push("ACTIVITYPLUG_PNPM_VERSION must equal 11.12.0");
+  if (environment["ACTIVITYPLUG_PNPM_VERSION"] !== "11.20.0") {
+    violations.push("ACTIVITYPLUG_PNPM_VERSION must equal 11.20.0");
   }
   if (mode === "durable") {
     const postgresPassword = environment["ACTIVITYPLUG_POSTGRES_PASSWORD"] ?? "";
