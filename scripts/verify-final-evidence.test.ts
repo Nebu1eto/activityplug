@@ -210,6 +210,21 @@ test("fails closed for deleted Markdown before other evidence probes", async () 
   expect(verifyCompose).not.toHaveBeenCalled();
 });
 
+test("accepts the changesets a release run consumes", async () => {
+  const root = await fixtureRoot();
+
+  await expect(
+    verifyFinalEvidence(root, {
+      environment: safeEnvironment,
+      getChangedPaths: async () => [{ path: ".changeset/adopt-ioredis-6.md", status: "D" }],
+      getGitStatus: async () => [],
+      verifyCompose: async () => [],
+      verifyPublishedTarballs: async () => undefined,
+      ...passingEvidenceProbes,
+    }),
+  ).resolves.toMatchObject({ productionAudit: { advisories: 0 } });
+});
+
 describe("evidence base resolution", () => {
   test("fails closed when a standalone checkout has no evidence base", async () => {
     const root = await fixtureRoot();

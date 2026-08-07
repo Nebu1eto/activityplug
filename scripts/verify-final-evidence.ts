@@ -261,7 +261,9 @@ export async function verifyFinalEvidence(
     options.getChangedPaths === undefined
       ? await getChangedDocumentationPaths(repositoryRoot, environment)
       : await options.getChangedPaths(repositoryRoot);
-  if (changedPaths.some(({ status }) => isDeletion(status))) {
+  // Release runs consume changesets, so their deletion is expected. Every other
+  // tracked Markdown deletion still fails closed to protect documentation.
+  if (changedPaths.some(({ path, status }) => !isChangesetEntry(path) && isDeletion(status))) {
     throw new Error("Published documentation must not be deleted or renamed outside Markdown");
   }
   const documentationPaths = [
@@ -394,6 +396,11 @@ function requiresTranslationFreshness(status: string | undefined): boolean {
 
 function isDeletion(status: string | undefined): boolean {
   return status !== undefined && status.startsWith("D");
+}
+
+/** Identifies changeset entries, which every release run consumes by design. */
+function isChangesetEntry(path: string): boolean {
+  return path.startsWith(".changeset/") && path !== ".changeset/README.md";
 }
 
 function isEnglishDocumentationChange(status: string): boolean {
