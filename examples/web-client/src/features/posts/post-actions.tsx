@@ -4,9 +4,27 @@ import {
   type QueryClient,
   type QueryKey,
 } from "@tanstack/react-query";
-import { type ChangeEvent, type ReactElement, useId, useState } from "react";
+import {
+  type ChangeEvent,
+  type ReactElement,
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import { createPortal } from "react-dom";
 
 import { useI18n } from "../../i18n/i18n.js";
+import {
+  BookmarkIcon,
+  BoostIcon,
+  FavouriteIcon,
+  QuoteIcon,
+  ReactIcon,
+  ReplyIcon,
+} from "./action-icons.js";
 import {
   controlDecision,
   type CapabilityCollection,
@@ -205,62 +223,68 @@ export function PostActions<Post extends ActionablePost>({
       className="post-actions"
       role="group"
     >
-      <CapabilityAction
-        control="reply"
-        decision={controlDecision(capabilities, "reply", translateCapability ?? t)}
-        label={labels.reply}
-        onActivate={() => onReply(post.ref.id)}
-        pending={false}
-      />
-      <CapabilityAction
-        control="quote"
-        decision={controlDecision(capabilities, "quote", translateCapability ?? t)}
-        label={labels.quote}
-        onActivate={() => onQuote(post.ref.id)}
-        pending={false}
-      />
-      <CapabilityAction
-        active={viewerState.favourited === true}
-        control="favourite"
-        decision={controlDecision(capabilities, "favourite", translateCapability ?? t)}
-        label={viewerState.favourited === true ? labels.unfavourite : labels.favourite}
-        onActivate={() =>
-          runAction({ kind: "favourite", enabled: viewerState.favourited !== true })
-        }
-        pending={mutation.isPending}
-      />
-      <CapabilityAction
-        active={viewerState.boosted === true}
-        control="boost"
-        decision={controlDecision(capabilities, "boost", translateCapability ?? t)}
-        label={viewerState.boosted === true ? labels.unboost : labels.boost}
-        onActivate={() => runAction({ kind: "reblog", enabled: viewerState.boosted !== true })}
-        pending={mutation.isPending}
-      />
-      <CapabilityAction
-        active={viewerState.bookmarked === true}
-        control="bookmark"
-        decision={controlDecision(capabilities, "bookmark", translateCapability ?? t)}
-        label={viewerState.bookmarked === true ? labels.unbookmark : labels.bookmark}
-        onActivate={() => runAction({ kind: "bookmark", enabled: viewerState.bookmarked !== true })}
-        pending={mutation.isPending}
-      />
-      <ReactionAction
-        decision={controlDecision(capabilities, "reaction", translateCapability ?? t)}
-        labels={labels}
-        onChange={setReaction}
-        onSubmit={() => {
-          if (reactionValue === "") return;
-          runAction({
-            kind: "reaction",
-            enabled: !reacted,
-            reaction,
-          });
-        }}
-        pending={mutation.isPending}
-        reacted={reacted}
-        value={reaction}
-      />
+      <div className="post-actions__row">
+        <CapabilityAction
+          control="reply"
+          decision={controlDecision(capabilities, "reply", translateCapability ?? t)}
+          label={labels.reply}
+          onActivate={() => onReply(post.ref.id)}
+          pending={false}
+        />
+        <CapabilityAction
+          control="quote"
+          decision={controlDecision(capabilities, "quote", translateCapability ?? t)}
+          label={labels.quote}
+          onActivate={() => onQuote(post.ref.id)}
+          pending={false}
+        />
+        <CapabilityAction
+          active={viewerState.favourited === true}
+          control="favourite"
+          count={post.counts?.favourites}
+          decision={controlDecision(capabilities, "favourite", translateCapability ?? t)}
+          label={viewerState.favourited === true ? labels.unfavourite : labels.favourite}
+          onActivate={() =>
+            runAction({ kind: "favourite", enabled: viewerState.favourited !== true })
+          }
+          pending={mutation.isPending}
+        />
+        <CapabilityAction
+          active={viewerState.boosted === true}
+          control="boost"
+          count={post.counts?.reblogs}
+          decision={controlDecision(capabilities, "boost", translateCapability ?? t)}
+          label={viewerState.boosted === true ? labels.unboost : labels.boost}
+          onActivate={() => runAction({ kind: "reblog", enabled: viewerState.boosted !== true })}
+          pending={mutation.isPending}
+        />
+        <CapabilityAction
+          active={viewerState.bookmarked === true}
+          control="bookmark"
+          decision={controlDecision(capabilities, "bookmark", translateCapability ?? t)}
+          label={viewerState.bookmarked === true ? labels.unbookmark : labels.bookmark}
+          onActivate={() =>
+            runAction({ kind: "bookmark", enabled: viewerState.bookmarked !== true })
+          }
+          pending={mutation.isPending}
+        />
+        <ReactionAction
+          decision={controlDecision(capabilities, "reaction", translateCapability ?? t)}
+          labels={labels}
+          onChange={setReaction}
+          onSubmit={() => {
+            if (reactionValue === "") return;
+            runAction({
+              kind: "reaction",
+              enabled: !reacted,
+              reaction,
+            });
+          }}
+          pending={mutation.isPending}
+          reacted={reacted}
+          value={reaction}
+        />
+      </div>
       {mutation.error === null ? null : (
         <p className="form-message form-message--error" role="alert">
           {errorMessage(mutation.error, labels.actionFailed)}
@@ -276,37 +300,58 @@ interface CapabilityActionProps {
     CapabilityControl,
     "reply" | "quote" | "favourite" | "boost" | "bookmark"
   >;
+  readonly count?: number;
   readonly decision: ControlDecision;
   readonly label: string;
   readonly onActivate: () => void;
   readonly pending: boolean;
 }
 
+const actionIcons: Record<CapabilityActionProps["control"], () => ReactElement> = {
+  bookmark: BookmarkIcon,
+  boost: BoostIcon,
+  favourite: FavouriteIcon,
+  quote: QuoteIcon,
+  reply: ReplyIcon,
+};
+
 function CapabilityAction({
   active,
   control,
+  count,
   decision,
   label,
   onActivate,
   pending,
 }: CapabilityActionProps): ReactElement {
-  const reasonId = useId();
+  const tooltip = useActionReasonTooltip(decision.enabled ? undefined : decision.reason);
+  const ActionIcon = actionIcons[control];
   return (
     <div className="post-actions__control" data-post-action={control}>
       <button
-        aria-describedby={decision.enabled ? undefined : reasonId}
+        aria-describedby={tooltip.descriptionId}
+        aria-disabled={decision.enabled ? undefined : true}
+        aria-label={label}
         aria-pressed={active}
-        disabled={!decision.enabled || pending}
-        onClick={onActivate}
+        disabled={decision.enabled && pending}
+        onBlur={tooltip.onBlur}
+        onClick={() => {
+          if (decision.enabled) onActivate();
+        }}
+        onFocus={tooltip.onFocus}
+        onPointerEnter={tooltip.onPointerEnter}
+        onPointerLeave={tooltip.onPointerLeave}
+        ref={tooltip.triggerRef}
         type="button"
       >
-        {label}
+        <ActionIcon />
+        {count === undefined ? null : (
+          <span aria-hidden="true" className="post-actions__count">
+            {count}
+          </span>
+        )}
       </button>
-      {decision.enabled ? null : (
-        <span className="control-reason" id={reasonId}>
-          {decision.reason}
-        </span>
-      )}
+      {tooltip.element}
     </div>
   );
 }
@@ -330,42 +375,140 @@ function ReactionAction({
   reacted,
   value,
 }: ReactionActionProps): ReactElement {
-  const reasonId = useId();
   const blank = value.trim() === "";
   const reason = decision.enabled ? (blank ? labels.reactionRequired : undefined) : decision.reason;
-  const describedBy = reason === undefined ? undefined : reasonId;
+  const tooltip = useActionReasonTooltip(reason);
   const handleChange = (event: ChangeEvent<HTMLInputElement>): void => {
     onChange(event.currentTarget.value);
   };
 
   return (
     <div className="post-actions__control post-actions__reaction" data-post-action="reaction">
-      <label>
-        {labels.reaction}
+      {decision.enabled ? (
         <input
-          aria-describedby={describedBy}
-          disabled={!decision.enabled || pending}
+          aria-label={labels.reaction}
+          aria-describedby={tooltip.descriptionId}
+          disabled={pending}
           onChange={handleChange}
           type="text"
           value={value}
         />
-      </label>
+      ) : null}
       <button
-        aria-describedby={describedBy}
+        aria-describedby={tooltip.descriptionId}
+        aria-disabled={decision.enabled ? undefined : true}
+        aria-label={reacted ? labels.unreact : labels.react}
         aria-pressed={reacted}
-        disabled={!decision.enabled || pending || blank}
-        onClick={onSubmit}
+        disabled={decision.enabled && (pending || blank)}
+        onBlur={tooltip.onBlur}
+        onClick={() => {
+          if (decision.enabled) onSubmit();
+        }}
+        onFocus={tooltip.onFocus}
+        onPointerEnter={tooltip.onPointerEnter}
+        onPointerLeave={tooltip.onPointerLeave}
+        ref={tooltip.triggerRef}
         type="button"
       >
-        {reacted ? labels.unreact : labels.react}
+        <ReactIcon />
       </button>
-      {reason === undefined ? null : (
-        <span className="control-reason" id={reasonId}>
-          {reason}
-        </span>
-      )}
+      {tooltip.element}
     </div>
   );
+}
+
+function useActionReasonTooltip(reason: string | undefined): {
+  readonly descriptionId: string | undefined;
+  readonly element: ReactElement | null;
+  readonly onBlur: () => void;
+  readonly onFocus: () => void;
+  readonly onPointerEnter: () => void;
+  readonly onPointerLeave: () => void;
+  readonly triggerRef: React.RefObject<HTMLButtonElement | null>;
+} {
+  const id = useId();
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const tooltipRef = useRef<HTMLSpanElement>(null);
+  const [focused, setFocused] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const [position, setPosition] = useState({ left: 0, placement: "below", top: 0 });
+  const visible = reason !== undefined && (focused || hovered);
+
+  const updatePosition = useCallback(() => {
+    const trigger = triggerRef.current;
+    const tooltip = tooltipRef.current;
+    if (trigger === null || tooltip === null) return;
+
+    const viewportPadding = 8;
+    const tooltipGap = 6;
+    const triggerRect = trigger.getBoundingClientRect();
+    const tooltipRect = tooltip.getBoundingClientRect();
+    const spaceAbove = triggerRect.top;
+    const spaceBelow = window.innerHeight - triggerRect.bottom;
+    const placement =
+      spaceAbove >= tooltipRect.height + tooltipGap || spaceAbove > spaceBelow ? "above" : "below";
+    const preferredTop =
+      placement === "above"
+        ? triggerRect.top - tooltipRect.height - tooltipGap
+        : triggerRect.bottom + tooltipGap;
+    const preferredLeft = triggerRect.left;
+    const maximumTop = Math.max(
+      viewportPadding,
+      window.innerHeight - tooltipRect.height - viewportPadding,
+    );
+    const maximumLeft = Math.max(
+      viewportPadding,
+      window.innerWidth - tooltipRect.width - viewportPadding,
+    );
+
+    setPosition({
+      left: Math.min(Math.max(preferredLeft, viewportPadding), maximumLeft),
+      placement,
+      top: Math.min(Math.max(preferredTop, viewportPadding), maximumTop),
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (visible) updatePosition();
+  }, [updatePosition, visible]);
+
+  useEffect(() => {
+    if (!visible) return undefined;
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [updatePosition, visible]);
+
+  const element =
+    reason === undefined || typeof document === "undefined"
+      ? null
+      : createPortal(
+          <span
+            className="post-actions__tooltip"
+            data-placement={position.placement}
+            data-visible={visible ? "true" : "false"}
+            id={id}
+            ref={tooltipRef}
+            role="tooltip"
+            style={{ left: position.left, top: position.top }}
+          >
+            {reason}
+          </span>,
+          document.body,
+        );
+
+  return {
+    descriptionId: reason === undefined ? undefined : id,
+    element,
+    onBlur: () => setFocused(false),
+    onFocus: () => setFocused(true),
+    onPointerEnter: () => setHovered(true),
+    onPointerLeave: () => setHovered(false),
+    triggerRef,
+  };
 }
 
 async function optimisticallyUpdatePost<Post extends ActionablePost>(

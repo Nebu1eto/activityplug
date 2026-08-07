@@ -156,7 +156,8 @@ describe("PostActions", () => {
     expect(screen.getByRole("button", { name: "お気に入り" })).toBeVisible();
     const react = screen.getByRole("button", { name: "リアクション" });
     expect(react).toHaveAccessibleDescription(reason);
-    expect(screen.getByText(reason)).toBeVisible();
+    expect(react).not.toHaveAttribute("title");
+    expect(screen.getByText(reason)).toBeInTheDocument();
   });
 
   it("disables unsupported reactions with the server-provided reason", () => {
@@ -176,9 +177,71 @@ describe("PostActions", () => {
     });
 
     const button = screen.getByRole("button", { name: "React" });
-    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(button).not.toBeDisabled();
     expect(button).toHaveAccessibleDescription("This server has no emoji reactions.");
-    expect(screen.getByText("This server has no emoji reactions.")).toBeVisible();
+    expect(button).not.toHaveAttribute("title");
+    expect(screen.getByText("This server has no emoji reactions.")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Reaction" })).not.toBeInTheDocument();
+  });
+
+  it("shows and hides an unsupported action tooltip on hover and focus", async () => {
+    const user = userEvent.setup();
+    const reason = "Replies are unavailable on this server.";
+    renderActions({
+      capabilities: {
+        capabilities: [
+          ...supportedCapabilities.capabilities.filter(
+            (capability) => capability.name !== "posts.reply",
+          ),
+          { name: "posts.reply", status: "unsupported", reason },
+        ],
+      },
+    });
+
+    const reply = screen.getByRole("button", { name: "Reply" });
+    expect(reply).toHaveAttribute("aria-disabled", "true");
+    expect(reply).not.toBeDisabled();
+    expect(reply).toHaveAccessibleDescription(reason);
+    expect(reply).not.toHaveAttribute("title");
+
+    const tooltip = screen.getByText(reason);
+    expect(tooltip).toHaveAttribute("role", "tooltip");
+    expect(tooltip.parentElement).toBe(document.body);
+    expect(tooltip).toHaveAttribute("data-visible", "false");
+    vi.spyOn(reply, "getBoundingClientRect").mockReturnValue({
+      bottom: 132,
+      height: 32,
+      left: 120,
+      right: 152,
+      top: 100,
+      width: 32,
+      x: 120,
+      y: 100,
+      toJSON: () => ({}),
+    });
+    vi.spyOn(tooltip, "getBoundingClientRect").mockReturnValue({
+      bottom: 40,
+      height: 40,
+      left: 0,
+      right: 256,
+      top: 0,
+      width: 256,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+
+    await user.hover(reply);
+    expect(tooltip).toHaveAttribute("data-visible", "true");
+    expect(tooltip).toHaveStyle({ left: "120px" });
+    await user.unhover(reply);
+    expect(tooltip).toHaveAttribute("data-visible", "false");
+
+    fireEvent.focus(reply);
+    expect(tooltip).toHaveAttribute("data-visible", "true");
+    fireEvent.blur(reply);
+    expect(tooltip).toHaveAttribute("data-visible", "false");
   });
 
   it("forwards opaque IDs unchanged to reply and quote integration callbacks", async () => {

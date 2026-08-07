@@ -11,6 +11,37 @@ import { renderApp } from "../../test/render.js";
 import { BrowserPostSurface } from "./browser-post-surface.js";
 
 describe("BrowserPostSurface", () => {
+  it("renders fetched boosted post content for an empty boost wrapper", async () => {
+    const post = vi.fn(async () => ({
+      post: {
+        ref: { id: "post/original", type: "post" },
+        author: { ref: { id: "account/original" }, displayName: "Original author" },
+        contentHtml: "<p>Original post content</p>",
+        createdAt: "2020-01-01T00:00:00Z",
+        sensitive: false,
+        media: [],
+      },
+    }));
+    renderApp(
+      <BrowserPostSurface
+        api={{ actOnPost: vi.fn(), post } as unknown as ProductApi}
+        capabilities={{ capabilities: [] }}
+        post={{
+          ref: { id: "post/boost", type: "post" },
+          author: { ref: { id: "account/booster" }, displayName: "Booster" },
+          contentHtml: "",
+          createdAt: "2020-01-02T00:00:00Z",
+          sensitive: false,
+          media: [],
+          boostOf: { id: "post/original" },
+        }}
+      />,
+    );
+
+    expect(await screen.findByText("Original post content")).toBeVisible();
+    expect(post).toHaveBeenCalledWith("post/original", expect.any(AbortSignal));
+  });
+
   it("keeps reserved relation identifiers on the internal opaque post route", () => {
     renderApp(
       <BrowserPostSurface

@@ -47,6 +47,7 @@ export interface TimelineProps {
   readonly kind: TimelineKind;
   readonly labels?: Partial<TimelineLabels>;
   readonly renderPost?: (post: TimelinePost) => ReactElement;
+  readonly showNavigation?: boolean;
 }
 
 export function Timeline({
@@ -54,6 +55,7 @@ export function Timeline({
   kind,
   labels: labelOverrides,
   renderPost,
+  showNavigation = true,
 }: TimelineProps): ReactElement {
   const labels = { ...defaultLabels, ...labelOverrides };
   const query = useInfiniteQuery(timelineOptions(api, kind));
@@ -61,7 +63,7 @@ export function Timeline({
 
   return (
     <section aria-busy={query.isPending || query.isFetchingNextPage} className="timeline">
-      <TimelineNavigation kind={kind} labels={labels} />
+      {showNavigation ? <TimelineNavigation kind={kind} labels={labels} /> : null}
       {query.isPending ? <TimelineSkeleton label={labels.loading} /> : null}
       {query.error === null ? null : (
         <div>

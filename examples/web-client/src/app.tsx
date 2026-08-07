@@ -192,6 +192,7 @@ function AuthenticatedProduct({
               post={post}
             />
           )}
+          showNavigation={false}
         />
       ) : null}
       {location.name === "search" ? (

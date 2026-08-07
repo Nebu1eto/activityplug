@@ -28,7 +28,10 @@ it("preserves the draft and held uploads when the post outcome is unknown", asyn
   const view = renderApp(<Composer media={media} posts={posts} />);
 
   await user.type(screen.getByLabelText("Post content"), "Hello");
-  await user.upload(screen.getByLabelText("Add images"), imageFile("cat.png", 10));
+  await user.upload(
+    screen.getByLabelText("Add images", { selector: "input" }),
+    imageFile("cat.png", 10),
+  );
   await user.type(screen.getByLabelText("Alt text for cat.png"), "A sleeping cat");
 
   expect(screen.getByRole("img", { name: "A sleeping cat" })).toHaveAttribute(
@@ -69,7 +72,10 @@ it("removes unknown-outcome media locally without deleting the potentially attac
   const user = userEvent.setup();
   renderApp(<Composer media={media} posts={posts} />);
   await user.type(screen.getByLabelText("Post content"), "Check before retrying");
-  await user.upload(screen.getByLabelText("Add images"), imageFile("cat.png", 10));
+  await user.upload(
+    screen.getByLabelText("Add images", { selector: "input" }),
+    imageFile("cat.png", 10),
+  );
 
   await user.click(screen.getByRole("button", { name: "Post" }));
   expect(await screen.findByRole("alert")).toHaveTextContent(
@@ -155,7 +161,10 @@ it("retries post creation without uploading successful media again", async () =>
   const user = userEvent.setup();
   renderApp(<Composer media={media} posts={posts} />);
   await user.type(screen.getByLabelText("Post content"), "Retry me");
-  await user.upload(screen.getByLabelText("Add images"), imageFile("cat.png", 10));
+  await user.upload(
+    screen.getByLabelText("Add images", { selector: "input" }),
+    imageFile("cat.png", 10),
+  );
 
   await user.click(screen.getByRole("button", { name: "Post" }));
   expect(await screen.findByRole("alert")).toHaveTextContent(
@@ -205,7 +214,10 @@ it("clears submitted content and media while preserving a new target chosen in f
     </JotaiProvider>,
   );
   await user.type(screen.getByLabelText("Post content"), "Already submitted");
-  await user.upload(screen.getByLabelText("Add images"), imageFile("cat.png", 10));
+  await user.upload(
+    screen.getByLabelText("Add images", { selector: "input" }),
+    imageFile("cat.png", 10),
+  );
   await user.click(screen.getByRole("button", { name: "Post" }));
   await waitFor(() => expect(createPost).toHaveBeenCalledOnce());
 
@@ -234,7 +246,8 @@ it("sends visibility, content warning, sensitivity, reply, and quote fields", as
 
   await user.type(screen.getByLabelText("Post content"), "Contextual post");
   await user.selectOptions(screen.getByLabelText("Visibility"), "followers");
-  await user.type(screen.getByLabelText("Content warning"), "Spoilers");
+  await user.click(screen.getByRole("button", { name: "Content warning" }));
+  await user.type(screen.getByLabelText("Content warning", { selector: "input" }), "Spoilers");
   await user.click(screen.getByLabelText("Mark media as sensitive"));
   await user.click(screen.getByRole("button", { name: "Post" }));
 
@@ -249,7 +262,7 @@ it("sends visibility, content warning, sensitivity, reply, and quote fields", as
   });
 });
 
-it("keeps capability-gated controls visible with exact reasons", () => {
+it("keeps rendered capability controls described without untargeted reasons", () => {
   const { media, posts } = ports();
   const controls: ComposerControlDecisions = {
     contentWarning: { enabled: false, reason: "Warnings are unavailable." },
@@ -261,16 +274,14 @@ it("keeps capability-gated controls visible with exact reasons", () => {
 
   expect(screen.getByLabelText("Visibility")).toBeDisabled();
   expect(screen.getByLabelText("Visibility")).toHaveAccessibleDescription("Visibility is fixed.");
-  expect(screen.getByLabelText("Content warning")).toBeDisabled();
-  expect(screen.getByLabelText("Content warning")).toHaveAccessibleDescription(
-    "Warnings are unavailable.",
-  );
-  expect(screen.getByLabelText("Reply to post")).toBeDisabled();
-  expect(screen.getByLabelText("Reply to post")).toHaveAccessibleDescription(
-    "Replies are disabled.",
-  );
-  expect(screen.getByLabelText("Quote post")).toBeDisabled();
-  expect(screen.getByText("Quotes are disabled.")).toBeVisible();
+  expect(screen.getByLabelText("Content warning", { selector: "input" })).toBeDisabled();
+  expect(
+    screen.getByLabelText("Content warning", { selector: "input" }),
+  ).toHaveAccessibleDescription("Warnings are unavailable.");
+  expect(screen.queryByLabelText("Reply to post")).not.toBeInTheDocument();
+  expect(screen.queryByText("Replies are disabled.")).not.toBeInTheDocument();
+  expect(screen.queryByLabelText("Quote post")).not.toBeInTheDocument();
+  expect(screen.queryByText("Quotes are disabled.")).not.toBeInTheDocument();
 });
 
 it("clears an incompatible HackersPub warning and sensitive draft", async () => {
@@ -303,7 +314,7 @@ it("clears an incompatible HackersPub warning and sensitive draft", async () => 
   );
 
   await waitFor(() => expect(screen.getByLabelText("Visibility")).toHaveValue("followers"));
-  expect(screen.getByLabelText("Content warning")).toHaveValue("");
+  expect(screen.getByLabelText("Content warning", { selector: "input" })).toHaveValue("");
   expect(screen.getByLabelText("Mark media as sensitive")).not.toBeChecked();
   expect(screen.getByLabelText("Post content")).toHaveValue("A draft that must remain editable");
 });
@@ -335,7 +346,9 @@ it("clears an incompatible Misskey sensitive draft without removing its warning"
   );
 
   await waitFor(() => expect(screen.getByLabelText("Mark media as sensitive")).not.toBeChecked());
-  expect(screen.getByLabelText("Content warning")).toHaveValue("A supported warning");
+  expect(screen.getByLabelText("Content warning", { selector: "input" })).toHaveValue(
+    "A supported warning",
+  );
   expect(screen.getByLabelText("Post content")).toHaveValue("A persisted Misskey draft");
 });
 
@@ -348,7 +361,10 @@ it("exposes upload failure, retry, indeterminate progress, and cancellation", as
   const { media, posts } = ports({ media: { uploadMedia } });
   const user = userEvent.setup();
   renderApp(<Composer media={media} posts={posts} />);
-  await user.upload(screen.getByLabelText("Add images"), imageFile("cat.png", 10));
+  await user.upload(
+    screen.getByLabelText("Add images", { selector: "input" }),
+    imageFile("cat.png", 10),
+  );
 
   await user.click(screen.getByRole("button", { name: "Upload cat.png" }));
   expect(screen.getByRole("progressbar", { name: "Uploading cat.png" })).not.toHaveAttribute(
@@ -375,7 +391,10 @@ it("can cancel a submit-triggered upload before post creation", async () => {
   const user = userEvent.setup();
   renderApp(<Composer media={media} posts={posts} />);
   await user.type(screen.getByLabelText("Post content"), "Wait for the image");
-  await user.upload(screen.getByLabelText("Add images"), imageFile("cat.png", 10));
+  await user.upload(
+    screen.getByLabelText("Add images", { selector: "input" }),
+    imageFile("cat.png", 10),
+  );
 
   await user.click(screen.getByRole("button", { name: "Post" }));
   const cancel = await screen.findByRole("button", { name: "Cancel upload for cat.png" });
@@ -394,7 +413,10 @@ it("preserves uploaded media and reports remote cleanup failure", async () => {
   const { media, posts } = ports({ media: { deleteMedia } });
   const user = userEvent.setup();
   renderApp(<Composer media={media} posts={posts} />);
-  await user.upload(screen.getByLabelText("Add images"), imageFile("cat.png", 10));
+  await user.upload(
+    screen.getByLabelText("Add images", { selector: "input" }),
+    imageFile("cat.png", 10),
+  );
   await user.click(screen.getByRole("button", { name: "Upload cat.png" }));
   await screen.findByText("Uploaded cat.png");
 
@@ -409,7 +431,10 @@ it("does not delete media committed by a successful post", async () => {
   const user = userEvent.setup();
   const view = renderApp(<Composer media={media} posts={posts} />);
   await user.type(screen.getByLabelText("Post content"), "Keep the upload");
-  await user.upload(screen.getByLabelText("Add images"), imageFile("cat.png", 10));
+  await user.upload(
+    screen.getByLabelText("Add images", { selector: "input" }),
+    imageFile("cat.png", 10),
+  );
   await user.click(screen.getByRole("button", { name: "Post" }));
   await waitFor(() => expect(screen.getByLabelText("Post content")).toHaveValue(""));
 
@@ -425,7 +450,10 @@ it("holds uploaded media while post creation survives an unmount", async () => {
   const user = userEvent.setup();
   const view = renderApp(<Composer media={media} posts={posts} />);
   await user.type(screen.getByLabelText("Post content"), "Finish after navigation");
-  await user.upload(screen.getByLabelText("Add images"), imageFile("cat.png", 10));
+  await user.upload(
+    screen.getByLabelText("Add images", { selector: "input" }),
+    imageFile("cat.png", 10),
+  );
   await user.click(screen.getByRole("button", { name: "Post" }));
   await waitFor(() => expect(createPost).toHaveBeenCalledOnce());
 
@@ -447,7 +475,10 @@ it.each([
   const user = userEvent.setup();
   const view = renderApp(<Composer media={media} posts={posts} />);
   await user.type(screen.getByLabelText("Post content"), "Fail after navigation");
-  await user.upload(screen.getByLabelText("Add images"), imageFile("cat.png", 10));
+  await user.upload(
+    screen.getByLabelText("Add images", { selector: "input" }),
+    imageFile("cat.png", 10),
+  );
   await user.click(screen.getByRole("button", { name: "Post" }));
   await waitFor(() => expect(createPost).toHaveBeenCalledOnce());
 
@@ -474,7 +505,10 @@ it("revokes previews without persisting unusable attachments after unmount", asy
     </JotaiProvider>,
   );
   await user.type(screen.getByLabelText("Post content"), "Preserve this text");
-  await user.upload(screen.getByLabelText("Add images"), imageFile("cat.png", 10));
+  await user.upload(
+    screen.getByLabelText("Add images", { selector: "input" }),
+    imageFile("cat.png", 10),
+  );
   expect(store.get(composerAtom).attachments).toHaveLength(1);
 
   view.unmount();

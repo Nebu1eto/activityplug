@@ -1,7 +1,8 @@
+import { useQuery } from "@tanstack/react-query";
 import { useSetAtom } from "jotai";
 import { type ReactElement } from "react";
 
-import { type ProductApi } from "../../api/client.js";
+import { type ProductApi, webKeys } from "../../api/client.js";
 import { type BrowserCapabilitySet } from "../../api/contracts.js";
 import { useI18n } from "../../i18n/i18n.js";
 import { navigateProductHref, productRouteHref } from "../../routing/location.js";
@@ -65,6 +66,21 @@ export function BrowserPostSurface({
   const setDraft = useSetAtom(composerAtom);
   const { t } = useI18n();
   const actionablePost = requireActionablePost(post);
+  const boostedPostId =
+    post.boostOf !== undefined && post.contentHtml.trim() === "" ? post.boostOf.id : undefined;
+  const boostedPostQuery = useQuery({
+    queryKey: webKeys.post(boostedPostId ?? post.ref.id),
+    queryFn: ({ signal }) => {
+      if (boostedPostId === undefined) {
+        throw new TypeError("Boosted post identifier is unavailable.");
+      }
+      return api.post(boostedPostId, signal);
+    },
+    enabled: boostedPostId !== undefined,
+    retry: false,
+  });
+  const contentPost =
+    boostedPostId !== undefined && boostedPostQuery.isSuccess ? boostedPostQuery.data.post : post;
   const target = (kind: "reply" | "quote"): void => {
     setDraft((draft) => ({
       ...draft,
@@ -78,7 +94,9 @@ export function BrowserPostSurface({
 
   return (
     <div className="browser-post-surface">
-      <PostCard post={toPostCard(post, t("post.reply"), t("post.quote"), t("post.boost"))} />
+      <PostCard
+        post={toPostCard(post, contentPost, t("post.reply"), t("post.quote"), t("post.boost"))}
+      />
       <PostActions
         actOnPost={async (id, input) => {
           const response = await api.actOnPost(id, input);
@@ -102,6 +120,7 @@ function requireActionablePost<Post extends BrowserSurfacePost>(post: Post): Pos
 
 function toPostCard(
   post: BrowserSurfacePost,
+  contentPost: BrowserSurfacePost,
   reply: string,
   quote: string,
   boost: string,
@@ -113,11 +132,11 @@ function toPostCard(
       ...(post.author.avatarUrl === undefined ? {} : { avatarUrl: post.author.avatarUrl }),
       profileUrl: productRouteHref({ name: "profile", id: post.author.ref.id }),
     },
-    contentHtml: post.contentHtml,
+    contentHtml: contentPost.contentHtml,
     createdAt: post.createdAt,
-    ...(post.summary === undefined ? {} : { summary: post.summary }),
-    sensitive: post.sensitive,
-    media: post.media.map((media) => ({
+    ...(contentPost.summary === undefined ? {} : { summary: contentPost.summary }),
+    sensitive: contentPost.sensitive,
+    media: contentPost.media.map((media) => ({
       id: media.ref.id,
       kind: media.type === "gifv" ? "video" : media.type,
       url: media.url,

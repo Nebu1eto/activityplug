@@ -86,7 +86,7 @@ describe("App", () => {
     expect(productApi.post).not.toHaveBeenCalled();
   });
 
-  it("projects an exact unsupported reply reason into the composer", async () => {
+  it("does not render an unsupported reply reason without a target", async () => {
     const productApi = api({
       ...authenticatedSession,
       capabilities: {
@@ -103,9 +103,9 @@ describe("App", () => {
     });
     renderApp(<App api={productApi} />);
 
-    const reply = await screen.findByRole("textbox", { name: "Reply to post" });
-    expect(reply).toBeDisabled();
-    expect(screen.getByText("Reply policy forbids this.")).toBeInTheDocument();
+    await screen.findByLabelText("Post content");
+    expect(screen.queryByText("Reply policy forbids this.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "Reply to post" })).not.toBeInTheDocument();
   });
 
   it("preserves an image draft when navigation rerenders the authenticated shell", async () => {
@@ -134,7 +134,7 @@ describe("App", () => {
     renderApp(<App api={productApi} />);
 
     await user.upload(
-      await screen.findByLabelText("Add images"),
+      await screen.findByLabelText("Add images", { selector: "input" }),
       new File(["image"], "cat.png", { type: "image/png" }),
     );
     expect(screen.getByRole("img", { name: "cat.png" })).toBeVisible();
@@ -163,10 +163,12 @@ describe("App", () => {
         ],
       },
     });
+    const user = userEvent.setup();
     renderApp(<App api={productApi} />);
 
     expect(await screen.findByLabelText("Post content")).toBeEnabled();
-    expect(screen.getByLabelText("Content warning")).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Content warning" }));
+    expect(screen.getByLabelText("Content warning", { selector: "input" })).toBeEnabled();
     expect(screen.getByLabelText("Mark media as sensitive")).toBeEnabled();
     expect(screen.getByLabelText("Visibility")).toHaveValue("public");
     expect(
@@ -200,7 +202,7 @@ describe("App", () => {
     renderApp(<App api={productApi} />);
 
     expect(await screen.findByLabelText("Post content")).toBeEnabled();
-    expect(screen.getByLabelText("Content warning")).toBeDisabled();
+    expect(screen.getByLabelText("Content warning", { selector: "input" })).toBeDisabled();
     expect(screen.getByLabelText("Mark media as sensitive")).toBeDisabled();
     expect(
       [...screen.getByLabelText("Visibility").querySelectorAll("option")].map(

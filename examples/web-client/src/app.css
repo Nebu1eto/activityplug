@@ -274,7 +274,7 @@ h2 {
 
 .product-navigation a[aria-current="page"],
 .timeline__navigation a[aria-current="page"] {
-  border-inline-start: 0.25rem solid #1746a2;
+  padding-inline-start: 1rem;
   background: #e6eefc;
   color: #102f72;
 }
@@ -298,6 +298,22 @@ h2 {
 
 .auth-panel--sign-in > .locale-control {
   justify-content: space-between;
+}
+
+.auth-panel--account {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.auth-panel--account > p {
+  white-space: nowrap;
+}
+
+.auth-panel--account > .form-message--error {
+  flex-basis: 100%;
+  white-space: normal;
 }
 
 label,
@@ -361,6 +377,143 @@ legend {
 
 .control-reason {
   color: #6c4d00;
+  font-size: 0.8125rem;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+.composer fieldset {
+  gap: 0.75rem;
+  padding: 0;
+  border: 0;
+}
+
+.composer .composer__visually-hidden {
+  position: absolute;
+  width: 1px !important;
+  height: 1px;
+  min-height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
+.composer__textarea {
+  min-height: 7.5rem;
+  padding: 0.875rem;
+  border: 0;
+  border-bottom: 1px solid #d6dde8;
+  border-radius: 0.75rem 0.75rem 0.25rem 0.25rem;
+  background: #f8fafc;
+  line-height: 1.5;
+}
+
+.composer__textarea::placeholder {
+  color: #7a879a;
+}
+
+.composer__toolbar {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.25rem;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.composer__toolbar-control {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.composer .composer__icon-button,
+.composer .composer__icon-toggle {
+  display: inline-flex;
+  width: 2rem;
+  height: 2rem;
+  min-height: 2rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0.375rem;
+  border: 0;
+  border-radius: 0.5rem;
+  background: transparent;
+  color: #1746a2;
+}
+
+.composer .composer__icon-button:hover:not(:disabled),
+.composer .composer__icon-toggle:hover {
+  background: #edf2fb;
+}
+
+.composer .composer__icon-button[aria-pressed="true"],
+.composer .composer__icon-toggle:has(input:checked) {
+  background: #e6eefc;
+  color: #102f72;
+}
+
+.composer .composer__icon-toggle:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.composer .composer__icon-toggle:has(input:focus-visible) {
+  outline: 3px solid #1746a2;
+  outline-offset: 3px;
+}
+
+.composer__icon-button svg,
+.composer__visibility svg {
+  width: 1.25rem;
+  height: 1.25rem;
+  flex: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.75;
+}
+
+.composer__visibility {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 2rem;
+  align-items: center;
+  gap: 0.125rem;
+  color: #1746a2;
+}
+
+.composer__visibility svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.composer .composer__visibility select {
+  width: auto;
+  min-height: 2rem;
+  padding: 0 1.5rem 0 0.25rem;
+  border: 0;
+  background-color: transparent;
+  color: #1746a2;
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+.composer__toolbar-control .control-reason {
+  max-width: 12rem;
+}
+
+.composer__character-count {
+  align-self: center;
+  margin-inline-start: auto;
+  color: #667085;
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.composer__submit {
+  width: 100%;
 }
 
 .composer__attachments,
@@ -519,26 +672,123 @@ legend {
 }
 
 .post-actions {
-  display: flex;
+  display: grid;
   gap: 0.5rem;
-  flex-wrap: wrap;
   padding: 0.75rem 1rem 1rem;
   border-top: 1px solid #e1e6ee;
+}
+
+.post-actions__row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.25rem;
+  flex-wrap: nowrap;
+}
+
+.post-actions button {
+  display: inline-flex;
+  min-width: 2rem;
+  min-height: 2rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  padding: 0.375rem;
+  border: 0;
+  border-radius: 0.5rem;
+  background: transparent;
+  color: #687589;
+  font-weight: 400;
+}
+
+.post-actions button:hover:not(:disabled):not([aria-disabled="true"]) {
+  background: #edf2fb;
+  color: #1746a2;
+}
+
+.post-actions__icon {
+  width: 1.125rem;
+  height: 1.125rem;
+  flex: none;
+}
+
+.post-actions button[aria-pressed="true"] {
+  background: transparent;
+  color: #1746a2;
+}
+
+.post-actions button[aria-pressed="true"] .post-actions__icon {
+  fill: currentcolor;
 }
 
 .post-actions__control {
   display: flex;
   align-items: center;
   gap: 0.375rem;
-  flex-wrap: wrap;
 }
 
-.post-actions__control input {
-  width: min(100%, 8rem);
+.post-actions button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
-.post-actions__control .control-reason {
-  flex-basis: 100%;
+.post-actions__count {
+  color: inherit;
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.post-actions__reaction {
+  min-width: 0;
+}
+
+.post-actions__reaction input {
+  width: clamp(3.5rem, 12vw, 5rem);
+  min-height: 2rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid transparent;
+  border-radius: 0.5rem;
+  background: #f2f5f9;
+}
+
+.post-actions__reaction input:hover:not(:disabled),
+.post-actions__reaction input:focus {
+  border-color: #c3ccd9;
+}
+
+.post-actions__tooltip {
+  position: fixed;
+  z-index: 1000;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  white-space: nowrap;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+}
+
+.post-actions__tooltip[data-visible="true"] {
+  width: max-content;
+  max-width: min(16rem, calc(100vw - 1rem));
+  height: auto;
+  max-height: calc(100vh - 1rem);
+  margin: 0;
+  padding: 0.375rem 0.625rem;
+  overflow: auto;
+  border-radius: 0.375rem;
+  background: #172033;
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: normal;
+  clip: auto;
+  clip-path: none;
+  pointer-events: none;
 }
 
 .thread-view__list > li + li {

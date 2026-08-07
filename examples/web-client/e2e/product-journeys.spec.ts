@@ -87,7 +87,7 @@ test("an uncertain 503 outcome retains the image draft before a deliberate retry
 }) => {
   await authenticate(page);
   await page.getByLabel("Post content").fill("Retry me with an image");
-  await page.getByLabel("Add images").setInputFiles({
+  await page.locator('.composer input[type="file"]').setInputFiles({
     buffer: Buffer.from(tinyPngBase64, "base64"),
     mimeType: "image/png",
     name: "alt-image.png",

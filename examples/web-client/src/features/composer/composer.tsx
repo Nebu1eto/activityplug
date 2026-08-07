@@ -120,7 +120,9 @@ export function Composer({
   const { t } = useI18n();
   const [draft, setDraft] = useAtom(composerAtom);
   const [error, setError] = useState<string>();
+  const [contentWarningVisible, setContentWarningVisible] = useState(false);
   const controlId = useId();
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const controlsRef = useRef(controls);
   const currentCoordinatorRef = useRef<UploadCoordinator | undefined>(undefined);
   const coordinatorGeneration = useRef(0);
@@ -134,6 +136,8 @@ export function Composer({
   const contentDecision = decisionFor(controls, "content");
   const contentWarningDecision = decisionFor(controls, "contentWarning");
   const sensitiveDecision = decisionFor(controls, "sensitive");
+  const uploadDecision = decisionFor(controls, "upload");
+  const visibilityDecision = decisionFor(controls, "visibility");
 
   useEffect(() => {
     setDraft((current) =>
@@ -230,6 +234,10 @@ export function Composer({
   });
 
   const createDecision = decisionFor(controls, "create");
+  const showContentWarning =
+    contentWarningVisible || draft.summary !== "" || !contentWarningDecision.enabled;
+  const showQuoteTarget = draft.quoteOfId !== undefined;
+  const showReplyTarget = draft.replyToId !== undefined;
   const hasUploading = draft.attachments.some(({ status }) => status === "uploading");
   const hasFailed = draft.attachments.some(({ status }) => status === "failed");
   const isEmpty = draft.content.trim() === "" && draft.attachments.length === 0;
@@ -349,153 +357,204 @@ export function Composer({
       onSubmit={(event) => void submit(event)}
     >
       <fieldset>
-        <legend>{t("composer.create")}</legend>
-        <label>
-          {t("composer.content")}
-          <textarea
-            aria-describedby={reasonId(controlId, "content", contentDecision)}
-            aria-label={t("composer.content")}
-            disabled={mutation.isPending || !contentDecision.enabled}
-            onChange={(event) =>
-              setDraft((current) => ({ ...current, content: event.currentTarget.value }))
-            }
-            value={draft.content}
-          />
-          <DecisionReason control="content" controlId={controlId} decision={contentDecision} />
-        </label>
+        <legend className="composer__visually-hidden">{t("composer.create")}</legend>
 
-        <ControlField
-          control="visibility"
-          controlId={controlId}
-          controls={controls}
-          label={t("composer.visibility")}
-        >
-          {(decision, descriptionId) => (
-            <select
-              aria-describedby={descriptionId}
-              aria-label={t("composer.visibility")}
-              disabled={mutation.isPending || !decision.enabled}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  visibility: event.currentTarget.value as ComposerVisibility,
-                }))
-              }
-              value={draft.visibility}
+        {showReplyTarget ? (
+          <ControlField
+            control="reply"
+            controlId={controlId}
+            controls={controls}
+            label={t("composer.replyTo")}
+          >
+            {(decision, descriptionId) => (
+              <input
+                aria-describedby={descriptionId}
+                aria-label={t("composer.replyTo")}
+                disabled={mutation.isPending || !decision.enabled}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    ...optionalTarget("replyToId", event.currentTarget.value),
+                  }))
+                }
+                type="text"
+                value={draft.replyToId ?? ""}
+              />
+            )}
+          </ControlField>
+        ) : null}
+
+        {showQuoteTarget ? (
+          <ControlField
+            control="quote"
+            controlId={controlId}
+            controls={controls}
+            label={t("composer.quotePost")}
+          >
+            {(decision, descriptionId) => (
+              <input
+                aria-describedby={descriptionId}
+                aria-label={t("composer.quotePost")}
+                disabled={mutation.isPending || !decision.enabled}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    ...optionalTarget("quoteOfId", event.currentTarget.value),
+                  }))
+                }
+                type="text"
+                value={draft.quoteOfId ?? ""}
+              />
+            )}
+          </ControlField>
+        ) : null}
+
+        {showContentWarning ? (
+          <ControlField
+            control="contentWarning"
+            controlId={controlId}
+            controls={controls}
+            label={t("composer.contentWarning")}
+          >
+            {(decision, descriptionId) => (
+              <input
+                aria-describedby={descriptionId}
+                aria-label={t("composer.contentWarning")}
+                disabled={mutation.isPending || !decision.enabled}
+                onChange={(event) =>
+                  setDraft((current) => ({ ...current, summary: event.currentTarget.value }))
+                }
+                type="text"
+                value={draft.summary}
+              />
+            )}
+          </ControlField>
+        ) : null}
+
+        <textarea
+          aria-describedby={reasonId(controlId, "content", contentDecision)}
+          aria-label={t("composer.content")}
+          className="composer__textarea"
+          disabled={mutation.isPending || !contentDecision.enabled}
+          onChange={(event) =>
+            setDraft((current) => ({ ...current, content: event.currentTarget.value }))
+          }
+          placeholder={t("composer.placeholder")}
+          value={draft.content}
+        />
+        <DecisionReason control="content" controlId={controlId} decision={contentDecision} />
+
+        <div className="composer__toolbar">
+          <div className="composer__toolbar-control">
+            <button
+              aria-describedby={reasonId(controlId, "upload", uploadDecision)}
+              aria-label={t("composer.addImages")}
+              className="composer__icon-button"
+              disabled={mutation.isPending || !uploadDecision.enabled}
+              onClick={() => fileInputRef.current?.click()}
+              title={t("composer.addImages")}
+              type="button"
             >
-              {allowedVisibilities.map((visibility) => (
-                <option key={visibility} value={visibility}>
-                  {t(`composer.visibility.${visibility}`)}
-                </option>
-              ))}
-            </select>
-          )}
-        </ControlField>
-
-        <ControlField
-          control="contentWarning"
-          controlId={controlId}
-          controls={controls}
-          label={t("composer.contentWarning")}
-        >
-          {(decision, descriptionId) => (
-            <input
-              aria-describedby={descriptionId}
-              aria-label={t("composer.contentWarning")}
-              disabled={mutation.isPending || !decision.enabled}
-              onChange={(event) =>
-                setDraft((current) => ({ ...current, summary: event.currentTarget.value }))
-              }
-              type="text"
-              value={draft.summary}
-            />
-          )}
-        </ControlField>
-
-        <ControlField
-          control="sensitive"
-          controlId={controlId}
-          controls={controls}
-          label={t("composer.sensitive")}
-        >
-          {(decision, descriptionId) => (
-            <input
-              aria-describedby={descriptionId}
-              aria-label={t("composer.sensitive")}
-              checked={draft.sensitive}
-              disabled={mutation.isPending || !decision.enabled}
-              onChange={(event) =>
-                setDraft((current) => ({ ...current, sensitive: event.currentTarget.checked }))
-              }
-              type="checkbox"
-            />
-          )}
-        </ControlField>
-
-        <ControlField
-          control="reply"
-          controlId={controlId}
-          controls={controls}
-          label={t("composer.replyTo")}
-        >
-          {(decision, descriptionId) => (
-            <input
-              aria-describedby={descriptionId}
-              aria-label={t("composer.replyTo")}
-              disabled={mutation.isPending || !decision.enabled}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  ...optionalTarget("replyToId", event.currentTarget.value),
-                }))
-              }
-              type="text"
-              value={draft.replyToId ?? ""}
-            />
-          )}
-        </ControlField>
-
-        <ControlField
-          control="quote"
-          controlId={controlId}
-          controls={controls}
-          label={t("composer.quotePost")}
-        >
-          {(decision, descriptionId) => (
-            <input
-              aria-describedby={descriptionId}
-              aria-label={t("composer.quotePost")}
-              disabled={mutation.isPending || !decision.enabled}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  ...optionalTarget("quoteOfId", event.currentTarget.value),
-                }))
-              }
-              type="text"
-              value={draft.quoteOfId ?? ""}
-            />
-          )}
-        </ControlField>
-
-        <ControlField
-          control="upload"
-          controlId={controlId}
-          controls={controls}
-          label={t("composer.addImages")}
-        >
-          {(decision, descriptionId) => (
+              <svg aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <rect height="16" rx="2" width="18" x="3" y="4" />
+                <circle cx="8.5" cy="9" r="1.5" />
+                <path d="m4 17 4.5-4.5 3 3 2-2L20 20" />
+              </svg>
+            </button>
             <input
               accept={[...acceptedImageTypes].join(",")}
-              aria-describedby={descriptionId}
+              aria-describedby={reasonId(controlId, "upload", uploadDecision)}
               aria-label={t("composer.addImages")}
-              disabled={mutation.isPending || !decision.enabled}
+              className="composer__visually-hidden"
+              disabled={mutation.isPending || !uploadDecision.enabled}
               multiple
               onChange={selectFiles}
+              ref={fileInputRef}
               type="file"
             />
-          )}
-        </ControlField>
+            <DecisionReason control="upload" controlId={controlId} decision={uploadDecision} />
+          </div>
+
+          <button
+            aria-describedby={reasonId(controlId, "contentWarning", contentWarningDecision)}
+            aria-label={t("composer.contentWarning")}
+            aria-pressed={showContentWarning}
+            className="composer__icon-button"
+            disabled={mutation.isPending || !contentWarningDecision.enabled}
+            onClick={() => setContentWarningVisible((visible) => !visible)}
+            title={t("composer.contentWarning")}
+            type="button"
+          >
+            <svg aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M10 9.5a3 3 0 1 0 0 5M16 9v6M19 9v6" />
+            </svg>
+          </button>
+
+          <div className="composer__toolbar-control">
+            <label
+              className="composer__icon-button composer__icon-toggle"
+              title={t("composer.sensitive")}
+            >
+              <input
+                aria-describedby={reasonId(controlId, "sensitive", sensitiveDecision)}
+                aria-label={t("composer.sensitive")}
+                checked={draft.sensitive}
+                className="composer__visually-hidden"
+                disabled={mutation.isPending || !sensitiveDecision.enabled}
+                onChange={(event) =>
+                  setDraft((current) => ({ ...current, sensitive: event.currentTarget.checked }))
+                }
+                type="checkbox"
+              />
+              <svg aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6Z" />
+                <circle cx="12" cy="12" r="2.5" />
+                <path d="m4 4 16 16" />
+              </svg>
+            </label>
+            <DecisionReason
+              control="sensitive"
+              controlId={controlId}
+              decision={sensitiveDecision}
+            />
+          </div>
+
+          <div className="composer__toolbar-control">
+            <label className="composer__visibility">
+              <span className="composer__visually-hidden">{t("composer.visibility")}</span>
+              <svg aria-hidden="true" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="9" />
+                <path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18" />
+              </svg>
+              <select
+                aria-describedby={reasonId(controlId, "visibility", visibilityDecision)}
+                aria-label={t("composer.visibility")}
+                disabled={mutation.isPending || !visibilityDecision.enabled}
+                onChange={(event) =>
+                  setDraft((current) => ({
+                    ...current,
+                    visibility: event.currentTarget.value as ComposerVisibility,
+                  }))
+                }
+                value={draft.visibility}
+              >
+                {allowedVisibilities.map((visibility) => (
+                  <option key={visibility} value={visibility}>
+                    {t(`composer.visibility.${visibility}`)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <DecisionReason
+              control="visibility"
+              controlId={controlId}
+              decision={visibilityDecision}
+            />
+          </div>
+
+          <span className="composer__character-count">{draft.content.length}</span>
+        </div>
 
         {draft.attachments.length === 0 ? null : (
           <ul aria-label={t("composer.imageAttachments")} className="composer__attachments">
@@ -525,6 +584,7 @@ export function Composer({
 
         <button
           aria-describedby={reasonId(controlId, "create", createDecision)}
+          className="composer__submit"
           disabled={submitDisabled}
           type="submit"
         >
