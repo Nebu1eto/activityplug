@@ -1,6 +1,6 @@
 {
   "name": "@activityplug/server",
-  "version": "1.0.0-rc.0",
+  "version": "1.0.0",
   "description": "GraphQL and HTTP server surfaces for ActivityPlug.",
   "keywords": [
     "activitypub",

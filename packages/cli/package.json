@@ -1,6 +1,6 @@
 {
   "name": "@activityplug/cli",
-  "version": "1.0.0-rc.0",
+  "version": "1.0.0",
   "description": "Command-line server for ActivityPlug.",
   "keywords": [
     "activitypub",
