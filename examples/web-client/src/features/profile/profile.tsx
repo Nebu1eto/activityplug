@@ -8,6 +8,7 @@ import { type ReactElement, useId } from "react";
 
 import { webKeys } from "../../api/client.js";
 import { productRouteHref } from "../../routing/location.js";
+import { InfiniteScrollButton } from "../pagination/infinite-scroll-button.js";
 import { PostCard, type PostCardViewModel } from "../posts/post-card.js";
 import { SafeHtml } from "../posts/safe-html.js";
 import { productInfiniteQueryMaxPages } from "../timeline/queries.js";
@@ -206,7 +207,6 @@ export function ProfileView({
     },
   });
   const relationshipReasonId = useId();
-
   if (query.isPending) return <p>{labels.loading}</p>;
   if (query.error !== null) return <p role="alert">{errorMessage(query.error, labels.failed)}</p>;
   if (profile === undefined) return <p role="alert">{labels.failed}</p>;
@@ -272,15 +272,13 @@ export function ProfileView({
           ))}
         </ol>
       )}
-      {query.hasNextPage ? (
-        <button
-          disabled={query.isFetchingNextPage}
-          onClick={() => void query.fetchNextPage()}
-          type="button"
-        >
-          {query.isFetchingNextPage ? labels.loadingMore : labels.loadMore}
-        </button>
-      ) : null}
+      <InfiniteScrollButton
+        hasNextPage={query.hasNextPage}
+        isFetchingNextPage={query.isFetchingNextPage}
+        onLoadMore={query.fetchNextPage}
+      >
+        {query.isFetchingNextPage ? labels.loadingMore : labels.loadMore}
+      </InfiniteScrollButton>
       <p aria-live="polite">{query.isFetchingNextPage ? labels.loadingMore : ""}</p>
     </article>
   );

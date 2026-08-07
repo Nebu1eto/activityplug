@@ -2,6 +2,7 @@ import { useInfiniteQuery } from "@tanstack/react-query";
 import { type ReactElement } from "react";
 
 import { ProductLink, productRouteHref } from "../../routing/location.js";
+import { InfiniteScrollButton } from "../pagination/infinite-scroll-button.js";
 import { PostCard, type PostCardViewModel } from "../posts/post-card.js";
 import {
   timelineOptions,
@@ -60,7 +61,6 @@ export function Timeline({
   const labels = { ...defaultLabels, ...labelOverrides };
   const query = useInfiniteQuery(timelineOptions(api, kind));
   const posts = query.data?.pages.flatMap((page) => page.posts) ?? [];
-
   return (
     <section aria-busy={query.isPending || query.isFetchingNextPage} className="timeline">
       {showNavigation ? <TimelineNavigation kind={kind} labels={labels} /> : null}
@@ -95,17 +95,13 @@ export function Timeline({
           ))}
         </ol>
       )}
-      {query.hasNextPage ? (
-        <button
-          disabled={query.isFetchingNextPage}
-          onClick={() => {
-            void query.fetchNextPage();
-          }}
-          type="button"
-        >
-          {labels.loadMore}
-        </button>
-      ) : null}
+      <InfiniteScrollButton
+        hasNextPage={query.hasNextPage}
+        isFetchingNextPage={query.isFetchingNextPage}
+        onLoadMore={query.fetchNextPage}
+      >
+        {labels.loadMore}
+      </InfiniteScrollButton>
       <p aria-live="polite">{query.isFetchingNextPage ? labels.loadingMore : ""}</p>
     </section>
   );

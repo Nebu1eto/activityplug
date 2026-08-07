@@ -171,14 +171,25 @@ async function handleBrowserRequest(state: BrowserState): Promise<BrowserRespons
               post(opaquePostId, "Fixture post home-primary", {
                 favourited: state.favourited,
               }),
+              ...fixturePosts(`timeline-${kind}-initial`),
             ].filter(isJson)
-          : [post(`${kind}-primary`)];
-      return next(data({ posts, pageInfo: { nextCursor: opaqueCursor(`timeline-${kind}`) } }));
+          : [post(`${kind}-primary`), ...fixturePosts(`timeline-${kind}-initial`)];
+      return next(
+        data({ posts, pageInfo: { nextCursor: opaqueCursor(`timeline-${kind}-second`) } }),
+      );
     }
-    if (cursor !== opaqueCursor(`timeline-${kind}`)) {
+    if (cursor === opaqueCursor(`timeline-${kind}-second`)) {
+      return next(
+        data({
+          posts: [post(`${kind}-next`)],
+          pageInfo: { nextCursor: opaqueCursor(`timeline-${kind}-final`) },
+        }),
+      );
+    }
+    if (cursor !== opaqueCursor(`timeline-${kind}-final`)) {
       return next(error("INVALID_CURSOR", "The opaque cursor was changed."), 400);
     }
-    return next(data({ posts: [post(`${kind}-next`)], pageInfo: { nextCursor: null } }));
+    return next(data({ posts: [post(`${kind}-final`)], pageInfo: { nextCursor: null } }));
   }
   if (method === "GET" && path === "/v1/browser/api/search") {
     if (url.searchParams.get("limit") !== "20") {
@@ -192,7 +203,7 @@ async function handleBrowserRequest(state: BrowserState): Promise<BrowserRespons
           accounts: [profileSummary(opaqueProfileId)],
           hashtags: [{ name: "fixture", history: [] }],
           pageInfo: { nextCursor: opaqueCursor("search") },
-          posts: [post(`search-${query || "fixture"}`)],
+          posts: [post(`search-${query || "fixture"}`), ...fixturePosts("search-initial")],
         }),
       );
     }
@@ -220,7 +231,10 @@ async function handleBrowserRequest(state: BrowserState): Promise<BrowserRespons
     return next(
       data({
         pageInfo: { nextCursor: cursor === null ? opaqueCursor("profile") : null },
-        posts: [post(cursor === null ? "profile-primary" : "profile-next")],
+        posts:
+          cursor === null
+            ? [post("profile-primary"), ...fixturePosts("profile-initial")]
+            : [post("profile-next")],
         profile: profile(id),
         relationship: { ...relationship(id), following: state.followed },
       }),
@@ -300,6 +314,10 @@ function unknown(
 
 function opaqueCursor(scope: string): string {
   return `opaque/${scope}?page=2#keep`;
+}
+
+function fixturePosts(scope: string): Json[] {
+  return Array.from({ length: 8 }, (_, index) => post(`${scope}-${index + 1}`));
 }
 
 const opaquePostId = "post/opaque+/=%25?&한글";

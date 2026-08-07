@@ -3,6 +3,7 @@ import { useEffect, useId, useState, type ReactElement } from "react";
 
 import { webKeys } from "../../api/client.js";
 import { navigateProductHref, ProductLink, productRouteHref } from "../../routing/location.js";
+import { InfiniteScrollButton } from "../pagination/infinite-scroll-button.js";
 import { type CapabilityCollection, type ControlDecision } from "../posts/capability.js";
 import { PostCard, type PostCardViewModel } from "../posts/post-card.js";
 import { productInfiniteQueryMaxPages } from "../timeline/queries.js";
@@ -192,7 +193,6 @@ export function SearchView({
   const posts = pages.flatMap((page) => page.posts);
   const hashtags = pages.flatMap((page) => page.hashtags);
   const resultCount = accounts.length + posts.length + hashtags.length;
-
   return (
     <section aria-busy={search.isPending && !isShortQuery} className="search-view">
       <label>
@@ -274,15 +274,13 @@ export function SearchView({
           ))}
         </ul>
       )}
-      {search.hasNextPage ? (
-        <button
-          disabled={search.isFetchingNextPage}
-          onClick={() => void search.fetchNextPage()}
-          type="button"
-        >
-          {search.isFetchingNextPage ? labels.loadingMore : labels.loadMore}
-        </button>
-      ) : null}
+      <InfiniteScrollButton
+        hasNextPage={search.hasNextPage}
+        isFetchingNextPage={search.isFetchingNextPage}
+        onLoadMore={search.fetchNextPage}
+      >
+        {search.isFetchingNextPage ? labels.loadingMore : labels.loadMore}
+      </InfiniteScrollButton>
       <p aria-live="polite" role="status">
         {isShortQuery || search.isPending
           ? ""

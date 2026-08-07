@@ -27,15 +27,30 @@ test("authenticated users traverse timelines and preserve opaque pagination curs
 }) => {
   await authenticate(page);
   await expect(page.getByText("Fixture post home-primary")).toBeVisible();
-  await page.getByRole("button", { name: "Load more posts" }).click();
+  const initialLoadMore = page.getByRole("button", { name: "Load more posts" });
+  const initialBoundaryTop = await initialLoadMore.evaluate(
+    (button) => button.getBoundingClientRect().top,
+  );
+  expect(initialBoundaryTop).toBeGreaterThan((page.viewportSize()?.height ?? 0) + 200);
+  await expect(page.getByText("Fixture post home-next")).toHaveCount(0);
+  await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
   await expect(page.getByText("Fixture post home-next")).toBeVisible();
+  const homeLoadMore = page.getByRole("button", { name: "Load more posts" });
+  await expect(homeLoadMore).toBeVisible();
+  await expect(homeLoadMore).toBeEnabled();
+  await homeLoadMore.evaluate((button: HTMLButtonElement) => button.click());
+  await expect(page.getByText("Fixture post home-final")).toBeVisible();
   await page.getByRole("link", { name: "Local" }).first().click();
   await expect(page.getByText("Fixture post local-primary")).toBeVisible();
-  await page.getByRole("button", { name: "Load more posts" }).click();
+  await page
+    .getByRole("button", { name: "Load more posts" })
+    .evaluate((button: HTMLButtonElement) => button.click());
   await expect(page.getByText("Fixture post local-next")).toBeVisible();
   await page.getByRole("link", { name: "Federated" }).first().click();
   await expect(page.getByText("Fixture post federated-primary")).toBeVisible();
-  await page.getByRole("button", { name: "Load more posts" }).click();
+  await page
+    .getByRole("button", { name: "Load more posts" })
+    .evaluate((button: HTMLButtonElement) => button.click());
   await expect(page.getByText("Fixture post federated-next")).toBeVisible();
   product.assertBrowserBoundary();
 });
@@ -45,11 +60,15 @@ test("search, profile, post, and thread routes use browser DTOs", async ({ page,
   await page.getByRole("link", { name: "Search" }).click();
   await page.getByRole("searchbox").fill("fixture");
   await expect(page.getByRole("link", { exact: true, name: "Alice Fixture" })).toBeVisible();
-  await page.getByRole("button", { name: "Load more results" }).click();
+  await page
+    .getByRole("button", { name: "Load more results" })
+    .evaluate((button: HTMLButtonElement) => button.click());
   await expect(page.getByText("Fixture post search-next")).toBeVisible();
   await page.getByRole("link", { exact: true, name: "Alice Fixture" }).click();
   await expect(page.getByRole("heading", { exact: true, name: "Alice Fixture" })).toBeVisible();
-  await page.getByRole("button", { name: "Load more posts" }).click();
+  await page
+    .getByRole("button", { name: "Load more posts" })
+    .evaluate((button: HTMLButtonElement) => button.click());
   await expect(page.getByText("Fixture post profile-next")).toBeVisible();
   await page.getByRole("button", { name: "Follow" }).click();
   await expect(page.getByRole("button", { name: "Unfollow" })).toBeVisible();
