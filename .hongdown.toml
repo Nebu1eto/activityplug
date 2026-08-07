@@ -8,6 +8,7 @@ exclude = [
   ".git/**",
   ".claude/**",
   "CLAUDE.md",
+  "**/CHANGELOG.md",
 ]
 
 [heading]

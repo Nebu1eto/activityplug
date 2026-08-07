@@ -43,7 +43,7 @@ jobs:
       - uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
         with:
           version: pnpm version-packages
-          publish: pnpm -r --filter './packages/*' publish --access public --no-git-checks
+          publish: pnpm publish-packages
           commit: "[*] chore: version packages"
           title: "[*] chore: version packages"
         env:

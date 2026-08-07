@@ -30,6 +30,7 @@
     "hooks:install": "lefthook install",
     "lint": "oxlint --type-aware",
     "pack:dry-run": "pnpm -r --sort --filter './packages/*' --if-present pack:dry-run",
+    "publish-packages": "pnpm -r --filter './packages/*' publish --access public --no-git-checks",
     "test": "vitest run",
     "test:compose-pins": "vitest run scripts/verify-compose-pins.test.ts",
     "test:e2e": "node --experimental-strip-types scripts/run-fediverse-e2e-tests.ts",
@@ -44,7 +45,7 @@
   },
   "devDependencies": {
     "@apidevtools/swagger-parser": "^12.1.0",
-    "@changesets/changelog-github": "0.7.0",
+    "@changesets/changelog-git": "0.2.1",
     "@changesets/cli": "2.31.1",
     "@types/node": "^26.1.1",
     "graphql": "^17.0.2",
