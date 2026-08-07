@@ -1,5 +1,12 @@
-ActivityPlug
-============
+<h1>
+  <img src="https://raw.githubusercontent.com/Nebu1eto/activityplug/main/docs/public/activityplug.svg" alt="ActivityPlug logo" width="40" height="40" align="absmiddle" />
+  ActivityPlug
+</h1>
+
+[![npm](https://img.shields.io/npm/v/%40activityplug%2Fcore?logo=npm)](https://www.npmjs.com/package/@activityplug/core)
+[![Docs](https://img.shields.io/badge/docs-vitepress-059669)](https://activityplug.dev/)
+[![CI](https://github.com/Nebu1eto/activityplug/actions/workflows/ci.yml/badge.svg)](https://github.com/Nebu1eto/activityplug/actions/workflows/ci.yml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 English | [한국어](README.ko.md) | [日本語](README.ja.md)
 

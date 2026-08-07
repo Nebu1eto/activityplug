@@ -1,5 +1,7 @@
-@activityplug/session-Postgres
-==============================
+<!-- hongdown-disable-next-line -->
+
+`@activityplug/session-postgres`
+================================
 
 `@activityplug/session-postgres` stores ActivityPlug authentication and browser
 lifecycle state in PostgreSQL. Use it when server processes must share state or

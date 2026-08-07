@@ -1,5 +1,7 @@
-@activityplug/session-Redis
-===========================
+<!-- hongdown-disable-next-line -->
+
+`@activityplug/session-redis`
+=============================
 
 `@activityplug/session-redis` stores ActivityPlug authentication, browser, and
 short-lived security state in Redis. Use it when server processes must share
