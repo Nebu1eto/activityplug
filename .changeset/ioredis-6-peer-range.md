@@ -1,5 +1,5 @@
 ---
-"@activityplug/session-redis": minor
+"@activityplug/session-redis": patch
 ---
 
 Require `ioredis` 6 as the peer dependency. Applications that install
