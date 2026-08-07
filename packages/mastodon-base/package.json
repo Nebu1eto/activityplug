@@ -1,6 +1,6 @@
 {
   "name": "@activityplug/mastodon-base",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Shared Mastodon-compatible API adapter foundation for ActivityPlug.",
   "keywords": [
     "activitypub",

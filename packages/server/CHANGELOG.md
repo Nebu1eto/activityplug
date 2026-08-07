@@ -1,5 +1,16 @@
 @activityplug/server
 
+## 1.0.1
+
+### Patch Changes
+
+- @activityplug/core@1.0.1
+- @activityplug/hackerspub@1.0.1
+- @activityplug/hollo@1.0.1
+- @activityplug/mastodon@1.0.1
+- @activityplug/misskey@1.0.1
+- @activityplug/pleroma@1.0.1
+
 ## 1.0.0
 
 ### Major Changes
@@ -19,7 +30,7 @@
   - @activityplug/misskey@1.0.0
   - # @activityplug/pleroma@1.0.0
 
-  1.0.0-rc.0
+    1.0.0-rc.0
 
 ---
 

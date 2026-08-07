@@ -1,5 +1,12 @@
 @activityplug/cli
 
+## 1.0.1
+
+### Patch Changes
+
+- @activityplug/core@1.0.1
+- @activityplug/server@1.0.1
+
 ## 1.0.0
 
 ### Major Changes
@@ -15,7 +22,7 @@
   - @activityplug/server@1.0.0
   - # @activityplug/core@1.0.0
 
-  1.0.0-rc.0
+    1.0.0-rc.0
 
 ---
 

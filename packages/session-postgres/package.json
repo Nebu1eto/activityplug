@@ -1,6 +1,6 @@
 {
   "name": "@activityplug/session-postgres",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "PostgreSQL lifecycle storage for ActivityPlug server mode.",
   "keywords": [
     "activitypub",

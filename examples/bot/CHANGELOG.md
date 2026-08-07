@@ -1,5 +1,14 @@
 @activityplug/example-bot
 
+## 0.0.2
+
+### Patch Changes
+
+- @activityplug/core@1.0.1
+- @activityplug/mastodon@1.0.1
+- @activityplug/misskey@1.0.1
+- @activityplug/server@1.0.1
+
 ## 0.0.1
 
 ### Patch Changes
@@ -11,7 +20,7 @@
   - @activityplug/mastodon@1.0.0
   - # @activityplug/misskey@1.0.0
 
-  0.0.1-rc.0
+    0.0.1-rc.0
 
 ---
 
