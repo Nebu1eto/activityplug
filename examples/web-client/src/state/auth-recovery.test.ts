@@ -299,6 +299,7 @@ describe("session recovery", () => {
 function authApi(overrides: Partial<AuthApi> = {}): AuthApi {
   return {
     session: vi.fn(async () => anonymousSession),
+    detectServer: vi.fn(),
     startAuth: vi.fn(),
     completeAuth: vi.fn(),
     logout: vi.fn(),

@@ -2,6 +2,7 @@ import { queryOptions } from "@tanstack/react-query";
 import { atom } from "jotai";
 
 import {
+  type BrowserServerDetection,
   type BrowserAuthCompleteRequest,
   type BrowserAuthStartRequest,
   type BrowserAuthStartResponse,
@@ -13,6 +14,7 @@ export type {
   BrowserAuthCompleteRequest,
   BrowserAuthStartRequest,
   BrowserAuthStartResponse,
+  BrowserServerDetection,
   SupportedAdapter,
 };
 
@@ -24,6 +26,7 @@ export type BrowserSession = BrowserSessionPayload;
  */
 export interface AuthApi {
   readonly session: (signal?: AbortSignal) => Promise<BrowserSession>;
+  readonly detectServer: (origin: string, signal?: AbortSignal) => Promise<BrowserServerDetection>;
   readonly startAuth: (input: BrowserAuthStartRequest) => Promise<BrowserAuthStartResponse>;
   readonly completeAuth: (input: BrowserAuthCompleteRequest) => Promise<BrowserSession>;
   readonly logout: () => Promise<unknown>;
@@ -45,6 +48,34 @@ export type AuthTransition =
 export const authTransitionAtom = atom<AuthTransition>({ status: "idle" });
 
 export const webSessionKey = ["browser", "session"] as const;
+
+/**
+ * Normalizes free-form server address input into an HTTP(S) origin. Input
+ * without a scheme is treated as HTTPS. Mirrors `canonicalizeOrigin` in
+ * `@activityplug/core`, which runs again on the server boundary.
+ */
+export function normalizeOriginInput(input: string): string | undefined {
+  const trimmed = input.trim();
+  if (trimmed === "") return undefined;
+  const candidate = trimmed.includes("://") ? trimmed : `https://${trimmed}`;
+  let url: URL;
+  try {
+    url = new URL(candidate);
+  } catch {
+    return undefined;
+  }
+  if (
+    (url.protocol !== "http:" && url.protocol !== "https:") ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.pathname !== "/" ||
+    url.search !== "" ||
+    url.hash !== ""
+  ) {
+    return undefined;
+  }
+  return url.origin.toLowerCase();
+}
 
 export function sessionOptions(api: Pick<AuthApi, "session">) {
   return queryOptions({

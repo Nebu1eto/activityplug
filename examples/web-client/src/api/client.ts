@@ -12,6 +12,7 @@ import {
   type BrowserPostResponse,
   type BrowserProfileResponse,
   type BrowserSearchResponse,
+  type BrowserServerDetection,
   type BrowserSessionPayload,
   type BrowserTimelineResponse,
   type CreatePostInput,
@@ -24,6 +25,7 @@ import {
   isPostResponse,
   isProfileResponse,
   isSearchResponse,
+  isServerDetectionResponse,
   isBrowserSession,
   isTimelineResponse,
 } from "./contracts.js";
@@ -34,6 +36,7 @@ export const productPageSize = 20;
 export interface ProductApi {
   session(signal?: AbortSignal): Promise<BrowserSessionPayload>;
   capabilities(signal?: AbortSignal): Promise<BrowserCapabilitySet>;
+  detectServer(origin: string, signal?: AbortSignal): Promise<BrowserServerDetection>;
   startAuth(
     input: BrowserAuthStartRequest,
     signal?: AbortSignal,
@@ -111,6 +114,17 @@ export function createProductApi(http: BrowserHttp): ProductApi {
         await http.post<unknown>("/v1/browser/auth/start", input, signal, "plain"),
         isAuthStartResponse,
         "Browser auth-start response is malformed.",
+      );
+    },
+    async detectServer(origin, signal) {
+      return requireResponse(
+        await http.get<unknown>(
+          withQuery("/v1/browser/auth/detect-server", { origin }),
+          signal,
+          "plain",
+        ),
+        isServerDetectionResponse,
+        "Browser server-detection response is malformed.",
       );
     },
     async completeAuth(input, signal) {

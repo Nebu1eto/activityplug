@@ -19,6 +19,9 @@ const en = {
   "auth.signIn": "Sign in",
   "auth.welcome": "Connect to a compatible ActivityPub server.",
   "auth.serverSoftware": "Server software",
+  "auth.softwareDetected": "Detected server software: {software}",
+  "auth.softwareDetectionFailed":
+    "Could not identify the server software. Check the address and try again.",
   "auth.sendCode": "Send code",
   "auth.verifyCode": "Verify code",
   "auth.callbackFailed": "Authentication failed. Try again.",
@@ -164,6 +167,9 @@ const ko = {
   "auth.signIn": "로그인",
   "auth.welcome": "호환되는 ActivityPub 서버에 연결하세요.",
   "auth.serverSoftware": "서버 소프트웨어",
+  "auth.softwareDetected": "감지된 서버 소프트웨어: {software}",
+  "auth.softwareDetectionFailed":
+    "서버 소프트웨어를 확인할 수 없습니다. 주소를 확인한 뒤 다시 시도하세요.",
   "auth.sendCode": "코드 보내기",
   "auth.verifyCode": "코드 확인",
   "auth.callbackFailed": "인증에 실패했습니다. 다시 시도하세요.",
@@ -309,6 +315,9 @@ const ja = {
   "auth.signIn": "ログイン",
   "auth.welcome": "対応する ActivityPub サーバーに接続します。",
   "auth.serverSoftware": "サーバーソフトウェア",
+  "auth.softwareDetected": "検出されたサーバーソフトウェア: {software}",
+  "auth.softwareDetectionFailed":
+    "サーバーソフトウェアを識別できませんでした。アドレスを確認して再度お試しください。",
   "auth.sendCode": "コードを送信",
   "auth.verifyCode": "コードを確認",
   "auth.callbackFailed": "認証に失敗しました。もう一度お試しください。",

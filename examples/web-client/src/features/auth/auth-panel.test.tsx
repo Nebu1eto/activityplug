@@ -3,17 +3,19 @@
 // oxlint-disable-next-line import/no-unassigned-import -- Installs shared DOM test helpers.
 import "../../test/setup.js";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import { createStore, Provider as JotaiProvider } from "jotai";
 import { type PropsWithChildren, type ReactElement } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { WebApiError } from "../../api/http.js";
 import {
   authTransitionAtom,
   webSessionKey,
   type AuthApi,
   type BrowserSession,
+  type BrowserServerDetection,
 } from "../../state/auth.js";
 import { composerAtom } from "../../state/composer.js";
 import { localeAtom, type Locale } from "../../state/locale.js";
@@ -50,6 +52,10 @@ const authenticatedSession: BrowserSession = {
 function apiFixture(overrides: Partial<AuthApi> = {}): AuthApi {
   return {
     session: vi.fn(async () => anonymousSession),
+    detectServer: vi.fn(async (origin: string): Promise<BrowserServerDetection> => {
+      const adapter = origin.includes("hackers") ? ("hackerspub" as const) : ("mastodon" as const);
+      return { adapter, origin, software: adapter };
+    }),
     startAuth: vi.fn(async () => ({
       kind: "oauth" as const,
       redirectUrl: "https://social.example/oauth",
@@ -103,6 +109,62 @@ beforeEach(() => {
 });
 
 describe("AuthPanel", () => {
+  it("detects the adapter from nodeinfo when the scheme is omitted", async () => {
+    const user = userEvent.setup();
+    const api = apiFixture();
+    renderPanel(api);
+
+    await screen.findByRole("button", { name: "Continue" });
+    await user.type(screen.getByLabelText("Server origin"), "social.example");
+
+    await waitFor(() =>
+      expect(api.detectServer).toHaveBeenCalledWith("https://social.example", expect.anything()),
+    );
+    expect(await screen.findByText("Detected server software: Mastodon")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled();
+  });
+
+  it("keeps Continue disabled and reports failure when detection fails", async () => {
+    const user = userEvent.setup();
+    renderPanel(
+      apiFixture({
+        detectServer: vi.fn(async () => {
+          throw new WebApiError("UPSTREAM_FAILURE", "The upstream request failed.", 502);
+        }),
+      }),
+    );
+
+    await screen.findByRole("button", { name: "Continue" });
+    await user.type(screen.getByLabelText("Server origin"), "offline.example");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Could not identify the server software.",
+    );
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+  });
+
+  it("reports unsupported server software by name", async () => {
+    const user = userEvent.setup();
+    renderPanel(
+      apiFixture({
+        detectServer: vi.fn(async () => {
+          throw new WebApiError(
+            "NOT_FOUND",
+            'No ActivityPlug adapter matches the server software "wordpress".',
+            404,
+          );
+        }),
+      }),
+    );
+
+    await screen.findByRole("button", { name: "Continue" });
+    await user.type(screen.getByLabelText("Server origin"), "blog.example");
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      'No ActivityPlug adapter matches the server software "wordpress".',
+    );
+  });
+
   it("starts OAuth with the current same-origin return URL after callback cleanup", async () => {
     const user = userEvent.setup();
     const api = apiFixture();
@@ -113,6 +175,7 @@ describe("AuthPanel", () => {
 
     await screen.findByRole("button", { name: "Continue" });
     await user.type(screen.getByLabelText("Server origin"), "https://social.example");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "Continue" }));
 
     expect(api.startAuth).toHaveBeenCalledWith({
@@ -129,9 +192,8 @@ describe("AuthPanel", () => {
     renderPanel(apiFixture());
 
     await screen.findByRole("button", { name: "Continue" });
-    await user.selectOptions(screen.getByLabelText("Server software"), "hackerspub");
     await user.type(screen.getByLabelText("Server origin"), "https://hackers.pub");
-    const email = screen.getByLabelText("Email");
+    const email = await screen.findByLabelText("Email");
     const sendCode = screen.getByRole("button", { name: "Send code" });
 
     expect(email).toBeRequired();
@@ -162,14 +224,13 @@ describe("AuthPanel", () => {
     renderPanel(api);
 
     await screen.findByRole("button", { name: "Continue" });
-    await user.selectOptions(screen.getByLabelText("Server software"), "hackerspub");
     const origin = screen.getByLabelText("Server origin");
     await user.type(origin, "https://hackers.pub");
-    const email = screen.getByLabelText("Email");
+    await waitFor(() => expect(origin).toHaveValue("https://hackers.pub"));
+    const email = await screen.findByLabelText("Email");
     await user.type(email, "alice@example.com");
     await user.click(screen.getByRole("button", { name: "Send code" }));
 
-    expect(screen.getByLabelText("Server software")).toBeDisabled();
     expect(origin).toBeDisabled();
     expect(email).toBeDisabled();
     await user.type(origin, "/ignored");
@@ -202,25 +263,29 @@ describe("AuthPanel", () => {
     renderPanel(api);
 
     await screen.findByRole("button", { name: "Continue" });
-    await user.selectOptions(screen.getByLabelText("Server software"), "hackerspub");
     const origin = screen.getByLabelText("Server origin");
     await user.type(origin, "https://hackers.pub");
-    await user.type(screen.getByLabelText("Email"), "alice@example.com");
+    await waitFor(() => expect(origin).toHaveValue("https://hackers.pub"));
+    const email = await screen.findByLabelText("Email");
+    await user.type(email, "alice@example.com");
     await user.click(screen.getByRole("button", { name: "Send code" }));
-    await user.type(await screen.findByLabelText("Verification code"), "654321");
-    await user.type(origin, "/changed");
+    const verificationCode = await screen.findByLabelText("Verification code");
+    await user.type(verificationCode, "654321");
+    // user-event does not yield to real timers between keystrokes, so fire a
+    // single change event to keep the debounced detection deterministic.
+    fireEvent.change(origin, { target: { value: "changed.hackers.pub" } });
 
-    expect(screen.queryByLabelText("Verification code")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Send code" }));
+    await waitFor(() => expect(verificationCode).not.toBeInTheDocument());
+    await user.click(await screen.findByRole("button", { name: "Send code" }, { timeout: 3000 }));
     expect(await screen.findByLabelText("Verification code")).toHaveValue("");
     await user.type(screen.getByLabelText("Verification code"), "654321");
     await user.click(screen.getByRole("button", { name: "Verify code" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("The code expired.");
-    await user.type(screen.getByLabelText("Email"), ".changed");
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "bob@example.com" } });
 
-    expect(screen.queryByLabelText("Verification code")).not.toBeInTheDocument();
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await waitFor(() => expect(verificationCode).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
   });
 
   it("completes a HackersPub email challenge from direct BFF responses", async () => {
@@ -235,9 +300,8 @@ describe("AuthPanel", () => {
     const { queryClient, store } = renderPanel(api);
 
     await screen.findByRole("button", { name: "Continue" });
-    await user.selectOptions(screen.getByLabelText("Server software"), "hackerspub");
     await user.type(screen.getByLabelText("Server origin"), "https://hackers.pub");
-    await user.type(screen.getByLabelText("Email"), "alice@example.com");
+    await user.type(await screen.findByLabelText("Email"), "alice@example.com");
     await user.click(screen.getByRole("button", { name: "Send code" }));
     await user.type(await screen.findByLabelText("Verification code"), "654321");
     await user.click(screen.getByRole("button", { name: "Verify code" }));
@@ -285,9 +349,8 @@ describe("AuthPanel", () => {
     renderPanel(api);
 
     await screen.findByRole("button", { name: "Continue" });
-    await user.selectOptions(screen.getByLabelText("Server software"), "hackerspub");
     await user.type(screen.getByLabelText("Server origin"), "https://hackers.pub");
-    await user.click(screen.getByRole("button", { name: "Use passkey" }));
+    await user.click(await screen.findByRole("button", { name: "Use passkey" }));
 
     await waitFor(() => expect(startAuthentication).toHaveBeenCalledWith({ optionsJSON: options }));
     expect(api.completeAuth).toHaveBeenCalledWith({
@@ -334,7 +397,7 @@ describe("AuthPanel", () => {
 
     await user.click(await screen.findByRole("button", { name: "Log out" }));
 
-    expect(await screen.findByRole("button", { name: "Continue" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Continue" })).toBeDisabled();
     expect(events).toEqual(["logout", "csrf", "session"]);
     expect(api.setCsrfToken).toHaveBeenCalledWith("");
     expect(queryClient.getQueryData(webSessionKey)).toEqual(anonymousSession);
@@ -364,7 +427,7 @@ describe("AuthPanel", () => {
 
     await user.click(await screen.findByRole("button", { name: "Log out" }));
 
-    expect(await screen.findByRole("button", { name: "Continue" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Continue" })).toBeDisabled();
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Logout could not be confirmed. Logout response was lost.",
     );
@@ -451,7 +514,7 @@ describe("AuthPanel", () => {
     expect(api.logout).not.toHaveBeenCalled();
     cleanup.reject(new Error("Remote cleanup failed."));
 
-    expect(await screen.findByRole("button", { name: "Continue" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Continue" })).toBeDisabled();
     expect(deleteMedia).not.toHaveBeenCalledWith("held-media");
     expect(coordinator.get("held-draft")).toEqual(held);
     expect(events).toEqual([
@@ -490,6 +553,7 @@ describe("AuthPanel", () => {
 
     await screen.findByRole("button", { name: "Continue" });
     await user.type(screen.getByLabelText("Server origin"), "https://social.example");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Continue" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "Continue" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(

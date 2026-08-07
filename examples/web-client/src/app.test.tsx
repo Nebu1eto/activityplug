@@ -38,6 +38,7 @@ function api(session: unknown = authenticatedSession): ProductApi {
   return {
     session: vi.fn().mockResolvedValue(session),
     capabilities: vi.fn(),
+    detectServer: vi.fn(),
     startAuth: vi.fn(),
     completeAuth: vi.fn(),
     logout: vi.fn(),

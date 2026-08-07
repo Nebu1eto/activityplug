@@ -12,6 +12,7 @@ import { LocaleControl } from "../../i18n/locale-control.js";
 import { useSessionRecovery, type SessionRecovery } from "../../state/auth-recovery.js";
 import {
   authTransitionAtom,
+  normalizeOriginInput,
   sessionOptions,
   webSessionKey,
   type AuthApi,
@@ -20,13 +21,13 @@ import {
 } from "../../state/auth.js";
 import { prepareActiveUploadCoordinatorsForLogout } from "../composer/uploads.js";
 
-export const adapterOptions = [
-  { id: "mastodon", label: "Mastodon" },
-  { id: "pleroma", label: "Pleroma" },
-  { id: "hollo", label: "Hollo" },
-  { id: "misskey", label: "Misskey" },
-  { id: "hackerspub", label: "HackersPub" },
-] as const satisfies readonly { readonly id: SupportedAdapter; readonly label: string }[];
+const adapterLabels: Readonly<Record<SupportedAdapter, string>> = {
+  mastodon: "Mastodon",
+  pleroma: "Pleroma",
+  hollo: "Hollo",
+  misskey: "Misskey",
+  hackerspub: "HackersPub",
+};
 
 const callbackParameters = [
   "code",
@@ -96,8 +97,11 @@ export function AuthPanel({
   const recoverUnauthenticated = recoverSession ?? standaloneRecovery;
   const session = useQuery(sessionOptions(api));
   const [transition, setTransition] = useAtom(authTransitionAtom);
-  const [adapter, setAdapter] = useState<SupportedAdapter>("mastodon");
-  const [origin, setOrigin] = useState("");
+  const [address, setAddress] = useState("");
+  const [detection, setDetection] = useState<{
+    readonly origin: string;
+    readonly adapter: SupportedAdapter;
+  } | null>(null);
   const [email, setEmail] = useState("");
   const [challenge, setChallenge] = useState<{
     readonly kind: "emailChallenge" | "passkey";
@@ -106,21 +110,65 @@ export function AuthPanel({
   const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const startAttempt = useRef(0);
-  const adapterId = useId();
+  const detectionController = useRef<AbortController | undefined>(undefined);
+  const detectionTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const originId = useId();
   const emailId = useId();
   const codeId = useId();
 
-  useEffect(removeAuthCallbackParameters, []);
+  useEffect(() => {
+    removeAuthCallbackParameters();
+    return () => {
+      detectionController.current?.abort();
+      clearTimeout(detectionTimer.current);
+    };
+  }, []);
 
   const ready = session.isSuccess && transition.status === "idle";
   const identityInputsDisabled = transition.status !== "idle";
+  const adapter = detection?.adapter;
+
+  const requireDetection = (): { readonly origin: string; readonly adapter: SupportedAdapter } => {
+    if (detection === null) throw new Error(t("auth.softwareDetectionFailed"));
+    return detection;
+  };
 
   const resetIdentityState = (): void => {
     startAttempt.current += 1;
     setChallenge(null);
     setCode("");
     setError(null);
+  };
+
+  const handleAddressChange = (value: string): void => {
+    detectionController.current?.abort();
+    clearTimeout(detectionTimer.current);
+    setAddress(value);
+    setDetection(null);
+    resetIdentityState();
+    const controller = new AbortController();
+    detectionController.current = controller;
+    const origin = normalizeOriginInput(value);
+    if (origin === undefined) return;
+    // Debounce so detection runs once the address settles, not per keystroke.
+    detectionTimer.current = setTimeout(() => {
+      if (controller !== detectionController.current) return;
+      void api
+        .detectServer(origin, controller.signal)
+        .then((result) => {
+          if (controller !== detectionController.current) return;
+          setDetection({ origin: result.origin, adapter: result.adapter });
+        })
+        .catch((detectionError: unknown) => {
+          if (controller !== detectionController.current) return;
+          setError(
+            detectionError instanceof WebApiError &&
+              (detectionError.code === "NOT_FOUND" || detectionError.code === "UNSUPPORTED")
+              ? detectionError.message
+              : t("auth.softwareDetectionFailed"),
+          );
+        });
+    }, 300);
   };
 
   const complete = async (input: Parameters<AuthApi["completeAuth"]>[0]): Promise<void> => {
@@ -136,8 +184,8 @@ export function AuthPanel({
       const result = expectStartKind(
         await api.startAuth({
           kind: "oauth",
-          origin,
-          adapter,
+          origin: requireDetection().origin,
+          adapter: requireDetection().adapter,
           returnTo: currentReturnTo(),
         }),
         "oauth",
@@ -161,7 +209,7 @@ export function AuthPanel({
       const result = expectStartKind(
         await api.startAuth({
           kind: "emailChallenge",
-          origin,
+          origin: requireDetection().origin,
           adapter: "hackerspub",
           email,
         }),
@@ -186,7 +234,7 @@ export function AuthPanel({
       const result = expectStartKind(
         await api.startAuth({
           kind: "passkey",
-          origin,
+          origin: requireDetection().origin,
           adapter: "hackerspub",
           ...(email === "" ? {} : { email }),
         }),
@@ -303,24 +351,6 @@ export function AuthPanel({
     <section aria-label={t("auth.signIn")} className="auth-panel auth-panel--sign-in">
       {showLocaleControl ? <LocaleControl /> : null}
       <form className="auth-panel__form" onSubmit={handlePrimarySubmit}>
-        <label htmlFor={adapterId}>{t("auth.serverSoftware")}</label>
-        <select
-          disabled={identityInputsDisabled}
-          id={adapterId}
-          onChange={(event) => {
-            if (identityInputsDisabled) return;
-            setAdapter(event.currentTarget.value as SupportedAdapter);
-            resetIdentityState();
-          }}
-          value={adapter}
-        >
-          {adapterOptions.map((option) => (
-            <option key={option.id} value={option.id}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-
         <label htmlFor={originId}>{t("auth.origin")}</label>
         <input
           autoComplete="url"
@@ -328,13 +358,18 @@ export function AuthPanel({
           id={originId}
           onChange={(event) => {
             if (identityInputsDisabled) return;
-            setOrigin(event.currentTarget.value);
-            resetIdentityState();
+            handleAddressChange(event.currentTarget.value);
           }}
           required
-          type="url"
-          value={origin}
+          type="text"
+          value={address}
         />
+
+        {detection === null ? null : (
+          <p className="form-message form-message--info" role="status">
+            {t("auth.softwareDetected", { software: adapterLabels[detection.adapter] })}
+          </p>
+        )}
 
         {adapter === "hackerspub" ? (
           <>
@@ -357,7 +392,7 @@ export function AuthPanel({
                 {t("auth.sendCode")}
               </button>
               <button
-                disabled={!ready || origin === ""}
+                disabled={!ready || detection === null}
                 onClick={() => void startPasskey()}
                 type="button"
               >
@@ -366,7 +401,7 @@ export function AuthPanel({
             </div>
           </>
         ) : (
-          <button disabled={!ready} type="submit">
+          <button disabled={!ready || detection === null} type="submit">
             {t("auth.continue")}
           </button>
         )}

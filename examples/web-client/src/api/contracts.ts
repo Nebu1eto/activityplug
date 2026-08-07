@@ -324,6 +324,14 @@ const capabilitiesResponse = z.strictObject({
   capabilities: capabilitySet,
 });
 
+const serverDetectionResponse = z.strictObject({
+  adapter: z.enum(["mastodon", "pleroma", "hollo", "misskey", "hackerspub"]),
+  origin: z.string(),
+  software: z.string(),
+});
+
+export type BrowserServerDetection = z.infer<typeof serverDetectionResponse>;
+
 export function isBrowserErrorEnvelope(value: unknown): value is BrowserErrorEnvelope {
   return errorEnvelope.safeParse(value).success;
 }
@@ -366,6 +374,10 @@ export function isEmptyResponse(value: unknown): value is BrowserEmptyResponse {
 
 export function isCapabilitiesResponse(value: unknown): value is BrowserCapabilitiesResponse {
   return capabilitiesResponse.safeParse(value).success && !hasForbiddenBrowserData(value);
+}
+
+export function isServerDetectionResponse(value: unknown): value is BrowserServerDetection {
+  return serverDetectionResponse.safeParse(value).success && !hasForbiddenBrowserData(value);
 }
 
 export function hasForbiddenBrowserData(value: unknown): boolean {
