@@ -48,6 +48,14 @@ export function createBrowserBoundary(
       : { allowInsecureLoopback: options.allowInsecureLoopback },
   );
   const signingKey = validateSigningKey(options.cookieSigningKey);
+  const authScopes = options.scopes ?? ["read", "write"];
+  if (
+    !Array.isArray(authScopes) ||
+    authScopes.length === 0 ||
+    authScopes.some((scope) => typeof scope !== "string" || scope.trim().length === 0)
+  ) {
+    throw new TypeError("Browser OAuth scopes must be a non-empty array of non-empty strings.");
+  }
   const now = options.now ?? (() => new Date());
   const randomBytes = options.randomBytes ?? ((length: number) => nodeRandomBytes(length));
   const sessionTtlMilliseconds = options.sessionTtlMilliseconds ?? defaultSessionTtlMilliseconds;
@@ -195,6 +203,7 @@ export function createBrowserBoundary(
   registerBrowserAuthRoutes({
     app,
     options,
+    scopes: authScopes,
     resolveRequest,
     sessions,
     publicOrigin,

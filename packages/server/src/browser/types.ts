@@ -43,6 +43,10 @@ export interface BrowserBoundaryOptions {
   readonly oauthStates?: OAuthStateStore;
   readonly authStartLimiter?: OAuthStartLimiter;
   readonly authChallenges?: ShortCacheStore;
+  /**
+   * OAuth scopes requested for browser sign-in. Defaults to `["read", "write"]`.
+   */
+  readonly scopes?: readonly string[];
   readonly csrf?: { readonly headerName?: string };
   readonly requestLimits?: Partial<RequestLimits>;
   readonly sessionTtlMilliseconds?: number;

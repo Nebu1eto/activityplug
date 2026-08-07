@@ -36,6 +36,7 @@ import {
 export function registerBrowserAuthRoutes(config: {
   readonly app: Hono;
   readonly options: BrowserBoundaryOptions & BrowserBoundaryDependencies;
+  readonly scopes: readonly string[];
   readonly resolveRequest: BrowserBoundary["resolveRequest"];
   readonly sessions: BrowserSessionManager;
   readonly publicOrigin: string;
@@ -51,6 +52,7 @@ export function registerBrowserAuthRoutes(config: {
   const {
     app,
     options,
+    scopes,
     resolveRequest,
     sessions,
     publicOrigin,
@@ -95,6 +97,7 @@ export function registerBrowserAuthRoutes(config: {
       requestContext,
       publicOrigin,
       service: options.service,
+      scopes,
       oauthStates,
       authChallenges,
       now,
@@ -401,6 +404,7 @@ async function startBrowserAuth(input: {
   readonly requestContext: BrowserRequestContext;
   readonly publicOrigin: string;
   readonly service: BrowserBoundaryDependencies["service"];
+  readonly scopes: readonly string[];
   readonly oauthStates: NonNullable<BrowserBoundaryOptions["oauthStates"]>;
   readonly authChallenges: NonNullable<BrowserBoundaryOptions["authChallenges"]>;
   readonly now: () => Date;
@@ -421,9 +425,11 @@ async function startBrowserAuth(input: {
             clientName: "ActivityPlug Web",
             redirectUris: [redirectUri],
             website: input.publicOrigin,
+            scopes: input.scopes,
           },
           redirectUri,
           state,
+          scopes: input.scopes,
           clientIp: input.clientIp,
         },
         input.requestContext.signal,

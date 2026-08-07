@@ -1055,6 +1055,12 @@ describe("browser boundary authentication", () => {
     });
     const startText = await started.text();
     expect(started.status).toBe(200);
+    expect(start).toHaveBeenCalledWith(
+      expect.objectContaining({
+        client: expect.objectContaining({ scopes: ["read", "write"] }),
+        scopes: ["read", "write"],
+      }),
+    );
     expect(JSON.parse(startText)).toEqual({
       kind: "oauth",
       redirectUrl: expect.stringContaining("https://social.example/oauth/authorize"),
@@ -1085,6 +1091,35 @@ describe("browser boundary authentication", () => {
     expect(replay.status).toBe(303);
     expect(replay.headers.get("location")).toBe(`${publicOrigin}/`);
     expect(exchange).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses custom OAuth scopes for browser sign-in", async () => {
+    const start = vi.fn(async ({ state }: { readonly state: string }) => oauthStartPayload(state));
+    const base = createTestService();
+    const boundary = createBoundary({
+      scopes: ["read"],
+      service: createTestService({ auth: { ...base.auth, start } }),
+    });
+    const anonymous = await anonymousSession(boundary);
+
+    const response = await boundary.app.request(`${publicOrigin}/v1/browser/auth/start`, {
+      method: "POST",
+      headers: jsonHeaders(anonymous),
+      body: JSON.stringify({
+        kind: "oauth",
+        adapter: "mastodon",
+        origin: "https://social.example",
+        returnTo: "/home",
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(start).toHaveBeenCalledWith(
+      expect.objectContaining({
+        client: expect.objectContaining({ scopes: ["read"] }),
+        scopes: ["read"],
+      }),
+    );
   });
 
   it("retries OAuth hydration from a pending session without replaying the code exchange", async () => {
