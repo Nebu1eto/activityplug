@@ -32,7 +32,7 @@ describe("Misskey auth adapter", () => {
     const strategies = createMisskeyAdapter().auth?.strategies;
 
     expect(strategies?.map((strategy) => strategy.kind)).toEqual(["oauth", "token"]);
-    expect(strategies?.map((strategy) => Object.keys(strategy).sort())).toEqual([
+    expect(strategies?.map((strategy) => Object.keys(strategy).toSorted())).toEqual([
       ["exchange", "kind", "registerClient", "start", "verifySession"],
       ["importToken", "kind", "verifySession"],
     ]);

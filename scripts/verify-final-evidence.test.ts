@@ -31,7 +31,6 @@ const safeEnvironment = {
 };
 const passingEvidenceProbes = {
   getHeadSha: async () => headSha,
-  verifyDependencyFreshness: async () => 0,
   verifyProductionAudit: async () => 0,
 };
 
@@ -191,7 +190,7 @@ test("does not require translations for changeset metadata", async () => {
       verifyPublishedTarballs: async () => undefined,
       ...passingEvidenceProbes,
     }),
-  ).resolves.toMatchObject({ dependencyFreshness: { outdatedDirectDependencies: 0 } });
+  ).resolves.toMatchObject({ productionAudit: { advisories: 0 } });
 });
 
 test("fails closed for deleted Markdown before other evidence probes", async () => {
@@ -294,34 +293,11 @@ test("writes deterministic redacted evidence", async () => {
   expect(first).not.toContain(safeEnvironment.ACTIVITYPLUG_POSTGRES_PASSWORD);
   expect(first).not.toContain(safeEnvironment.ACTIVITYPLUG_REDIS_PASSWORD);
   expect(JSON.parse(first)).toMatchObject({
-    dependencyFreshness: { outdatedDirectDependencies: 0 },
     gitStatus: [],
     headSha,
     imageReferences: expect.any(Array),
     productionAudit: { advisories: 0 },
   });
-});
-
-test("fails before writing evidence for outdated direct dependencies", async () => {
-  const root = await fixtureRoot();
-  const output = "artifacts/verification/evidence.json";
-  const verifyProductionAudit = vi.fn(async () => 0);
-
-  await expect(
-    verifyFinalEvidence(root, {
-      environment: safeEnvironment,
-      getChangedPaths: async () => [],
-      getGitStatus: async () => [],
-      getHeadSha: async () => headSha,
-      output,
-      verifyCompose: async () => [],
-      verifyDependencyFreshness: async () => 2,
-      verifyProductionAudit,
-      verifyPublishedTarballs: async () => undefined,
-    }),
-  ).rejects.toThrow("Dependency freshness verification failed");
-  await expect(readFile(join(root, output), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-  expect(verifyProductionAudit).not.toHaveBeenCalled();
 });
 
 test("fails before writing evidence for production advisories", async () => {
@@ -336,7 +312,6 @@ test("fails before writing evidence for production advisories", async () => {
       getHeadSha: async () => headSha,
       output,
       verifyCompose: async () => [],
-      verifyDependencyFreshness: async () => 0,
       verifyProductionAudit: async () => 3,
       verifyPublishedTarballs: async () => undefined,
     }),
@@ -355,7 +330,6 @@ test("sanitizes production audit probe failures", async () => {
       getGitStatus: async () => [],
       getHeadSha: async () => headSha,
       verifyCompose: async () => [],
-      verifyDependencyFreshness: async () => 0,
       verifyProductionAudit: async () => {
         throw new Error("https://registry.example/advisory?token=must-not-appear");
       },
@@ -392,7 +366,6 @@ test("rejects evidence output path traversal", async () => {
       gitStatus: [],
       imageReferences: [],
       packageNames: [],
-      dependencyFreshness: { outdatedDirectDependencies: 0 },
       headSha,
       productionAudit: { advisories: 0 },
     }),

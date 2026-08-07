@@ -50,17 +50,17 @@
     "@optique/core": "^1.2.0",
     "@optique/run": "^1.2.0",
     "@pothos/core": "^4.13.1",
-    "ws": "^8.21.1",
+    "ws": "^8.21.2",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@activityplug/e2e-fixtures": "workspace:*",
     "@activityplug/test-fixtures": "workspace:*",
-    "@hono/node-server": "^2.0.11",
-    "@logtape/logtape": "^2.2.4",
+    "@hono/node-server": "^2.1.0",
+    "@logtape/logtape": "^2.3.0",
     "@types/ws": "^8.18.1",
     "graphql": "^17.0.2",
-    "hono": "^4.12.31"
+    "hono": "^4.13.0"
   },
   "peerDependencies": {
     "@activityplug/core": "workspace:^",

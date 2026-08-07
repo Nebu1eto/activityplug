@@ -43,7 +43,7 @@
     "test:integration": "node --experimental-strip-types ../../scripts/run-package-tests.ts --integration"
   },
   "dependencies": {
-    "@types/pg": "^8.20.0",
+    "@types/pg": "^8.20.4",
     "zod": "^4.4.3"
   },
   "devDependencies": {

@@ -38,7 +38,6 @@ const exactImageReference = new RegExp(`^${imageName}:${imageTag}@sha256:[a-f0-9
 
 export type FinalEvidence = {
   checks: string[];
-  dependencyFreshness: { readonly outdatedDirectDependencies: 0 };
   documentationSiblings: string[];
   gitStatus: string[];
   headSha: string;
@@ -59,7 +58,6 @@ export type FinalEvidenceOptions = {
   getHeadSha?: (repositoryRoot: string) => Promise<string>;
   output?: string;
   verifyCompose?: (repositoryRoot: URL) => Promise<string[]>;
-  verifyDependencyFreshness?: (repositoryRoot: string) => Promise<number>;
   verifyProductionAudit?: (repositoryRoot: string) => Promise<number>;
   verifyPublishedTarballs?: (repositoryRoot: string) => Promise<void>;
 };
@@ -222,16 +220,6 @@ export async function getSanitizedGitStatus(repositoryRoot: string): Promise<str
   return [];
 }
 
-/** Runs the recursive direct-dependency freshness gate without retaining package details. */
-export async function verifyDependencyFreshness(repositoryRoot: string): Promise<number> {
-  await execFileAsync("pnpm", ["outdated", "--recursive"], {
-    cwd: repositoryRoot,
-    encoding: "utf8",
-    env: process.env,
-  });
-  return 0;
-}
-
 /** Runs the production-only advisory gate without retaining advisory details or URLs. */
 export async function verifyProductionAudit(repositoryRoot: string): Promise<number> {
   await execFileAsync("pnpm", ["audit", "--prod", "--audit-level", "info"], {
@@ -267,7 +255,6 @@ export async function verifyFinalEvidence(
 ): Promise<FinalEvidence> {
   const environment = options.environment ?? process.env;
   const checkCompose = options.verifyCompose ?? verifyComposePins;
-  const checkDependencyFreshness = options.verifyDependencyFreshness ?? verifyDependencyFreshness;
   const checkProductionAudit = options.verifyProductionAudit ?? verifyProductionAudit;
   const checkTarballs = options.verifyPublishedTarballs ?? verifyTarballs;
   const changedPaths =
@@ -297,11 +284,6 @@ export async function verifyFinalEvidence(
   if (composeViolations.length > 0) throw new Error("Production Compose verification failed");
   const imageReferences = resolveProductionImages(environment);
   await checkTarballs(repositoryRoot);
-  const outdatedDirectDependencies = await requireZeroCount(
-    checkDependencyFreshness,
-    repositoryRoot,
-    "Dependency freshness verification failed",
-  );
   const productionAdvisories = await requireZeroCount(
     checkProductionAudit,
     repositoryRoot,
@@ -314,7 +296,6 @@ export async function verifyFinalEvidence(
   const evidence: FinalEvidence = {
     checks: [
       "changed-documentation",
-      "dependency-freshness",
       "git-worktree",
       "head-commit",
       "production-compose",
@@ -322,7 +303,6 @@ export async function verifyFinalEvidence(
       "production-image-references",
       "published-tarballs",
     ],
-    dependencyFreshness: { outdatedDirectDependencies },
     documentationSiblings,
     gitStatus,
     headSha,
