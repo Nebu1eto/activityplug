@@ -41,10 +41,19 @@ jobs:
       - run: pnpm build
       - run: pnpm verify:tarballs
       - uses: changesets/action@a45c4d594aa4e2c509dc14a9f2b3b67ba3780d0d # v1.9.0
+        id: changesets
         with:
           version: pnpm version-packages
           publish: pnpm publish-packages
           commit: "[*] chore: version packages"
           title: "[*] chore: version packages"
+          createGithubReleases: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Published packages release together, so the repository publishes one
+      # GitHub release per tag instead of one release for every package.
+      - name: Publish the repository release
+        if: steps.changesets.outputs.published == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm release:publish

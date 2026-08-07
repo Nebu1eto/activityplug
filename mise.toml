@@ -30,6 +30,18 @@ run = "pnpm test"
 description = "Run the full local validation suite"
 depends = ["typecheck", "format:check", "lint", "test"]
 
+[tasks."release:tag"]
+description = "Create and push the repository release tag for the published version"
+run = "pnpm release:tag"
+
+[tasks."release:tag:dry-run"]
+description = "Report the release tag without creating or pushing it"
+run = "pnpm release:tag -- --dry-run"
+
+[tasks."release:publish"]
+description = "Publish the GitHub release for the current release tag"
+run = "pnpm release:publish"
+
 [tasks."format:check"]
 description = "Check TypeScript, JSON, and Markdown formatting"
 run = "pnpm format:check"
