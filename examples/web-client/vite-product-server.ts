@@ -1,3 +1,4 @@
+import { configureServerLogging } from "@activityplug/server";
 import { getRequestListener } from "@hono/node-server";
 import { type Plugin, type ViteDevServer } from "vite";
 
@@ -22,6 +23,7 @@ export function productServerPlugin(): Plugin {
       // public origin is resolved once the listener reports its address.
       const ready = async (): Promise<ProductServerRuntime> => {
         started ??= (async () => {
+          await configureServerLogging();
           runtime = await createProductServer(productServerEnvironment(server));
           return runtime;
         })();
