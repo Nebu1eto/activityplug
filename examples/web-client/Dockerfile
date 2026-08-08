@@ -9,10 +9,13 @@ WORKDIR /workspace
 RUN printf '%s' "$NODE_IMAGE" | grep -Eq '.+@sha256:[0-9a-f]{64}$' \
   && test -n "$PNPM_VERSION" \
   && npm install --global "pnpm@${PNPM_VERSION}"
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml rolldown.config.ts tsconfig.base.json ./
 COPY packages ./packages
 COPY examples/web-client ./examples/web-client
 RUN pnpm install --frozen-lockfile
+# The Vite build loads the dev-server plugin, which imports workspace packages
+# through their built `dist` entries, so the dependency graph must build first.
+RUN pnpm -r --filter @activityplug/example-web-client... --sort build
 RUN pnpm --filter @activityplug/example-web-client build
 
 FROM ${CADDY_IMAGE}

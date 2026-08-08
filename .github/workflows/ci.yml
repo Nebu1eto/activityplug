@@ -131,6 +131,9 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # Playwright runs `vite build`, which loads the dev-server plugin that
+      # imports @activityplug/server; workspace builds must exist first.
+      - run: pnpm -r --filter @activityplug/example-web-client... --sort build
       - run: pnpm --filter @activityplug/example-web-client exec playwright install --with-deps chromium
       - run: pnpm --filter @activityplug/example-web-client test:e2e
 
