@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { isActivityPlugError, type ActivityPlugError } from "@activityplug/core";
+import { getLogger } from "@logtape/logtape";
 import { type Context } from "hono";
 
 import { type BrowserErrorCode, type BrowserErrorEnvelope } from "./types.js";
@@ -20,6 +21,14 @@ export class BrowserBoundaryError extends Error {
 
 export function browserErrorResponse(context: Context, error: unknown): Response {
   const normalized = normalizeBrowserError(error);
+  // Client-visible denials are expected behavior, so only server-side failures
+  // are logged. Without this the boundary answers 502 with no local diagnosis.
+  if (normalized.status >= 500) {
+    getLogger(["activityplug", "server", "browser"]).error(
+      "Browser boundary request failed: {error}",
+      { error, method: context.req.method, path: context.req.path },
+    );
+  }
   if (normalized.retryAfterSeconds !== undefined) {
     context.header("retry-after", String(normalized.retryAfterSeconds));
   }
