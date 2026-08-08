@@ -66,7 +66,9 @@ export interface HackersPubLoginChallenge {
 }
 
 export interface HackersPubSessionResponse {
+  readonly __typename?: string;
   readonly id?: string;
+  readonly since?: string;
 }
 
 export interface HackersPubPoll {

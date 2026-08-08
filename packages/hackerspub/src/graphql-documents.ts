@@ -256,7 +256,13 @@ export const completeLoginChallengeDocument: TypedDocumentNode<
 > = gql(`
   mutation ($token: UUID!, $code: String!) {
     completeLoginChallenge(token: $token, code: $code) {
-      id
+      __typename
+      ... on Session {
+        id
+      }
+      ... on AccountBannedError {
+        since
+      }
     }
   }
 `);
@@ -276,7 +282,13 @@ export const loginByPasskeyDocument: TypedDocumentNode<
 > = gql(`
   mutation ($sessionId: UUID!, $authenticationResponse: JSON!) {
     loginByPasskey(sessionId: $sessionId, authenticationResponse: $authenticationResponse) {
-      id
+      __typename
+      ... on Session {
+        id
+      }
+      ... on AccountBannedError {
+        since
+      }
     }
   }
 `);

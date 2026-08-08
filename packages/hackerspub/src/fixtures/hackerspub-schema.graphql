@@ -216,12 +216,20 @@ type Session {
   id: UUID!
 }
 
+type AccountBannedError {
+  since: DateTime!
+}
+
+union CompleteLoginChallengeResult = Session | AccountBannedError
+
+union LoginByPasskeyResult = Session | AccountBannedError
+
 type Mutation {
   createNote(input: CreateNoteInput!): CreateNoteResult!
   deletePost(input: DeletePostInput!): DeletePostResult!
   uploadMedia(input: UploadMediaInput!): UploadMediaResult!
   loginByEmail(email: String!, locale: Locale!, verifyUrl: URITemplate!): LoginResult!
-  completeLoginChallenge(token: UUID!, code: String!): Session
+  completeLoginChallenge(token: UUID!, code: String!): CompleteLoginChallengeResult
   getPasskeyAuthenticationOptions(sessionId: UUID!): JSON!
-  loginByPasskey(sessionId: UUID!, authenticationResponse: JSON!): Session
+  loginByPasskey(sessionId: UUID!, authenticationResponse: JSON!): LoginByPasskeyResult
 }

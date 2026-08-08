@@ -434,6 +434,13 @@ function sessionTokenSet(value: unknown, context: AuthAdapterContext, operation:
       operation,
     });
   }
+  if (isRecord(value) && value["__typename"] === "AccountBannedError") {
+    throw new ActivityPlugError("AUTH_REQUIRED", "HackersPub account is banned.", {
+      adapter: context.adapterId,
+      origin: context.origin,
+      operation,
+    });
+  }
   if (!isRecord(value) || !isUuidString(value.id)) {
     throw protocolError(context, operation, "session.id");
   }
