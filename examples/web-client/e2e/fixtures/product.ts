@@ -145,6 +145,13 @@ async function handleBrowserRequest(state: BrowserState): Promise<BrowserRespons
   if (method === "GET" && path === "/v1/browser/session") {
     return next(session(state.authenticated));
   }
+  if (method === "GET" && path === "/v1/browser/auth/detect-server") {
+    return next({
+      adapter: "mastodon",
+      origin: url.searchParams.get("origin") ?? "",
+      software: "mastodon",
+    });
+  }
   if (method === "POST" && path === "/v1/browser/auth/start") {
     return next({ kind: "oauth", redirectUrl: `${url.origin}/oauth-provider` });
   }
