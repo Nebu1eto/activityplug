@@ -1,6 +1,6 @@
 {
   "name": "@activityplug/example-web-client",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "private": true,
   "description": "Sample web client for ActivityPlug.",
   "license": "Apache-2.0 OR MIT",

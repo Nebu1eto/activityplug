@@ -1,5 +1,12 @@
 @activityplug/hollo
 
+## 1.0.2
+
+### Patch Changes
+
+- @activityplug/core@1.0.2
+- @activityplug/mastodon-base@1.0.2
+
 ## 1.0.1
 
 ### Patch Changes

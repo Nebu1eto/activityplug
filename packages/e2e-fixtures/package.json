@@ -1,6 +1,6 @@
 {
   "name": "@activityplug/e2e-fixtures",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "private": true,
   "description": "Shared E2E test helpers for ActivityPlug adapter packages.",
   "license": "Apache-2.0 OR MIT",

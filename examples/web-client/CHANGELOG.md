@@ -1,5 +1,19 @@
 @activityplug/example-web-client
 
+## 0.0.3
+
+### Patch Changes
+
+- Updated dependencies
+  - @activityplug/server@1.0.2
+  - @activityplug/hackerspub@1.0.2
+  - @activityplug/hollo@1.0.2
+  - @activityplug/mastodon@1.0.2
+  - @activityplug/misskey@1.0.2
+  - @activityplug/pleroma@1.0.2
+  - @activityplug/session-postgres@1.0.2
+  - @activityplug/session-redis@1.0.2
+
 ## 0.0.2
 
 ### Patch Changes

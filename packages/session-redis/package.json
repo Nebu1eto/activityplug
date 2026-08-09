@@ -1,6 +1,6 @@
 {
   "name": "@activityplug/session-redis",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Redis auth session and lifecycle storage for ActivityPlug server mode.",
   "keywords": [
     "activitypub",

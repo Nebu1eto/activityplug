@@ -1,5 +1,14 @@
 @activityplug/hackerspub
 
+## 1.0.2
+
+### Patch Changes
+
+- Expose server detection through the browser boundary, request read and write
+  scopes for browser sign-in, and select HackersPub login sessions through
+  result unions.
+  - @activityplug/core@1.0.2
+
 ## 1.0.1
 
 ### Patch Changes

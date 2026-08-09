@@ -1,5 +1,13 @@
 @activityplug/example-proxy-client
 
+## 0.0.3
+
+### Patch Changes
+
+- Updated dependencies
+  - @activityplug/server@1.0.2
+  - @activityplug/core@1.0.2
+
 ## 0.0.2
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "@activityplug/hollo",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Hollo adapter for ActivityPlug.",
   "keywords": [
     "activitypub",
